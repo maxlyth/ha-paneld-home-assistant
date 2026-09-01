@@ -1,0 +1,29 @@
+{
+  "title": "ha-paneld",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect a panel",
+        "description": "Enter the hostname or IP address of a panel running ha-paneld.",
+        "data": {
+          "address": "Panel address"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to a valid ha-paneld health endpoint.",
+      "invalid_address": "Enter a hostname or IP address without a URL scheme or path.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This panel is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      }
+    }
+  }
+}
