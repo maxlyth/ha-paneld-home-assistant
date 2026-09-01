@@ -3,18 +3,35 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import HaPaneldClient, HaPaneldError, PanelHealth
+from .client import (
+    CannotConnectError,
+    HaPaneldClient,
+    HaPaneldError,
+    InvalidResponseError,
+    PanelHealth,
+)
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .status import PanelStatus
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class HaPaneldDataUpdateCoordinator(DataUpdateCoordinator[PanelHealth]):
-    """Poll the panel's stable health endpoint."""
+@dataclass(frozen=True, slots=True)
+class PanelSnapshot:
+    """Cached health authority and optional sanitized status diagnostics."""
+
+    health: PanelHealth
+    status: PanelStatus | None
+    status_error: str | None
+
+
+class HaPaneldDataUpdateCoordinator(DataUpdateCoordinator[PanelSnapshot]):
+    """Poll stable health plus optional read-only status diagnostics."""
 
     def __init__(self, hass: HomeAssistant, client: HaPaneldClient) -> None:
         """Initialize the coordinator."""
@@ -26,9 +43,19 @@ class HaPaneldDataUpdateCoordinator(DataUpdateCoordinator[PanelHealth]):
         )
         self.client = client
 
-    async def _async_update_data(self) -> PanelHealth:
-        """Fetch the latest health snapshot."""
+    async def _async_update_data(self) -> PanelSnapshot:
+        """Fetch health authority, then best-effort sanitized status."""
         try:
-            return await self.client.async_get_health()
+            health = await self.client.async_get_health()
         except HaPaneldError as err:
             raise UpdateFailed(f"Unable to read panel health: {err}") from err
+
+        try:
+            status = await self.client.async_get_status()
+        except CannotConnectError:
+            return PanelSnapshot(health=health, status=None, status_error="unavailable")
+        except InvalidResponseError:
+            return PanelSnapshot(
+                health=health, status=None, status_error="invalid_response"
+            )
+        return PanelSnapshot(health=health, status=status, status_error=None)

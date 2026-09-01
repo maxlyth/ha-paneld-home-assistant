@@ -1,9 +1,10 @@
-"""Small read-only client for the ha-paneld health contract."""
+"""Small read-only client for the ha-paneld health and status contracts."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -14,7 +15,12 @@ from .const import (
     DEFAULT_TIMEOUT_SECONDS,
     HEALTH_PATH,
     MAX_HEALTH_RESPONSE_BYTES,
+    MAX_STATUS_RESPONSE_BYTES,
+    STATUS_PATH,
 )
+
+if TYPE_CHECKING:
+    from .status import PanelStatus
 
 _CONFIG_HASH_PATTERN = re.compile(r"^[0-9a-f]{8}$")
 _LIFECYCLE_STATES = frozenset(
@@ -165,11 +171,15 @@ class HaPaneldClient:
         """Return the canonical health endpoint."""
         return self.address.base_url.with_path(HEALTH_PATH)
 
-    async def async_get_health(self) -> PanelHealth:
-        """Fetch and parse the bounded health response."""
+    @property
+    def status_url(self) -> URL:
+        """Return the canonical status endpoint."""
+        return self.address.base_url.with_path(STATUS_PATH)
+
+    async def _async_get_bounded(self, url: URL, maximum_bytes: int) -> bytes:
         try:
             async with self._session.get(
-                self.health_url,
+                url,
                 allow_redirects=False,
                 headers={"Cache-Control": "no-cache"},
                 timeout=ClientTimeout(total=DEFAULT_TIMEOUT_SECONDS),
@@ -177,20 +187,33 @@ class HaPaneldClient:
                 if response.status != 200:
                     raise CannotConnectError
                 body = bytearray()
-                async for chunk in response.content.iter_chunked(
-                    MAX_HEALTH_RESPONSE_BYTES + 1
-                ):
+                async for chunk in response.content.iter_chunked(maximum_bytes + 1):
                     body.extend(chunk)
-                    if len(body) > MAX_HEALTH_RESPONSE_BYTES:
+                    if len(body) > maximum_bytes:
                         break
         except CannotConnectError:
             raise
         except (ClientError, TimeoutError) as err:
             raise CannotConnectError from err
 
-        if len(body) > MAX_HEALTH_RESPONSE_BYTES:
+        if len(body) > maximum_bytes:
             raise InvalidResponseError
+        return bytes(body)
+
+    async def async_get_health(self) -> PanelHealth:
+        """Fetch and parse the bounded health response."""
+        body = await self._async_get_bounded(self.health_url, MAX_HEALTH_RESPONSE_BYTES)
         try:
-            return parse_health_response(bytes(body).decode("utf-8"))
+            return parse_health_response(body.decode("utf-8"))
+        except UnicodeDecodeError as err:
+            raise InvalidResponseError from err
+
+    async def async_get_status(self) -> PanelStatus:
+        """Fetch and parse the bounded, privacy-safe status response."""
+        from .status import parse_status_response
+
+        body = await self._async_get_bounded(self.status_url, MAX_STATUS_RESPONSE_BYTES)
+        try:
+            return parse_status_response(body.decode("utf-8"))
         except UnicodeDecodeError as err:
             raise InvalidResponseError from err

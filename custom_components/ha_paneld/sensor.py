@@ -50,7 +50,7 @@ class HaPaneldStatusSensor(
     @property
     def extra_state_attributes(self) -> dict[str, str | bool | None]:
         """Return the cached health diagnostics."""
-        health = self.coordinator.data
+        health = self.coordinator.data.health
         return {
             "build": health.build,
             "config_hash": health.config_hash,
@@ -62,7 +62,7 @@ class HaPaneldStatusSensor(
     @property
     def device_info(self) -> DeviceInfo:
         """Return API-backed device information."""
-        health = self.coordinator.data
+        health = self.coordinator.data.health
         return DeviceInfo(
             identifiers={(DOMAIN, self._entry_id)},
             name=health.panel_id,

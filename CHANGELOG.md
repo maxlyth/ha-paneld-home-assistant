@@ -6,5 +6,6 @@ All notable changes to this project will be documented in this file.
 
 - Add manual setup by panel hostname or IP address.
 - Validate panels through the stable read-only `/api/v1/health` endpoint.
+- Add bounded, privacy-safe `/api/v1/status` data to downloadable diagnostics.
 - Create one Home Assistant device with a diagnostic status sensor and downloadable redacted diagnostics.
 - Support config-entry setup, unload and reload.

@@ -31,9 +31,10 @@ async def async_get_device_diagnostics(
 
 def _diagnostics(entry: HaPaneldConfigEntry) -> dict[str, Any]:
     """Build diagnostics only from cached data."""
+    snapshot = entry.runtime_data.coordinator.data
     return {
         "entry": async_redact_data(dict(entry.data), _ENTRY_KEYS_TO_REDACT),
-        "health": async_redact_data(
-            entry.runtime_data.coordinator.data.as_dict(), _HEALTH_KEYS_TO_REDACT
-        ),
+        "health": async_redact_data(snapshot.health.as_dict(), _HEALTH_KEYS_TO_REDACT),
+        "status": snapshot.status.as_dict() if snapshot.status is not None else None,
+        "status_error": snapshot.status_error,
     }

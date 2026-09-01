@@ -2,7 +2,7 @@
 
 This repository contains the HACS custom integration for [ha-paneld](https://github.com/maxlyth/ha-paneld), the Home Assistant dashboard application for Android wall panels.
 
-The initial `0.1.0` integration is intentionally read-only. It connects to a panel's stable local health endpoint, creates one Home Assistant device and exposes a diagnostic status sensor. Existing MQTT entities remain authoritative.
+The initial `0.1.0` integration is intentionally read-only. It connects to a panel's stable local health endpoint, creates one Home Assistant device and exposes a diagnostic status sensor. It also adds a bounded, privacy-safe projection of the panel's status endpoint to downloadable diagnostics. Existing MQTT entities remain authoritative.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The configured network endpoint identifies the config entry. The panel name retu
 
 ## Scope
 
-This release reads `GET /api/v1/health` over the trusted LAN. It does not install or configure ha-paneld, use ADB, proxy panel traffic, mutate a panel, replace MQTT entities or add a sidebar UI.
+This release reads `GET /api/v1/health` and `GET /api/v1/status` over the trusted LAN. Status warnings, free-form summaries, action text, opaque acknowledgement fingerprints and unknown fields are not retained in diagnostics. The integration does not install or configure ha-paneld, use ADB, proxy panel traffic, mutate a panel, replace MQTT entities or add a sidebar UI.
 
 ## Development
 
