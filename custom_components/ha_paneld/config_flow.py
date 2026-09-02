@@ -20,9 +20,13 @@ from .client import (
     PanelHealth,
     normalize_address,
 )
-from .const import DOMAIN
-from .provisioning import async_probe_install_target
-from .release import async_resolve_stable_release
+from .const import DEFAULT_PORT, DOMAIN
+from .provisioning import InstallTargetProbe, async_probe_install_target
+from .release import (
+    ReleaseArtifact,
+    ReleaseResolutionError,
+    async_resolve_stable_release,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +41,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     _pending_address: PanelAddress | None = None
+    _pending_health: PanelHealth | None = None
+    _pending_probe: InstallTargetProbe | None = None
+    _pending_release: ReleaseArtifact | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -83,13 +90,15 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 address = normalize_address(user_input[CONF_ADDRESS])
+                if address.port != DEFAULT_PORT:
+                    raise InvalidAddressError
             except InvalidAddressError:
-                errors["base"] = "invalid_address"
+                errors["base"] = "invalid_install_address"
             else:
                 client = HaPaneldClient(async_get_clientsession(self.hass), address)
                 try:
-                    await client.async_get_health()
-                except (CannotConnectError, InvalidResponseError):
+                    health = await client.async_get_health()
+                except CannotConnectError, InvalidResponseError:
                     try:
                         probe = await async_probe_install_target(address)
                     except Exception:
@@ -100,31 +109,27 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                     else:
                         state = probe.state.value
                         if state == "clean":
-                            try:
-                                release = await async_resolve_stable_release(
-                                    async_get_clientsession(self.hass)
-                                )
-                            except Exception:
-                                _LOGGER.exception(
-                                    "Unable to resolve the stable ha-paneld release"
-                                )
-                                errors["base"] = "cannot_resolve_release"
+                            placeholders = _clean_probe_placeholders(probe)
+                            if placeholders is None:
+                                errors["base"] = "retained_or_ambiguous"
                             else:
-                                self._pending_address = address
-                                return self.async_show_form(
-                                    step_id="confirm_clean_install",
-                                    data_schema=vol.Schema({}),
-                                    description_placeholders={
-                                        "address": address.stored_value,
-                                        "model": _probe_detail(probe, "model"),
-                                        "serial": _probe_detail(probe, "serial"),
-                                        "abi": _probe_detail(probe, "primary_abi"),
-                                        "sdk": _probe_detail(probe, "android_sdk"),
-                                        "version": release.version,
-                                        "tag": release.tag,
-                                        "sha256": release.sha256,
-                                    },
-                                )
+                                try:
+                                    release = await async_resolve_stable_release(
+                                        async_get_clientsession(self.hass)
+                                    )
+                                except ReleaseResolutionError:
+                                    errors["base"] = "cannot_resolve_release"
+                                except Exception:
+                                    _LOGGER.exception(
+                                        "Unexpected exception while resolving "
+                                        "ha-paneld release"
+                                    )
+                                    errors["base"] = "unknown"
+                                else:
+                                    self._pending_address = address
+                                    self._pending_probe = probe
+                                    self._pending_release = release
+                                    return self._show_clean_install_preview()
                         else:
                             errors["base"] = {
                                 "adb_unreachable": "adb_unreachable",
@@ -145,10 +150,14 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                         {CONF_ADDRESS: address.stored_value}
                     )
                     self._pending_address = address
+                    self._pending_health = health
                     return self.async_show_form(
                         step_id="confirm_existing",
                         data_schema=vol.Schema({}),
-                        description_placeholders={"address": address.stored_value},
+                        description_placeholders={
+                            "address": address.stored_value,
+                            "version": self._pending_health.version,
+                        },
                     )
 
         return self.async_show_form(
@@ -170,7 +179,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                     async_get_clientsession(self.hass), self._pending_address
                 )
                 health = await client.async_get_health()
-            except (CannotConnectError, InvalidResponseError):
+            except CannotConnectError, InvalidResponseError:
                 errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception(
@@ -186,7 +195,10 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "address": self._pending_address.stored_value
                 if self._pending_address is not None
-                else ""
+                else "",
+                "version": self._pending_health.version
+                if self._pending_health is not None
+                else "",
             },
             errors=errors,
         )
@@ -198,14 +210,33 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_abort(reason="prototype_ready")
 
+        if (
+            self._pending_address is None
+            or self._pending_probe is None
+            or self._pending_release is None
+        ):
+            return self.async_abort(reason="unknown")
+        return self._show_clean_install_preview()
+
+    def _show_clean_install_preview(self) -> ConfigFlowResult:
+        """Render the complete retained target and authenticated release plan."""
+        assert self._pending_address is not None
+        assert self._pending_probe is not None
+        assert self._pending_release is not None
+        placeholders = _clean_probe_placeholders(self._pending_probe)
+        assert placeholders is not None
+        placeholders.update(
+            {
+                "address": self._pending_address.stored_value,
+                "version": self._pending_release.version,
+                "tag": self._pending_release.tag,
+                "sha256": self._pending_release.sha256,
+            }
+        )
         return self.async_show_form(
             step_id="confirm_clean_install",
             data_schema=vol.Schema({}),
-            description_placeholders={
-                "address": self._pending_address.stored_value
-                if self._pending_address is not None
-                else ""
-            },
+            description_placeholders=placeholders,
         )
 
     def _async_create_panel_entry(
@@ -221,9 +252,18 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-def _probe_detail(probe: Any, name: str) -> str:
-    """Render optional target facts without requiring them from the first backend."""
-    value = getattr(probe, name, None)
-    if value is None or value == "":
-        return "Not reported"
-    return str(value)
+def _clean_probe_placeholders(probe: InstallTargetProbe) -> dict[str, str] | None:
+    """Return complete display facts, or refuse an incomplete clean verdict."""
+    if (
+        probe.model is None
+        or probe.serial is None
+        or probe.primary_abi is None
+        or probe.android_sdk is None
+    ):
+        return None
+    return {
+        "model": probe.model,
+        "serial": probe.serial,
+        "abi": probe.primary_abi,
+        "sdk": str(probe.android_sdk),
+    }

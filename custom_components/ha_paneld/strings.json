@@ -4,19 +4,19 @@
     "step": {
       "user": {
         "title": "Set up a panel",
-        "description": "Install ha-paneld on a new panel, check an existing installation, or connect a panel that is already running ha-paneld.",
+        "description": "Install ha-paneld on a new panel or connect a panel that is already running it.",
         "menu_options": {
           "install_or_upgrade": "Install ha-paneld on a panel",
           "connect_existing": "Connect an existing ha-paneld installation"
         },
         "menu_option_descriptions": {
-          "install_or_upgrade": "Check that a panel is safe and ready for a first installation.",
-          "connect_existing": "Attach a healthy ha-paneld installation to Home Assistant."
+          "install_or_upgrade": "Use Android Debug Bridge (ADB) to inspect a panel where ha-paneld is not installed.",
+          "connect_existing": "Add a healthy installation; later updates are managed after connection."
         }
       },
       "install_or_upgrade": {
-        "title": "Install ha-paneld on a panel",
-        "description": "Enter the hostname or IP address of the Android panel. Home Assistant will first check for ha-paneld, then perform a read-only Android Debug Bridge (ADB) readiness check. No software is installed during this prototype check. Later updates are managed after the panel is connected.",
+        "title": "Install ha-paneld",
+        "description": "Enter the hostname or IP address of the Android panel. Home Assistant will check for an existing installation before using ADB. This development preview does not establish ADB trust, download software, or change the panel.",
         "data": {
           "address": "Panel hostname or IP address"
         }
@@ -30,7 +30,7 @@
       },
       "confirm_existing": {
         "title": "ha-paneld is already installed",
-        "description": "A healthy ha-paneld installation was found at {address}. Submit to connect it to Home Assistant for monitoring and future updates. No installation will be performed."
+        "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant; later updates are managed after connection. No installation will be performed."
       },
       "confirm_clean_install": {
         "title": "First-install candidate found",
@@ -40,12 +40,13 @@
     "error": {
       "cannot_connect": "Unable to connect to a valid ha-paneld health endpoint.",
       "invalid_address": "Enter a hostname or IP address without a URL scheme or path.",
+      "invalid_install_address": "Enter only the panel hostname or IP address. The installer uses ha-paneld port 8888 and ADB port 5555 separately.",
       "adb_unreachable": "ha-paneld did not respond and Android Debug Bridge (ADB) could not be reached. Check that the address is correct, the panel is online, and network debugging is enabled, then try again.",
-      "adb_unauthorized": "The panel is reachable through Android Debug Bridge (ADB), but Home Assistant is not authorized. Approve the debugging prompt on the panel, then try again.",
+      "adb_unauthorized": "The panel requires ADB authorization. This read-only preview does not create or submit a trusted key, so no approval prompt was opened and nothing changed.",
       "installed_without_health": "The ha-paneld package is installed but its health endpoint did not respond. This flow will not overwrite or repair an unverified installation. Restore the existing installation or use a dedicated recovery workflow, then try again.",
       "retained_or_ambiguous": "The panel may contain retained ha-paneld data or its package state could not be proven clean. This flow refuses a clean install to protect existing data. Inspect or recover the existing installation before trying again.",
       "incompatible": "The panel is proven clean, but its Android SDK or processor architecture is not supported by ha-paneld. Nothing was downloaded or installed.",
-      "cannot_resolve_release": "The panel is ready, but Home Assistant could not resolve and verify the current stable ha-paneld release. No software was downloaded or installed. Check internet access and try again.",
+      "cannot_resolve_release": "A first-install candidate was found, but Home Assistant could not resolve and verify the current stable ha-paneld release. No software was downloaded or installed. Check internet access and try again.",
       "unknown": "Unexpected error"
     },
     "abort": {
