@@ -34,9 +34,11 @@ _CHECKSUM = f"{_SHA256}  {_APK_NAME}\n".encode()
 class _FakeContent:
     def __init__(self, body: bytes | list[bytes | str]) -> None:
         self._chunks = [body] if isinstance(body, bytes) else body
+        self.yielded_chunks = 0
 
     async def iter_chunked(self, _limit: int) -> AsyncIterator[bytes | str]:
         for chunk in self._chunks:
+            self.yielded_chunks += 1
             yield chunk
 
 
@@ -126,6 +128,19 @@ def _release_document(
         "assets": assets,
         "future_release_field": {"nested": [1, 2, 3]},
     }
+
+
+def _required_assets_for_tag(tag: str) -> list[dict[str, str]]:
+    """Return a self-consistent required triplet for tag-validation tests."""
+    apk_name = f"ha-paneld-{tag}-manual-setup-required.apk"
+    root = f"https://github.com/maxlyth/ha-paneld/releases/download/{tag}"
+    return [
+        {
+            "name": apk_name + suffix,
+            "browser_download_url": f"{root}/{apk_name}{suffix}",
+        }
+        for suffix in ("", ".sha256", ".sha256.sig")
+    ]
 
 
 def _metadata_response(document: Any) -> _FakeResponse:
@@ -245,6 +260,27 @@ async def test_rejects_noncanonical_or_nonstable_tags(tag: str) -> None:
     with pytest.raises(ReleaseResolutionError):
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
     assert len(session.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ["1.2.3", "v01.2.3", "v1.2.3-rc1", "v\N{ARABIC-INDIC DIGIT ONE}.2.3"],
+)
+def test_tag_shape_is_rejected_with_self_consistent_assets(tag: str) -> None:
+    """Tag syntax is enforced independently of asset-triplet consistency."""
+    document = _release_document(assets=_required_assets_for_tag(tag), tag=tag)
+
+    with pytest.raises(ReleaseResolutionError):
+        release._parse_release_metadata(json.dumps(document).encode())
+
+
+def test_tag_length_is_rejected_with_self_consistent_assets() -> None:
+    """A syntactically numeric tag remains independently length bounded."""
+    tag = "v" + "1" * 65 + ".2.3"
+    document = _release_document(assets=_required_assets_for_tag(tag), tag=tag)
+
+    with pytest.raises(ReleaseResolutionError):
+        release._parse_release_metadata(json.dumps(document).encode())
 
 
 @pytest.mark.parametrize(
@@ -472,6 +508,20 @@ async def test_rejects_excessive_declared_content_length() -> None:
 
     with pytest.raises(ReleaseResolutionError):
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert response.content.yielded_chunks == 0
+
+
+async def test_stream_limit_stops_before_a_second_excessive_chunk() -> None:
+    """The body limit stops consumption before later parsing can reject it."""
+    response = _metadata_response(_release_document())
+    response.content = _FakeContent(
+        [b"x" * (release._MAX_RELEASE_RESPONSE_BYTES + 1), b"not consumed"]
+    )
+    session = _FakeSession({str(release._LATEST_RELEASE_URL): response})
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert response.content.yielded_chunks == 1
 
 
 async def test_rejects_nonbyte_response_chunks() -> None:
@@ -744,6 +794,22 @@ async def test_rejects_duplicate_keys_and_nonstandard_numbers(body: bytes) -> No
 
     with pytest.raises(ReleaseResolutionError):
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+def test_duplicate_key_is_rejected_in_otherwise_valid_document() -> None:
+    """Duplicate-key rejection is independent of later release validation."""
+    body = (
+        json.dumps(_release_document())
+        .encode()
+        .replace(
+            b'"tag_name": "v1.2.3"',
+            b'"tag_name": "v1.2.3", "tag_name": "v1.2.3"',
+            1,
+        )
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        release._parse_release_metadata(body)
 
 
 @pytest.mark.parametrize("status", [201, 301, 403, 404, 500])

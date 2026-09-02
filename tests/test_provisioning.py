@@ -433,6 +433,37 @@ async def test_connection_has_cumulative_read_budget(
     assert underlying_read.await_args_list[-1].args == (1, 5.0)
 
 
+async def test_connection_budget_counts_received_not_requested_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fragmented reads consume only bytes that actually reached the transport."""
+    transport = provisioning._BoundedTcpTransportAsync("panel.local", 5555)
+    call_count = 0
+
+    async def _fragmented_read(numbytes: int, _timeout: float) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 4:
+            return b"x"
+        return b"y" * numbytes
+
+    underlying_read = AsyncMock(side_effect=_fragmented_read)
+    monkeypatch.setattr(TcpTransportAsync, "bulk_read", underlying_read)
+
+    for _index in range(4):
+        assert (
+            await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0)
+            == b"x"
+        )
+    final = await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0)
+
+    assert len(final) == provisioning._MAX_ADB_PACKET_BODY_BYTES
+    assert underlying_read.await_args_list[-1].args == (
+        provisioning._MAX_ADB_PACKET_BODY_BYTES,
+        5.0,
+    )
+
+
 async def test_connection_eof_fails_without_busy_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
