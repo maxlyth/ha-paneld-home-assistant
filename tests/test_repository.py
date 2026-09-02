@@ -22,7 +22,7 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "iot_class": "local_polling",
         "issue_tracker": "https://github.com/maxlyth/ha-paneld-home-assistant/issues",
         "name": "ha-paneld",
-        "requirements": [],
+        "requirements": ["adb-shell[async]==0.4.4"],
         "version": "0.1.0",
     }
     assert hacs == {"homeassistant": "2026.8.3", "name": "ha-paneld"}
