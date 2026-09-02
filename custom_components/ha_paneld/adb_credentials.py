@@ -9,6 +9,7 @@ import stat
 import struct
 from binascii import Error as BinasciiError
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,14 @@ class _StoredCredential:
     public_key: str
 
 
+@dataclass(frozen=True, repr=False, slots=True)
+class AdbCredential:
+    """Usable signer plus a stable non-secret generation identifier."""
+
+    signer: PythonRSASigner
+    generation_id: str
+
+
 def _encode_android_public_key(public_numbers: rsa.RSAPublicNumbers) -> str:
     """Encode an RSA key using Android's ADB public-key representation."""
     modulus = public_numbers.n
@@ -59,6 +68,12 @@ def _encode_android_public_key(public_numbers: rsa.RSAPublicNumbers) -> str:
         public_numbers.e,
     )
     return base64.b64encode(encoded).decode("ascii") + _PUBLIC_KEY_COMMENT
+
+
+def _credential_generation_id(public_key: str) -> str:
+    """Hash only the canonical Android public-key bytes for receipt binding."""
+    encoded_public = public_key.partition(" ")[0]
+    return sha256(base64.b64decode(encoded_public, validate=True)).hexdigest()
 
 
 def _generate_credential() -> _StoredCredential:
@@ -189,8 +204,8 @@ class AdbCredentialManager:
         self._lock = asyncio.Lock()
         self._credential: _StoredCredential | None = None
 
-    async def async_get_signer(self) -> PythonRSASigner:
-        """Return the shared signer, generating and persisting it only once."""
+    async def async_get_credential(self) -> AdbCredential:
+        """Return the shared signer and generation, persisting it only once."""
         async with self._lock:
             try:
                 if self._credential is None:
@@ -235,22 +250,41 @@ class AdbCredentialManager:
                             raise AdbCredentialError
                         self._credential = _parse_stored_credential(stored)
 
-                return PythonRSASigner(
-                    self._credential.public_key,
-                    self._credential.private_key,
+                return AdbCredential(
+                    signer=PythonRSASigner(
+                        self._credential.public_key,
+                        self._credential.private_key,
+                    ),
+                    generation_id=_credential_generation_id(
+                        self._credential.public_key
+                    ),
                 )
             except AdbCredentialError:
                 raise
             except Exception as err:
                 raise AdbCredentialError from err
 
+    async def async_get_signer(self) -> PythonRSASigner:
+        """Return the shared signer for existing ADB consumers."""
+        return (await self.async_get_credential()).signer
 
-async def async_get_adb_signer(hass: HomeAssistant) -> PythonRSASigner:
-    """Return the process-wide persistent ADB signer for ha-paneld."""
+
+def _get_adb_credential_manager(hass: HomeAssistant) -> AdbCredentialManager:
+    """Return the guarded process-wide credential authority."""
     manager = hass.data.get(_MANAGER_DATA_KEY)
     if manager is None:
         manager = AdbCredentialManager(hass)
         hass.data[_MANAGER_DATA_KEY] = manager
     if not isinstance(manager, AdbCredentialManager):
         raise AdbCredentialError
-    return await manager.async_get_signer()
+    return manager
+
+
+async def async_get_adb_credential(hass: HomeAssistant) -> AdbCredential:
+    """Return the process-wide signer and stable public-key generation ID."""
+    return await _get_adb_credential_manager(hass).async_get_credential()
+
+
+async def async_get_adb_signer(hass: HomeAssistant) -> PythonRSASigner:
+    """Return the process-wide persistent ADB signer for ha-paneld."""
+    return (await async_get_adb_credential(hass)).signer

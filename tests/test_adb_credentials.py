@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import struct
-from hashlib import sha1
+from hashlib import sha1, sha256
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +22,7 @@ from custom_components.ha_paneld.adb_credentials import (
     _generate_credential,
     _parse_stored_credential,
     _StoredCredential,
+    async_get_adb_credential,
     async_get_adb_signer,
 )
 from custom_components.ha_paneld.const import DOMAIN
@@ -264,6 +265,13 @@ async def test_process_wide_accessor_reuses_one_manager(
         )
 
     assert first.GetPublicKey() == second.GetPublicKey()
+    bound = await async_get_adb_credential(hass)
+    encoded_public = bound.signer.GetPublicKey().partition(" ")[0]
+    assert (
+        bound.generation_id
+        == sha256(base64.b64decode(encoded_public, validate=True)).hexdigest()
+    )
+    assert bound.generation_id not in repr(bound)
     managers = [
         value for value in hass.data.values() if isinstance(value, AdbCredentialManager)
     ]
