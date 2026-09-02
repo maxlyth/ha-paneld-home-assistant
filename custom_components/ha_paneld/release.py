@@ -25,6 +25,9 @@ _MAX_TAG_LENGTH = 64
 _MAX_RELEASE_RESPONSE_BYTES = 256 * 1024
 _MAX_CHECKSUM_RESPONSE_BYTES = 512
 _MAX_SIGNATURE_RESPONSE_BYTES = 512
+# The closed v1 descriptor is currently well below 1 KiB.  Four KiB leaves room
+# for bounded schema evolution without accepting an arbitrary release payload.
+_MAX_INSTALL_DESCRIPTOR_BYTES = 4 * 1024
 _MAX_RELEASE_ASSETS = 128
 _MAX_REDIRECTS = 3
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -32,6 +35,37 @@ _REQUEST_TIMEOUT_SECONDS = 10.0
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _READ_TIMEOUT_SECONDS = 5.0
 _RSA_SIGNATURE_BYTES = 256
+_MAX_APK_BYTES = 64 * 1024 * 1024
+_MAX_ANDROID_SDK = 100
+_MAX_ANDROID_VERSION_CODE = 2**31 - 1
+_INSTALL_DESCRIPTOR_SCHEMA = "io.github.maxlyth.hapaneld.install.v1"
+_PACKAGE_ID = "io.github.maxlyth.hapaneld"
+_LAUNCH_COMPONENT = f"{_PACKAGE_ID}/.MainActivity"
+_RELEASE_SIGNER_CERTIFICATE_SHA256 = (
+    "ac6193307fb0b70113aae205d7549406f96e063bc5491b67b1d5694a34b0e339"
+)
+_SUPPORTED_ABIS = ("arm64-v8a", "armeabi-v7a")
+_INSTALL_DESCRIPTOR_FIELDS = frozenset(
+    {
+        "schema",
+        "releaseTag",
+        "versionName",
+        "versionCode",
+        "apkName",
+        "apkSize",
+        "apkSha256",
+        "packageId",
+        "signerCertificateSha256",
+        "minSdk",
+        "supportedAbis",
+        "databaseCompatibility",
+        "launchComponent",
+    }
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_DATABASE_COMPATIBILITY_PATTERN = re.compile(
+    r"^hapaneld-db:v1:ha-paneld\.db:([1-9][0-9]*):([1-9][0-9]*)$"
+)
 _TRUSTED_DOWNLOAD_HOSTS = frozenset(
     {
         "github.com",
@@ -64,6 +98,25 @@ class ReleaseResolutionError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class InstallDescriptor:
+    """Signed installation and compatibility facts for one exact APK."""
+
+    schema: str
+    release_tag: str
+    version_name: str
+    version_code: int
+    apk_name: str
+    apk_size: int
+    apk_sha256: str
+    package_id: str
+    signer_certificate_sha256: str
+    min_sdk: int
+    supported_abis: tuple[str, ...]
+    database_compatibility: str
+    launch_component: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseArtifact:
     """Authenticated metadata for one stable release APK."""
 
@@ -72,6 +125,7 @@ class ReleaseArtifact:
     apk_name: str
     apk_url: str
     sha256: str
+    descriptor: InstallDescriptor | None = None
 
 
 def _request_timeout() -> ClientTimeout:
@@ -217,13 +271,16 @@ def _parse_release_metadata(body: bytes) -> tuple[str, str, dict[str, URL]]:
         raise ReleaseResolutionError
 
     apk_name = f"ha-paneld-{tag}-manual-setup-required.apk"
-    expected_names = frozenset(
+    required_names = frozenset(
         {
             apk_name,
             f"{apk_name}.sha256",
             f"{apk_name}.sha256.sig",
         }
     )
+    descriptor_name = f"ha-paneld-{tag}-install.json"
+    descriptor_names = frozenset({descriptor_name, f"{descriptor_name}.sig"})
+    relevant_names = required_names | descriptor_names
     selected: dict[str, URL] = {}
 
     for asset in assets:
@@ -232,7 +289,7 @@ def _parse_release_metadata(body: bytes) -> tuple[str, str, dict[str, URL]]:
         name = asset.get("name")
         if not isinstance(name, str):
             raise ReleaseResolutionError
-        if name not in expected_names:
+        if name not in relevant_names:
             continue
         raw_url = asset.get("browser_download_url")
         expected_url = f"{_REPOSITORY_RELEASE_ROOT}/{tag}/{name}"
@@ -240,14 +297,17 @@ def _parse_release_metadata(body: bytes) -> tuple[str, str, dict[str, URL]]:
             raise ReleaseResolutionError
         selected[name] = URL(raw_url)
 
-    if selected.keys() != expected_names:
+    if not required_names.issubset(selected):
+        raise ReleaseResolutionError
+    selected_descriptor_names = descriptor_names.intersection(selected)
+    if selected_descriptor_names and selected_descriptor_names != descriptor_names:
         raise ReleaseResolutionError
 
     return tag, apk_name, selected
 
 
-def _verify_checksum_signature(checksum: bytes, signature: bytes) -> None:
-    """Authenticate the checksum record with the key used by the public installer."""
+def _verify_detached_signature(payload: bytes, signature: bytes) -> None:
+    """Authenticate exact release bytes with the public installer key."""
     if len(signature) != _RSA_SIGNATURE_BYTES:
         raise ReleaseResolutionError
     try:
@@ -256,7 +316,7 @@ def _verify_checksum_signature(checksum: bytes, signature: bytes) -> None:
             raise ReleaseResolutionError
         public_key.verify(
             signature,
-            checksum,
+            payload,
             padding.PKCS1v15(),
             hashes.SHA256(),
         )
@@ -275,6 +335,118 @@ def _parse_checksum_record(checksum: bytes, apk_name: str) -> str:
     if match is None:
         raise ReleaseResolutionError
     return match.group(1).decode("ascii")
+
+
+def _bounded_integer(value: object, minimum: int, maximum: int) -> int:
+    """Return a genuine JSON integer within the closed descriptor bound."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ReleaseResolutionError
+    if not minimum <= value <= maximum:
+        raise ReleaseResolutionError
+    return value
+
+
+def _parse_install_descriptor(
+    body: bytes,
+    *,
+    tag: str,
+    apk_name: str,
+    apk_sha256: str,
+) -> InstallDescriptor:
+    """Parse one canonical, closed and cross-bound signed v1 descriptor."""
+    try:
+        document: Any = json.loads(
+            body.decode("utf-8"),
+            object_pairs_hook=_object_without_duplicates,
+            parse_constant=_reject_json_constant,
+        )
+    except ReleaseResolutionError:
+        raise
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as err:
+        raise ReleaseResolutionError from err
+
+    if not isinstance(document, dict) or document.keys() != _INSTALL_DESCRIPTOR_FIELDS:
+        raise ReleaseResolutionError
+    try:
+        canonical = (
+            json.dumps(
+                document,
+                ensure_ascii=True,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError) as err:
+        raise ReleaseResolutionError from err
+    if body != canonical:
+        raise ReleaseResolutionError
+
+    version = tag.removeprefix("v")
+    apk_size = _bounded_integer(document["apkSize"], 1, _MAX_APK_BYTES)
+    version_code = _bounded_integer(
+        document["versionCode"], 1, _MAX_ANDROID_VERSION_CODE
+    )
+    min_sdk = _bounded_integer(document["minSdk"], 1, _MAX_ANDROID_SDK)
+    database_compatibility = document["databaseCompatibility"]
+    database_match = (
+        _DATABASE_COMPATIBILITY_PATTERN.fullmatch(database_compatibility)
+        if isinstance(database_compatibility, str)
+        else None
+    )
+    database_bounds: tuple[int, int] | None = None
+    if database_match is not None and all(
+        len(group) <= 10 for group in database_match.groups()
+    ):
+        database_bounds = (
+            int(database_match.group(1)),
+            int(database_match.group(2)),
+        )
+    supported_abis = document["supportedAbis"]
+    apk_sha256_value = document["apkSha256"]
+    if (
+        document["schema"] != _INSTALL_DESCRIPTOR_SCHEMA
+        or document["releaseTag"] != tag
+        or document["versionName"] != version
+        or document["apkName"] != apk_name
+        or not isinstance(apk_sha256_value, str)
+        or apk_sha256_value != apk_sha256
+        or _SHA256_PATTERN.fullmatch(apk_sha256_value) is None
+        or document["packageId"] != _PACKAGE_ID
+        or document["signerCertificateSha256"] != _RELEASE_SIGNER_CERTIFICATE_SHA256
+        or not isinstance(supported_abis, list)
+        or tuple(supported_abis) != _SUPPORTED_ABIS
+        or database_bounds is None
+        or not 1
+        <= database_bounds[0]
+        <= database_bounds[1]
+        <= _MAX_ANDROID_VERSION_CODE
+        or document["launchComponent"] != _LAUNCH_COMPONENT
+    ):
+        raise ReleaseResolutionError
+
+    return InstallDescriptor(
+        schema=_INSTALL_DESCRIPTOR_SCHEMA,
+        release_tag=tag,
+        version_name=version,
+        version_code=version_code,
+        apk_name=apk_name,
+        apk_size=apk_size,
+        apk_sha256=apk_sha256,
+        package_id=_PACKAGE_ID,
+        signer_certificate_sha256=_RELEASE_SIGNER_CERTIFICATE_SHA256,
+        min_sdk=min_sdk,
+        supported_abis=_SUPPORTED_ABIS,
+        database_compatibility=database_compatibility,
+        launch_component=_LAUNCH_COMPONENT,
+    )
 
 
 async def async_resolve_stable_release(session: ClientSession) -> ReleaseArtifact:
@@ -308,8 +480,33 @@ async def async_resolve_stable_release(session: ClientSession) -> ReleaseArtifac
         allow_release_redirects=True,
         headers=_ASSET_HEADERS,
     )
-    _verify_checksum_signature(checksum, signature)
+    _verify_detached_signature(checksum, signature)
     sha256 = _parse_checksum_record(checksum, apk_name)
+
+    descriptor_name = f"ha-paneld-{tag}-install.json"
+    descriptor: InstallDescriptor | None = None
+    if descriptor_name in assets:
+        descriptor_body = await _async_fetch_bounded(
+            session,
+            assets[descriptor_name],
+            _MAX_INSTALL_DESCRIPTOR_BYTES,
+            allow_release_redirects=True,
+            headers=_ASSET_HEADERS,
+        )
+        descriptor_signature = await _async_fetch_bounded(
+            session,
+            assets[f"{descriptor_name}.sig"],
+            _MAX_SIGNATURE_RESPONSE_BYTES,
+            allow_release_redirects=True,
+            headers=_ASSET_HEADERS,
+        )
+        _verify_detached_signature(descriptor_body, descriptor_signature)
+        descriptor = _parse_install_descriptor(
+            descriptor_body,
+            tag=tag,
+            apk_name=apk_name,
+            apk_sha256=sha256,
+        )
 
     return ReleaseArtifact(
         tag=tag,
@@ -317,4 +514,5 @@ async def async_resolve_stable_release(session: ClientSession) -> ReleaseArtifac
         apk_name=apk_name,
         apk_url=str(assets[apk_name]),
         sha256=sha256,
+        descriptor=descriptor,
     )

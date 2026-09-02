@@ -27,8 +27,48 @@ _APK_NAME = f"ha-paneld-{_TAG}-manual-setup-required.apk"
 _APK_URL = f"https://github.com/maxlyth/ha-paneld/releases/download/{_TAG}/{_APK_NAME}"
 _CHECKSUM_URL = f"{_APK_URL}.sha256"
 _SIGNATURE_URL = f"{_CHECKSUM_URL}.sig"
+_DESCRIPTOR_NAME = f"ha-paneld-{_TAG}-install.json"
+_DESCRIPTOR_URL = (
+    f"https://github.com/maxlyth/ha-paneld/releases/download/{_TAG}/{_DESCRIPTOR_NAME}"
+)
+_DESCRIPTOR_SIGNATURE_URL = f"{_DESCRIPTOR_URL}.sig"
 _SHA256 = "0123456789abcdef" * 4
 _CHECKSUM = f"{_SHA256}  {_APK_NAME}\n".encode()
+_RELEASE_SIGNER = "ac6193307fb0b70113aae205d7549406f96e063bc5491b67b1d5694a34b0e339"
+
+
+def _descriptor_document(**replacements: Any) -> dict[str, Any]:
+    document = {
+        "schema": "io.github.maxlyth.hapaneld.install.v1",
+        "releaseTag": _TAG,
+        "versionName": _VERSION,
+        "versionCode": 701,
+        "apkName": _APK_NAME,
+        "apkSize": 12_345,
+        "apkSha256": _SHA256,
+        "packageId": "io.github.maxlyth.hapaneld",
+        "signerCertificateSha256": _RELEASE_SIGNER,
+        "minSdk": 26,
+        "supportedAbis": ["arm64-v8a", "armeabi-v7a"],
+        "databaseCompatibility": "hapaneld-db:v1:ha-paneld.db:11:14",
+        "launchComponent": "io.github.maxlyth.hapaneld/.MainActivity",
+    }
+    document.update(replacements)
+    return document
+
+
+def _canonical_descriptor(document: dict[str, Any] | None = None) -> bytes:
+    if document is None:
+        document = _descriptor_document()
+    return (
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("ascii")
 
 
 class _FakeContent:
@@ -96,6 +136,7 @@ def _release_document(
     draft: Any = False,
     prerelease: Any = False,
     assets: Any = None,
+    include_descriptor: bool = False,
 ) -> dict[str, Any]:
     if assets is None:
         assets = [
@@ -121,6 +162,19 @@ def _release_document(
                 ),
             },
         ]
+        if include_descriptor:
+            assets.extend(
+                [
+                    {
+                        "name": _DESCRIPTOR_NAME,
+                        "browser_download_url": _DESCRIPTOR_URL,
+                    },
+                    {
+                        "name": f"{_DESCRIPTOR_NAME}.sig",
+                        "browser_download_url": _DESCRIPTOR_SIGNATURE_URL,
+                    },
+                ]
+            )
     return {
         "tag_name": tag,
         "draft": draft,
@@ -170,16 +224,28 @@ def _successful_session(
     *,
     checksum: bytes = _CHECKSUM,
     signature: bytes | None = None,
+    descriptor: bytes | None = None,
+    descriptor_signature: bytes | None = None,
 ) -> _FakeSession:
     if signature is None:
         signature = _signature(signing_key, checksum)
-    return _FakeSession(
-        {
-            str(release._LATEST_RELEASE_URL): _metadata_response(_release_document()),
-            _CHECKSUM_URL: _FakeResponse(200, checksum, URL(_CHECKSUM_URL)),
-            _SIGNATURE_URL: _FakeResponse(200, signature, URL(_SIGNATURE_URL)),
-        }
-    )
+    responses = {
+        str(release._LATEST_RELEASE_URL): _metadata_response(
+            _release_document(include_descriptor=descriptor is not None)
+        ),
+        _CHECKSUM_URL: _FakeResponse(200, checksum, URL(_CHECKSUM_URL)),
+        _SIGNATURE_URL: _FakeResponse(200, signature, URL(_SIGNATURE_URL)),
+    }
+    if descriptor is not None:
+        if descriptor_signature is None:
+            descriptor_signature = _signature(signing_key, descriptor)
+        responses[_DESCRIPTOR_URL] = _FakeResponse(
+            200, descriptor, URL(_DESCRIPTOR_URL)
+        )
+        responses[_DESCRIPTOR_SIGNATURE_URL] = _FakeResponse(
+            200, descriptor_signature, URL(_DESCRIPTOR_SIGNATURE_URL)
+        )
+    return _FakeSession(responses)
 
 
 async def test_resolves_signed_stable_release_without_downloading_apk(
@@ -196,6 +262,7 @@ async def test_resolves_signed_stable_release_without_downloading_apk(
     assert artifact.apk_name == _APK_NAME
     assert artifact.apk_url == _APK_URL
     assert artifact.sha256 == _SHA256
+    assert artifact.descriptor is None
     requested_urls = [url for url, _kwargs in session.requests]
     assert requested_urls == [
         str(release._LATEST_RELEASE_URL),
@@ -216,6 +283,41 @@ async def test_resolves_signed_stable_release_without_downloading_apk(
         assert timeout.sock_read == 5.0
     for _url, kwargs in session.requests[1:]:
         assert kwargs["headers"]["Accept"] == "application/octet-stream"
+
+
+async def test_resolves_cross_bound_signed_install_descriptor_without_apk_download(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
+) -> None:
+    """A future release adds authenticated install facts without reading the APK."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(signing_key, descriptor=_canonical_descriptor())
+
+    artifact = await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+    assert artifact.descriptor == release.InstallDescriptor(
+        schema="io.github.maxlyth.hapaneld.install.v1",
+        release_tag=_TAG,
+        version_name=_VERSION,
+        version_code=701,
+        apk_name=_APK_NAME,
+        apk_size=12_345,
+        apk_sha256=_SHA256,
+        package_id="io.github.maxlyth.hapaneld",
+        signer_certificate_sha256=_RELEASE_SIGNER,
+        min_sdk=26,
+        supported_abis=("arm64-v8a", "armeabi-v7a"),
+        database_compatibility="hapaneld-db:v1:ha-paneld.db:11:14",
+        launch_component="io.github.maxlyth.hapaneld/.MainActivity",
+    )
+    requested_urls = [url for url, _kwargs in session.requests]
+    assert requested_urls == [
+        str(release._LATEST_RELEASE_URL),
+        _CHECKSUM_URL,
+        _SIGNATURE_URL,
+        _DESCRIPTOR_URL,
+        _DESCRIPTOR_SIGNATURE_URL,
+    ]
+    assert _APK_URL not in requested_urls
 
 
 def test_embedded_public_key_matches_installer_key_fingerprint() -> None:
@@ -367,6 +469,69 @@ async def test_rejects_release_with_any_required_asset_missing(
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("present_name", [_DESCRIPTOR_NAME, f"{_DESCRIPTOR_NAME}.sig"])
+async def test_rejects_incomplete_install_descriptor_pair(present_name: str) -> None:
+    """A descriptor and its signature are optional only as one complete pair."""
+    assets = _release_document()["assets"]
+    assets.append(
+        {
+            "name": present_name,
+            "browser_download_url": (
+                f"https://github.com/maxlyth/ha-paneld/releases/download/"
+                f"{_TAG}/{present_name}"
+            ),
+        }
+    )
+    session = _FakeSession(
+        {
+            str(release._LATEST_RELEASE_URL): _metadata_response(
+                _release_document(assets=assets)
+            )
+        }
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert len(session.requests) == 1
+
+
+@pytest.mark.parametrize("asset_name", [_DESCRIPTOR_NAME, f"{_DESCRIPTOR_NAME}.sig"])
+async def test_rejects_noncanonical_install_descriptor_asset_url(
+    asset_name: str,
+) -> None:
+    """The optional proof pair remains bound to the selected tag and repository."""
+    assets = _release_document(include_descriptor=True)["assets"]
+    for asset in assets:
+        if asset["name"] == asset_name:
+            asset["browser_download_url"] = "https://example.invalid/proof"
+    session = _FakeSession(
+        {
+            str(release._LATEST_RELEASE_URL): _metadata_response(
+                _release_document(assets=assets)
+            )
+        }
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+async def test_rejects_duplicate_install_descriptor_asset() -> None:
+    """Duplicate optional proof names are ambiguous just like the base triplet."""
+    assets = _release_document(include_descriptor=True)["assets"]
+    assets.append(dict(assets[-2]))
+    session = _FakeSession(
+        {
+            str(release._LATEST_RELEASE_URL): _metadata_response(
+                _release_document(assets=assets)
+            )
+        }
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("missing_index", [0, 1, 2])
 def test_required_triplet_is_rejected_before_any_asset_fetch(
     missing_index: int,
@@ -474,6 +639,133 @@ async def test_rejects_invalid_checksum_signature(
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
 
 
+async def test_rejects_invalid_install_descriptor_signature_before_parsing(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
+) -> None:
+    """Untrusted descriptor bytes never reach the semantic parser."""
+    _install_test_key(monkeypatch, signing_key)
+    monkeypatch.setattr(
+        release,
+        "_parse_install_descriptor",
+        lambda *_args, **_kwargs: pytest.fail("untrusted descriptor was parsed"),
+    )
+    session = _successful_session(
+        signing_key,
+        descriptor=b"not-json",
+        descriptor_signature=b"x" * 256,
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "descriptor",
+    [
+        b"not-json",
+        b"\xff",
+        b"[]\n",
+        json.dumps(_descriptor_document(), sort_keys=True).encode() + b"\n",
+        (json.dumps(_descriptor_document(), separators=(",", ":")) + "\n").encode(),
+        _canonical_descriptor().removesuffix(b"\n"),
+        _canonical_descriptor() + b"\n",
+        _canonical_descriptor().replace(
+            b'{"apkName":', b'{"apkName":"duplicate","apkName":', 1
+        ),
+        _canonical_descriptor().replace(b'"versionCode":701', b'"versionCode":NaN'),
+    ],
+    ids=[
+        "invalid-json",
+        "invalid-utf8",
+        "not-object",
+        "noncompact",
+        "unsorted",
+        "missing-newline",
+        "extra-newline",
+        "duplicate-key",
+        "nonfinite-number",
+    ],
+)
+async def test_rejects_signed_noncanonical_or_malformed_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    signing_key: rsa.RSAPrivateKey,
+    descriptor: bytes,
+) -> None:
+    """A valid signature does not relax strict UTF-8, JSON or canonical bytes."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(signing_key, descriptor=descriptor)
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema", "io.github.maxlyth.hapaneld.install.v2"),
+        ("releaseTag", "v1.2.4"),
+        ("versionName", "1.2.4"),
+        ("versionCode", True),
+        ("versionCode", 0),
+        ("versionCode", 2**31),
+        ("apkName", "other.apk"),
+        ("apkSize", True),
+        ("apkSize", 0),
+        ("apkSize", 64 * 1024 * 1024 + 1),
+        ("apkSha256", "A" * 64),
+        ("apkSha256", "f" * 64),
+        ("packageId", "example.foreign"),
+        ("signerCertificateSha256", "f" * 64),
+        ("minSdk", True),
+        ("minSdk", 0),
+        ("minSdk", 101),
+        ("supportedAbis", ["armeabi-v7a", "arm64-v8a"]),
+        ("supportedAbis", ["arm64-v8a"]),
+        ("databaseCompatibility", "hapaneld-db:v1:ha-paneld.db:14:11"),
+        ("databaseCompatibility", "hapaneld-db:v1:ha-paneld.db:01:14"),
+        (
+            "databaseCompatibility",
+            f"hapaneld-db:v1:ha-paneld.db:1:{2**31}",
+        ),
+        ("launchComponent", "io.github.maxlyth.hapaneld/.DashboardActivity"),
+    ],
+)
+async def test_rejects_signed_descriptor_outside_closed_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    signing_key: rsa.RSAPrivateKey,
+    field: str,
+    value: Any,
+) -> None:
+    """Every installation field is typed, bounded and bound to trusted metadata."""
+    _install_test_key(monkeypatch, signing_key)
+    descriptor = _canonical_descriptor(_descriptor_document(**{field: value}))
+    session = _successful_session(signing_key, descriptor=descriptor)
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("change", ["missing", "unknown"])
+async def test_rejects_signed_descriptor_with_nonexact_field_set(
+    monkeypatch: pytest.MonkeyPatch,
+    signing_key: rsa.RSAPrivateKey,
+    change: str,
+) -> None:
+    """Schema v1 neither defaults missing fields nor tolerates additive fields."""
+    _install_test_key(monkeypatch, signing_key)
+    document = _descriptor_document()
+    if change == "missing":
+        del document["minSdk"]
+    else:
+        document["futureField"] = True
+    session = _successful_session(
+        signing_key, descriptor=_canonical_descriptor(document)
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "checksum",
     [
@@ -523,6 +815,54 @@ async def test_rejects_oversized_responses(
     }[target]
     session._responses[request_url].body = body
     session._responses[request_url].content = _FakeContent(body)
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("target", "body"),
+    [
+        (
+            "descriptor",
+            b"x" * (release._MAX_INSTALL_DESCRIPTOR_BYTES + 1),
+        ),
+        (
+            "descriptor-signature",
+            b"x" * (release._MAX_SIGNATURE_RESPONSE_BYTES + 1),
+        ),
+    ],
+)
+async def test_rejects_oversized_install_descriptor_responses(
+    monkeypatch: pytest.MonkeyPatch,
+    signing_key: rsa.RSAPrivateKey,
+    target: str,
+    body: bytes,
+) -> None:
+    """Both optional descriptor responses retain independent byte limits."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(signing_key, descriptor=_canonical_descriptor())
+    request_url = {
+        "descriptor": _DESCRIPTOR_URL,
+        "descriptor-signature": _DESCRIPTOR_SIGNATURE_URL,
+    }[target]
+    session._responses[request_url].body = body
+    session._responses[request_url].content = _FakeContent(body)
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+
+async def test_rejects_wrong_install_descriptor_signature_size(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
+) -> None:
+    """The optional descriptor signature has the pinned RSA-2048 width."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(
+        signing_key,
+        descriptor=_canonical_descriptor(),
+        descriptor_signature=b"short",
+    )
 
     with pytest.raises(ReleaseResolutionError):
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
