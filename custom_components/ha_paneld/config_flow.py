@@ -92,6 +92,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 address = normalize_address(user_input[CONF_ADDRESS])
                 if address.port != DEFAULT_PORT:
                     raise InvalidAddressError
+                self._async_abort_entries_match({CONF_ADDRESS: address.stored_value})
             except InvalidAddressError:
                 errors["base"] = "invalid_install_address"
             else:
@@ -108,8 +109,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                         errors["base"] = "unknown"
                     else:
                         state = probe.state.value
-                        if state == "clean":
-                            placeholders = _clean_probe_placeholders(probe)
+                        if state == "install_candidate":
+                            placeholders = _install_candidate_placeholders(probe)
                             if placeholders is None:
                                 errors["base"] = "retained_or_ambiguous"
                             else:
@@ -129,7 +130,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                                     self._pending_address = address
                                     self._pending_probe = probe
                                     self._pending_release = release
-                                    return self._show_clean_install_preview()
+                                    return self._show_install_candidate_preview()
                         else:
                             errors["base"] = {
                                 "adb_unreachable": "adb_unreachable",
@@ -203,27 +204,26 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_confirm_clean_install(
+    async def async_step_confirm_install_candidate(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Review a clean target without mutating it in this prototype."""
-        if user_input is not None:
-            return self.async_abort(reason="prototype_ready")
-
+        """Review an install candidate without mutating it in this prototype."""
         if (
             self._pending_address is None
             or self._pending_probe is None
             or self._pending_release is None
         ):
             return self.async_abort(reason="unknown")
-        return self._show_clean_install_preview()
+        if user_input is not None:
+            return self.async_abort(reason="prototype_ready")
+        return self._show_install_candidate_preview()
 
-    def _show_clean_install_preview(self) -> ConfigFlowResult:
+    def _show_install_candidate_preview(self) -> ConfigFlowResult:
         """Render the complete retained target and authenticated release plan."""
         assert self._pending_address is not None
         assert self._pending_probe is not None
         assert self._pending_release is not None
-        placeholders = _clean_probe_placeholders(self._pending_probe)
+        placeholders = _install_candidate_placeholders(self._pending_probe)
         assert placeholders is not None
         placeholders.update(
             {
@@ -234,7 +234,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(
-            step_id="confirm_clean_install",
+            step_id="confirm_install_candidate",
             data_schema=vol.Schema({}),
             description_placeholders=placeholders,
         )
@@ -252,8 +252,10 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-def _clean_probe_placeholders(probe: InstallTargetProbe) -> dict[str, str] | None:
-    """Return complete display facts, or refuse an incomplete clean verdict."""
+def _install_candidate_placeholders(
+    probe: InstallTargetProbe,
+) -> dict[str, str] | None:
+    """Return facts for a package-absent candidate, or refuse an incomplete one."""
     if (
         probe.model is None
         or probe.serial is None

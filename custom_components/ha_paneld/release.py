@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ _MAX_CHECKSUM_RESPONSE_BYTES = 512
 _MAX_SIGNATURE_RESPONSE_BYTES = 512
 _MAX_RELEASE_ASSETS = 128
 _MAX_REDIRECTS = 3
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _READ_TIMEOUT_SECONDS = 5.0
@@ -104,6 +106,7 @@ def _is_trusted_download_url(url: URL) -> bool:
         and url.password is None
         and url.host in _TRUSTED_DOWNLOAD_HOSTS
         and url.port == 443
+        and not url.fragment
     )
 
 
@@ -116,45 +119,66 @@ async def _async_fetch_bounded(
     headers: dict[str, str],
 ) -> bytes:
     """Fetch one response under fixed status, redirect, time and byte bounds."""
+    current_url = url
+    redirects = 0
     try:
-        async with session.get(
-            url,
-            allow_redirects=allow_release_redirects,
-            max_redirects=_MAX_REDIRECTS,
-            headers=headers,
-            timeout=_request_timeout(),
-        ) as response:
-            if response.status != 200:
-                raise ReleaseResolutionError
-
-            history = response.history
-            if allow_release_redirects:
-                if len(history) > _MAX_REDIRECTS or any(
-                    not _is_trusted_download_url(item.url) for item in history
+        async with asyncio.timeout(_REQUEST_TIMEOUT_SECONDS):
+            while True:
+                if allow_release_redirects and not _is_trusted_download_url(
+                    current_url
                 ):
                     raise ReleaseResolutionError
-                if not _is_trusted_download_url(response.url):
-                    raise ReleaseResolutionError
-            elif history or response.url != url:
-                raise ReleaseResolutionError
 
-            content_length = response.content_length
-            if content_length is not None and content_length > maximum_bytes:
-                raise ReleaseResolutionError
+                async with session.get(
+                    current_url,
+                    allow_redirects=False,
+                    headers=headers,
+                    timeout=_request_timeout(),
+                ) as response:
+                    if response.history or response.url != current_url:
+                        raise ReleaseResolutionError
 
-            body = bytearray()
-            async for chunk in response.content.iter_chunked(maximum_bytes + 1):
-                if not isinstance(chunk, bytes):
-                    raise ReleaseResolutionError
-                body.extend(chunk)
-                if len(body) > maximum_bytes:
-                    raise ReleaseResolutionError
+                    if response.status in _REDIRECT_STATUSES:
+                        if not allow_release_redirects or redirects >= _MAX_REDIRECTS:
+                            raise ReleaseResolutionError
+                        locations = response.headers.getall("Location", ())
+                        if len(locations) != 1:
+                            raise ReleaseResolutionError
+                        location = locations[0]
+                        if (
+                            not isinstance(location, str)
+                            or not location
+                            or location != location.strip()
+                            or any(ord(character) < 32 for character in location)
+                            or "\x7f" in location
+                        ):
+                            raise ReleaseResolutionError
+                        next_url = current_url.join(URL(location))
+                        if not _is_trusted_download_url(next_url):
+                            raise ReleaseResolutionError
+                        current_url = next_url
+                        redirects += 1
+                        continue
+
+                    if response.status != 200:
+                        raise ReleaseResolutionError
+
+                    content_length = response.content_length
+                    if content_length is not None and content_length > maximum_bytes:
+                        raise ReleaseResolutionError
+
+                    body = bytearray()
+                    async for chunk in response.content.iter_chunked(maximum_bytes + 1):
+                        if not isinstance(chunk, bytes):
+                            raise ReleaseResolutionError
+                        body.extend(chunk)
+                        if len(body) > maximum_bytes:
+                            raise ReleaseResolutionError
+                    return bytes(body)
     except ReleaseResolutionError:
         raise
     except (ClientError, TimeoutError, ValueError) as err:
         raise ReleaseResolutionError from err
-
-    return bytes(body)
 
 
 def _parse_release_metadata(body: bytes) -> tuple[str, str, dict[str, URL]]:

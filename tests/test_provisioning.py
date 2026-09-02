@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from adb_shell import constants as adb_constants
 from adb_shell.exceptions import DeviceAuthError
 
 from custom_components.ha_paneld import provisioning
@@ -112,6 +114,35 @@ class _FakeAdbDevice:
         self.closed = True
 
 
+class _MaliciousConnectionReader:
+    def __init__(self, header: bytes) -> None:
+        self._header = header
+        self.requested_reads: list[int] = []
+
+    async def read(self, numbytes: int) -> bytes:
+        self.requested_reads.append(numbytes)
+        if len(self.requested_reads) > 1:
+            raise AssertionError("oversized packet body reached the socket reader")
+        return self._header
+
+
+class _FakeConnectionWriter:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def write(self, _data: bytes) -> None:
+        return None
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
 def _install_fake(monkeypatch: pytest.MonkeyPatch, fake: _FakeAdbDevice) -> None:
     nonces = iter((_FIRST_NONCE, _SECOND_NONCE, _THIRD_NONCE))
     monkeypatch.setattr(provisioning, "token_hex", lambda _bytes: next(nonces))
@@ -120,13 +151,13 @@ def _install_fake(monkeypatch: pytest.MonkeyPatch, fake: _FakeAdbDevice) -> None
         fake.constructor = (args, kwargs)
         return fake
 
-    monkeypatch.setattr(provisioning, "AdbDeviceTcpAsync", _factory)
+    monkeypatch.setattr(provisioning, "AdbDeviceAsync", _factory)
 
 
-async def test_clean_target_requires_two_complete_package_manager_proofs(
+async def test_install_candidate_requires_two_complete_package_manager_proofs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A clean verdict proves both no path and no retained package record."""
+    """Package absence is a candidate, explicitly not installation admission."""
     fake = _FakeAdbDevice(
         [
             _presence_output(target_status=1),
@@ -138,19 +169,22 @@ async def test_clean_target_requires_two_complete_package_manager_proofs(
 
     probe = await async_probe_install_target(normalize_address("panel.local:9999"))
 
-    assert probe.state is InstallTargetState.CLEAN
+    assert probe.state is InstallTargetState.INSTALL_CANDIDATE
     assert probe.model == "Electron WF1589T"
     assert probe.serial == "WF1589T-0123"
     assert probe.primary_abi == "arm64-v8a"
     assert probe.android_sdk == 30
-    assert fake.constructor == (
-        ("panel.local",),
-        {
-            "port": 5555,
-            "default_transport_timeout_s": 5.0,
-            "banner": "ha-paneld-home-assistant",
-        },
-    )
+    assert fake.constructor is not None
+    constructor_args, constructor_kwargs = fake.constructor
+    assert len(constructor_args) == 1
+    transport = constructor_args[0]
+    assert isinstance(transport, provisioning._BoundedTcpTransportAsync)
+    assert transport._host == "panel.local"
+    assert transport._port == 5555
+    assert constructor_kwargs == {
+        "default_transport_timeout_s": 5.0,
+        "banner": "ha-paneld-home-assistant",
+    }
     assert fake.connect_kwargs == {
         "rsa_keys": [],
         "transport_timeout_s": 5.0,
@@ -181,10 +215,10 @@ async def test_clean_target_requires_two_complete_package_manager_proofs(
         _target_facts_output().replace(b"HAPANELD_ID_END", b"HAPANELD_ID_BEGIN"),
     ],
 )
-async def test_clean_candidate_requires_valid_physical_target_facts(
+async def test_install_candidate_requires_valid_physical_target_facts(
     monkeypatch: pytest.MonkeyPatch, facts: bytes
 ) -> None:
-    """A package-clean answer is not presented without bounded target identity."""
+    """A package-absence candidate requires bounded target identity."""
     fake = _FakeAdbDevice(
         [_presence_output(target_status=1), _retained_output(), facts]
     )
@@ -207,7 +241,7 @@ async def test_clean_candidate_requires_valid_physical_target_facts(
         (_target_facts_output(primary_abi="x86_64"), "x86_64", 30),
     ],
 )
-async def test_clean_but_unsupported_target_is_incompatible(
+async def test_package_absent_but_unsupported_target_is_incompatible(
     monkeypatch: pytest.MonkeyPatch,
     facts: bytes,
     expected_abi: str,
@@ -243,10 +277,10 @@ async def test_installed_target_does_not_query_retained_data(
     assert fake.closed is True
 
 
-async def test_retained_uninstalled_package_is_not_clean(
+async def test_retained_uninstalled_package_is_not_an_install_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An uninstall-with-data record is retained or ambiguous, never fresh."""
+    """An uninstall-with-data record never becomes an install candidate."""
     fake = _FakeAdbDevice(
         [_presence_output(target_status=0), _retained_output(retained=True)]
     )
@@ -279,7 +313,7 @@ async def test_retained_uninstalled_package_is_not_clean(
 async def test_malformed_or_excessive_presence_fails_closed(
     monkeypatch: pytest.MonkeyPatch, presence: bytes
 ) -> None:
-    """Partial, contradictory, malformed and excessive replies are never clean."""
+    """Partial, contradictory, malformed and excessive replies are never candidates."""
     fake = _FakeAdbDevice([presence])
     _install_fake(monkeypatch, fake)
 
@@ -313,7 +347,7 @@ async def test_malformed_or_excessive_presence_fails_closed(
 async def test_ambiguous_retained_data_fails_closed(
     monkeypatch: pytest.MonkeyPatch, retained: bytes
 ) -> None:
-    """A second observation must prove absence exactly before clean admission."""
+    """A second observation must prove absence before package-state candidacy."""
     fake = _FakeAdbDevice([_presence_output(target_status=1), retained])
     _install_fake(monkeypatch, fake)
 
@@ -341,6 +375,41 @@ async def test_authentication_request_is_reported_without_a_shell_command(
     assert fake.closed is True
 
 
+async def test_connection_packet_body_is_bounded_before_socket_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An attacker-declared connection body is refused before its socket read."""
+    command = adb_constants.ID_TO_WIRE[adb_constants.CNXN]
+    excessive_length = provisioning._MAX_ADB_PACKET_BODY_BYTES + 1
+    header = struct.pack(
+        adb_constants.MESSAGE_FORMAT,
+        command,
+        adb_constants.VERSION,
+        adb_constants.MAX_ADB_DATA,
+        excessive_length,
+        0,
+        command ^ 0xFFFFFFFF,
+    )
+    reader = _MaliciousConnectionReader(header)
+    writer = _FakeConnectionWriter()
+
+    async def _open_connection(
+        host: str, port: int
+    ) -> tuple[_MaliciousConnectionReader, _FakeConnectionWriter]:
+        assert host == "panel.local"
+        assert port == 5555
+        return reader, writer
+
+    monkeypatch.setattr(asyncio, "open_connection", _open_connection)
+
+    probe = await async_probe_install_target(normalize_address("panel.local"))
+
+    assert probe.state is InstallTargetState.RETAINED_OR_AMBIGUOUS
+    assert reader.requested_reads == [adb_constants.MESSAGE_SIZE]
+    assert excessive_length not in reader.requested_reads
+    assert writer.closed is True
+
+
 @pytest.mark.parametrize(
     ("connect_result", "connect_error"),
     [(False, None), (True, ConnectionRefusedError())],
@@ -366,13 +435,26 @@ async def test_unreachable_adb_is_distinct_from_authorization(
 async def test_shell_transport_failure_is_unreachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A connection lost before proof completes is not mistaken for clean."""
+    """A connection lost before proof is not mistaken for a candidate."""
     fake = _FakeAdbDevice([ConnectionResetError()])
     _install_fake(monkeypatch, fake)
 
     probe = await async_probe_install_target(normalize_address("panel.local"))
 
     assert probe.state is InstallTargetState.ADB_UNREACHABLE
+    assert fake.closed is True
+
+
+async def test_unexpected_probe_failure_propagates_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Programming failures are not disguised as ADB reachability errors."""
+    fake = _FakeAdbDevice([RuntimeError("unexpected")])
+    _install_fake(monkeypatch, fake)
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        await async_probe_install_target(normalize_address("panel.local"))
+
     assert fake.closed is True
 
 

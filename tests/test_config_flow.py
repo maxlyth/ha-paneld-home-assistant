@@ -8,6 +8,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_paneld.client import (
     CannotConnectError,
@@ -15,6 +16,7 @@ from custom_components.ha_paneld.client import (
     InvalidResponseError,
     PanelHealth,
 )
+from custom_components.ha_paneld.config_flow import HaPaneldConfigFlow
 from custom_components.ha_paneld.const import DOMAIN
 from custom_components.ha_paneld.release import ReleaseResolutionError
 
@@ -322,14 +324,46 @@ async def test_install_existing_duplicate_address_is_rejected(
     assert duplicate["reason"] == "already_configured"
 
 
+async def test_install_unavailable_duplicate_address_is_rejected_before_probe(
+    hass: HomeAssistant,
+) -> None:
+    """An unavailable configured endpoint retains its config-entry identity."""
+    MockConfigEntry(
+        domain=DOMAIN,
+        title="Configured panel",
+        data={CONF_ADDRESS: "panel.local"},
+    ).add_to_hass(hass)
+    health_mock = AsyncMock(side_effect=CannotConnectError)
+    probe_mock = AsyncMock()
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            health_mock,
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            probe_mock,
+        ),
+    ):
+        install = await _start_step(hass, "install_or_upgrade")
+        duplicate = await hass.config_entries.flow.async_configure(
+            install["flow_id"], {CONF_ADDRESS: "PANEL.local"}
+        )
+
+    assert duplicate["type"] is FlowResultType.ABORT
+    assert duplicate["reason"] == "already_configured"
+    health_mock.assert_not_awaited()
+    probe_mock.assert_not_awaited()
+
+
 @pytest.mark.parametrize("health_error", [CannotConnectError, InvalidResponseError])
-async def test_clean_install_readiness_is_non_mutating_prototype(
+async def test_install_candidate_readiness_is_non_mutating_prototype(
     hass: HomeAssistant, health_error: type[Exception]
 ) -> None:
     """Both absent and invalid health fall through to a clean ADB classification."""
     probe_mock = AsyncMock(
         return_value=_probe(
-            "clean",
+            "install_candidate",
             model="WF1589T",
             serial="serial-123",
             primary_abi="arm64-v8a",
@@ -357,7 +391,7 @@ async def test_clean_install_readiness_is_non_mutating_prototype(
         )
 
         assert confirm["type"] is FlowResultType.FORM
-        assert confirm["step_id"] == "confirm_clean_install"
+        assert confirm["step_id"] == "confirm_install_candidate"
         assert confirm["description_placeholders"] == {
             "address": "panel.local",
             "model": "WF1589T",
@@ -385,13 +419,57 @@ async def test_clean_install_readiness_is_non_mutating_prototype(
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_clean_verdict_without_identity_fails_closed(
+async def test_install_classification_error_can_retry_to_candidate(
+    hass: HomeAssistant,
+) -> None:
+    """The same address form can recover from a transient classification failure."""
+    probe_mock = AsyncMock(
+        side_effect=[
+            _probe("adb_unreachable"),
+            _probe(
+                "install_candidate",
+                model="WF1589T",
+                serial="serial-123",
+                primary_abi="arm64-v8a",
+                android_sdk=31,
+            ),
+        ]
+    )
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            probe_mock,
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            AsyncMock(return_value=RELEASE),
+        ),
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        refused = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+        recovered = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+
+    assert refused["errors"] == {"base": "adb_unreachable"}
+    assert recovered["type"] is FlowResultType.FORM
+    assert recovered["step_id"] == "confirm_install_candidate"
+    assert probe_mock.await_count == 2
+
+
+async def test_install_candidate_without_identity_fails_closed(
     hass: HomeAssistant,
 ) -> None:
     """A backend cannot promote package absence without complete target facts."""
     release_mock = AsyncMock()
     incomplete = _probe(
-        "clean",
+        "install_candidate",
         model=None,
         serial=None,
         primary_abi=None,
@@ -456,10 +534,10 @@ async def test_install_classification_refusals_return_to_address_form(
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_clean_target_release_resolution_failure_is_non_mutating(
+async def test_install_candidate_release_resolution_failure_is_non_mutating(
     hass: HomeAssistant,
 ) -> None:
-    """A clean target is not presented without an exact verified release."""
+    """An install candidate is not presented without an exact verified release."""
     with (
         patch(
             "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
@@ -469,7 +547,7 @@ async def test_clean_target_release_resolution_failure_is_non_mutating(
             "custom_components.ha_paneld.config_flow.async_probe_install_target",
             AsyncMock(
                 return_value=_probe(
-                    "clean",
+                    "install_candidate",
                     model="WF1589T",
                     serial="serial-123",
                     primary_abi="arm64-v8a",
@@ -498,7 +576,7 @@ async def test_unexpected_release_failure_is_not_misclassified(
 ) -> None:
     """Only the resolver's expected refusal becomes a release availability error."""
     clean = _probe(
-        "clean",
+        "install_candidate",
         model="WF1589T",
         serial="serial-123",
         primary_abi="arm64-v8a",
@@ -530,7 +608,7 @@ async def test_unexpected_release_failure_is_not_misclassified(
 @pytest.mark.parametrize(
     ("health_error", "probe_result"),
     [
-        (RuntimeError("health"), _probe("clean")),
+        (RuntimeError("health"), _probe("install_candidate")),
         (CannotConnectError(), RuntimeError("probe")),
         (CannotConnectError(), _probe("future_state")),
     ],
@@ -563,3 +641,19 @@ async def test_install_unexpected_failures_are_safe(
     assert result["step_id"] == "install_or_upgrade"
     assert result["errors"] == {"base": "unknown"}
     assert not hass.config_entries.async_entries(DOMAIN)
+
+
+@pytest.mark.parametrize(
+    "step_method",
+    ["async_step_confirm_existing", "async_step_confirm_install_candidate"],
+)
+async def test_stale_confirmation_submission_fails_closed(
+    hass: HomeAssistant, step_method: str
+) -> None:
+    """A confirmation cannot succeed after its retained flow state is lost."""
+    flow = HaPaneldConfigFlow()
+    flow.hass = hass
+    result = await getattr(flow, step_method)({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "unknown"

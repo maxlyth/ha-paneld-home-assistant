@@ -9,8 +9,17 @@ from enum import StrEnum
 from re import ASCII, fullmatch
 from secrets import token_hex
 
-from adb_shell.adb_device_async import AdbDeviceTcpAsync
-from adb_shell.exceptions import DeviceAuthError
+from adb_shell.adb_device_async import AdbDeviceAsync
+from adb_shell.exceptions import (
+    AdbConnectionError,
+    AdbTimeoutError,
+    DeviceAuthError,
+    InvalidChecksumError,
+    InvalidCommandError,
+    InvalidResponseError,
+    TcpTimeoutException,
+)
+from adb_shell.transport.tcp_transport_async import TcpTransportAsync
 
 from .client import PanelAddress
 
@@ -20,6 +29,7 @@ _CONNECT_TIMEOUT_SECONDS = 5.0
 _SHELL_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 2.0
 _MAX_SHELL_RESPONSE_BYTES = 16 * 1024
+_MAX_ADB_PACKET_BODY_BYTES = _MAX_SHELL_RESPONSE_BYTES
 _PACKAGE = "io.github.maxlyth.hapaneld"
 _PACKAGE_MANAGER_LIVENESS_PACKAGE = "android"
 _MIN_ANDROID_SDK = 26
@@ -31,15 +41,20 @@ class InstallTargetState(StrEnum):
 
     ADB_UNREACHABLE = "adb_unreachable"
     ADB_UNAUTHORIZED = "adb_unauthorized"
-    CLEAN = "clean"
     INCOMPATIBLE = "incompatible"
+    INSTALL_CANDIDATE = "install_candidate"
     INSTALLED = "installed"
     RETAINED_OR_AMBIGUOUS = "retained_or_ambiguous"
 
 
 @dataclass(frozen=True, slots=True)
 class InstallTargetProbe:
-    """Result of the read-only ADB installation-target preflight."""
+    """Result of the read-only ADB package-state preflight.
+
+    ``INSTALL_CANDIDATE`` proves only package-manager absence. It is not
+    installation admission because this rootless probe cannot exclude residual
+    databases or recovery state outside package-manager visibility.
+    """
 
     state: InstallTargetState
     model: str | None = None
@@ -50,6 +65,26 @@ class InstallTargetProbe:
 
 class _MalformedProbeResponse(Exception):
     """Raised when ADB answered but did not prove a safe classification."""
+
+
+class _OversizedAdbPacket(Exception):
+    """Raised before adb-shell reads an excessive peer-declared packet body."""
+
+
+class _BoundedTcpTransportAsync(TcpTransportAsync):
+    """TCP transport that bounds every adb-shell packet read at its source."""
+
+    async def bulk_read(
+        self, numbytes: int, transport_timeout_s: float | None
+    ) -> bytes:
+        """Refuse an excessive requested read before touching the socket reader."""
+        if (
+            not isinstance(numbytes, int)
+            or numbytes < 0
+            or numbytes > _MAX_ADB_PACKET_BODY_BYTES
+        ):
+            raise _OversizedAdbPacket
+        return await super().bulk_read(numbytes, transport_timeout_s)
 
 
 class _PackagePresence(StrEnum):
@@ -310,7 +345,7 @@ def _target_facts_command(nonce: str) -> str:
     return "; ".join(commands)
 
 
-async def _async_bounded_shell(device: AdbDeviceTcpAsync, command: str) -> str:
+async def _async_bounded_shell(device: AdbDeviceAsync, command: str) -> str:
     """Run a read-only shell observation with time and output bounds."""
     body = bytearray()
     async with asyncio.timeout(_SHELL_TIMEOUT_SECONDS):
@@ -332,7 +367,7 @@ async def _async_bounded_shell(device: AdbDeviceTcpAsync, command: str) -> str:
         raise _MalformedProbeResponse from err
 
 
-async def _async_close(device: AdbDeviceTcpAsync) -> None:
+async def _async_close(device: AdbDeviceAsync) -> None:
     """Bound cleanup without allowing it to hide the probe result."""
     with suppress(Exception):
         async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
@@ -340,14 +375,16 @@ async def _async_close(device: AdbDeviceTcpAsync) -> None:
 
 
 async def async_probe_install_target(address: PanelAddress) -> InstallTargetProbe:
-    """Read-only probe of whether an Android target is safe for first install.
+    """Probe package absence without claiming installation admission.
 
     No key is generated or sent. A target that requests authentication is reported
-    separately so a later, explicit flow can own the user's trust decision.
+    separately so a later, explicit flow can own the user's trust decision. An
+    ``INSTALL_CANDIDATE`` result still requires a later privileged residual-state
+    check before any installation may be admitted.
     """
-    device = AdbDeviceTcpAsync(
-        address.host,
-        port=ADB_PORT,
+    transport = _BoundedTcpTransportAsync(address.host, ADB_PORT)
+    device = AdbDeviceAsync(
+        transport,
         default_transport_timeout_s=_CONNECT_TIMEOUT_SECONDS,
         banner=_ADB_BANNER,
     )
@@ -392,16 +429,25 @@ async def async_probe_install_target(address: PanelAddress) -> InstallTargetProb
                 ):
                     state = InstallTargetState.INCOMPATIBLE
                 else:
-                    state = InstallTargetState.CLEAN
+                    state = InstallTargetState.INSTALL_CANDIDATE
             else:
                 state = InstallTargetState.RETAINED_OR_AMBIGUOUS
         else:
             state = InstallTargetState.RETAINED_OR_AMBIGUOUS
     except DeviceAuthError:
         state = InstallTargetState.ADB_UNAUTHORIZED
-    except _MalformedProbeResponse:
+    except _MalformedProbeResponse, _OversizedAdbPacket:
         state = InstallTargetState.RETAINED_OR_AMBIGUOUS
-    except Exception:
+    except (
+        AdbConnectionError,
+        AdbTimeoutError,
+        InvalidChecksumError,
+        InvalidCommandError,
+        InvalidResponseError,
+        OSError,
+        TimeoutError,
+        TcpTimeoutException,
+    ):
         state = InstallTargetState.ADB_UNREACHABLE
     finally:
         await _async_close(device)

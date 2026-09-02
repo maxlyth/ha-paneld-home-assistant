@@ -11,12 +11,12 @@
         },
         "menu_option_descriptions": {
           "install_or_upgrade": "Use Android Debug Bridge (ADB) to inspect a panel where ha-paneld is not installed.",
-          "connect_existing": "Add a healthy installation; later updates are managed after connection."
+          "connect_existing": "Add a healthy installation. A later integration version will manage updates after connection."
         }
       },
       "install_or_upgrade": {
         "title": "Install ha-paneld",
-        "description": "Enter the hostname or IP address of the Android panel. Home Assistant will check for an existing installation before using ADB. This development preview does not establish ADB trust, download software, or change the panel.",
+        "description": "Enter the hostname or IP address of the Android panel. Home Assistant will check for an existing installation before using ADB. This development preview does not establish ADB trust, download the APK, or change the panel.",
         "data": {
           "address": "Panel hostname or IP address"
         }
@@ -30,11 +30,11 @@
       },
       "confirm_existing": {
         "title": "ha-paneld is already installed",
-        "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant; later updates are managed after connection. No installation will be performed."
+        "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant. A later integration version will add update management. No installation will be performed."
       },
-      "confirm_clean_install": {
-        "title": "First-install candidate found",
-        "description": "The Android panel at {address} is reachable and the ha-paneld package is proven absent. Device: model {model}; serial {serial}; ABI {abi}; Android SDK {sdk}. Stable release preview: version {version}; tag {tag}; SHA-256 {sha256}. This prototype only previews the candidate: it will not download or install anything, and submitting it makes no changes."
+      "confirm_install_candidate": {
+        "title": "Install candidate found",
+        "description": "The Android panel at {address} is reachable. Android Package Manager reports no installed or retained ha-paneld package; residual files on rooted panels are not checked yet. Device: model {model}; serial {serial}; ABI {abi}; Android SDK {sdk}. Stable release preview: version {version}; tag {tag}; SHA-256 {sha256}. This prototype only previews the candidate: it will not download the APK or install anything, and submitting it makes no panel changes."
       }
     },
     "error": {
@@ -44,14 +44,14 @@
       "adb_unreachable": "ha-paneld did not respond and Android Debug Bridge (ADB) could not be reached. Check that the address is correct, the panel is online, and network debugging is enabled, then try again.",
       "adb_unauthorized": "The panel requires ADB authorization. This read-only preview does not create or submit a trusted key, so no approval prompt was opened and nothing changed.",
       "installed_without_health": "The ha-paneld package is installed but its health endpoint did not respond. This flow will not overwrite or repair an unverified installation. Restore the existing installation or use a dedicated recovery workflow, then try again.",
-      "retained_or_ambiguous": "The panel may contain retained ha-paneld data or its package state could not be proven clean. This flow refuses a clean install to protect existing data. Inspect or recover the existing installation before trying again.",
-      "incompatible": "The panel is proven clean, but its Android SDK or processor architecture is not supported by ha-paneld. Nothing was downloaded or installed.",
-      "cannot_resolve_release": "A first-install candidate was found, but Home Assistant could not resolve and verify the current stable ha-paneld release. No software was downloaded or installed. Check internet access and try again.",
+      "retained_or_ambiguous": "The panel may contain a retained ha-paneld package record or its package state could not be proven absent. This flow refuses to continue to protect existing data. Inspect or recover the existing installation before trying again.",
+      "incompatible": "The ha-paneld package was not found, but the panel's Android SDK or processor architecture is not supported. No APK was downloaded or installed.",
+      "cannot_resolve_release": "An install candidate was found, but Home Assistant could not resolve and verify the current stable ha-paneld release. No APK was downloaded or installed. Check internet access and try again.",
       "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "This panel is already configured.",
-      "prototype_ready": "The first-install candidate and exact stable release were previewed. Nothing was downloaded, installed, or changed.",
+      "prototype_ready": "The install candidate and exact stable release were previewed. No APK was downloaded or installed, and no panel state changed.",
       "unknown": "The setup flow lost its pending panel state. Start setup again."
     }
   },

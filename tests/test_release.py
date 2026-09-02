@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from types import SimpleNamespace
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 from aiohttp import ClientConnectionError
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from multidict import CIMultiDict
 from yarl import URL
 
 from custom_components.ha_paneld import release
@@ -46,6 +46,7 @@ class _FakeResponse:
     body: bytes | list[bytes | str]
     url: URL
     history: tuple[Any, ...] = ()
+    headers: CIMultiDict[str] = field(default_factory=CIMultiDict)
     declared_length: int | None = None
 
     def __post_init__(self) -> None:
@@ -190,16 +191,15 @@ async def test_resolves_signed_stable_release_without_downloading_apk(
 
     metadata_kwargs = session.requests[0][1]
     assert metadata_kwargs["allow_redirects"] is False
-    assert metadata_kwargs["max_redirects"] == 3
     assert metadata_kwargs["headers"]["Accept"] == "application/vnd.github+json"
     for _url, kwargs in session.requests:
+        assert kwargs["allow_redirects"] is False
+        assert "max_redirects" not in kwargs
         timeout = kwargs["timeout"]
         assert timeout.total == 10.0
         assert timeout.connect == 5.0
         assert timeout.sock_read == 5.0
     for _url, kwargs in session.requests[1:]:
-        assert kwargs["allow_redirects"] is True
-        assert kwargs["max_redirects"] == 3
         assert kwargs["headers"]["Accept"] == "application/octet-stream"
 
 
@@ -515,65 +515,200 @@ async def test_rejects_non_rsa_embedded_key(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.parametrize(
-    "final_url",
+    "location",
     [
-        URL("http://release-assets.githubusercontent.com/proof"),
-        URL("https://example.com/proof"),
-        URL("https://github.com:444/proof"),
-        URL("https://user@github.com/proof"),
+        "http://release-assets.githubusercontent.com/proof",
+        "https://example.com/proof",
+        "https://github.com:444/proof",
+        "https://user@github.com/proof",
+        "https://release-assets.githubusercontent.com/proof#fragment",
     ],
 )
 async def test_rejects_untrusted_release_asset_redirect(
     monkeypatch: pytest.MonkeyPatch,
     signing_key: rsa.RSAPrivateKey,
-    final_url: URL,
+    location: str,
 ) -> None:
-    """Proof redirects stay on a narrow HTTPS GitHub asset-host allow-list."""
+    """An untrusted Location is refused before a request can reach it."""
     _install_test_key(monkeypatch, signing_key)
     session = _successful_session(signing_key)
     checksum_response = session._responses[_CHECKSUM_URL]
-    checksum_response.url = final_url
-    checksum_response.history = (SimpleNamespace(url=URL(_CHECKSUM_URL)),)
+    checksum_response.status = 302
+    checksum_response.headers = CIMultiDict({"Location": location})
 
     with pytest.raises(ReleaseResolutionError):
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert [url for url, _kwargs in session.requests] == [
+        str(release._LATEST_RELEASE_URL),
+        _CHECKSUM_URL,
+    ]
+    assert location not in {url for url, _kwargs in session.requests}
+
+
+async def test_rejects_untrusted_initial_release_url_without_request() -> None:
+    """The bounded asset reader validates even its first URL before a GET."""
+    session = _FakeSession({})
+
+    with pytest.raises(ReleaseResolutionError):
+        await release._async_fetch_bounded(
+            session,  # type: ignore[arg-type]
+            URL("https://example.com/proof"),
+            512,
+            allow_release_redirects=True,
+            headers={},
+        )
+    assert session.requests == []
 
 
 async def test_accepts_bounded_github_release_asset_redirect(
     monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
 ) -> None:
-    """The normal GitHub-to-release-assets redirect remains usable."""
+    """The observed GitHub-to-release-assets redirect remains usable."""
     _install_test_key(monkeypatch, signing_key)
     session = _successful_session(signing_key)
-    checksum_response = session._responses[_CHECKSUM_URL]
-    checksum_response.url = URL(
-        "https://release-assets.githubusercontent.com/github-production-release-asset/proof"
+    redirected_url = (
+        "https://release-assets.githubusercontent.com/"
+        "github-production-release-asset/proof?token=bounded"
     )
-    checksum_response.history = (SimpleNamespace(url=URL(_CHECKSUM_URL)),)
+    checksum_response = session._responses[_CHECKSUM_URL]
+    checksum_response.status = 302
+    checksum_response.headers = CIMultiDict({"Location": redirected_url})
+    session._responses[redirected_url] = _FakeResponse(
+        200,
+        _CHECKSUM,
+        URL(redirected_url),
+    )
 
     artifact = await async_resolve_stable_release(session)  # type: ignore[arg-type]
 
     assert artifact.sha256 == _SHA256
+    assert [url for url, _kwargs in session.requests] == [
+        str(release._LATEST_RELEASE_URL),
+        _CHECKSUM_URL,
+        redirected_url,
+        _SIGNATURE_URL,
+    ]
+    assert all(kwargs["allow_redirects"] is False for _url, kwargs in session.requests)
+
+
+async def test_accepts_trusted_relative_release_redirect(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
+) -> None:
+    """A relative Location is resolved against and retained on a trusted host."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(signing_key)
+    relative_location = f"/{_TAG}/{_APK_NAME}.sha256?download=1"
+    redirected_url = f"https://github.com{relative_location}"
+    checksum_response = session._responses[_CHECKSUM_URL]
+    checksum_response.status = 307
+    checksum_response.headers = CIMultiDict({"Location": relative_location})
+    session._responses[redirected_url] = _FakeResponse(
+        200,
+        _CHECKSUM,
+        URL(redirected_url),
+    )
+
+    artifact = await async_resolve_stable_release(session)  # type: ignore[arg-type]
+
+    assert artifact.sha256 == _SHA256
+    assert redirected_url in {url for url, _kwargs in session.requests}
 
 
 async def test_rejects_more_than_three_redirects(
     monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
 ) -> None:
-    """A response cannot evade aiohttp's configured redirect cap."""
+    """The fourth Location is validated but never requested."""
     _install_test_key(monkeypatch, signing_key)
     session = _successful_session(signing_key)
-    session._responses[_CHECKSUM_URL].history = tuple(
-        SimpleNamespace(url=URL(_CHECKSUM_URL)) for _index in range(4)
+    redirect_urls = [
+        f"https://github.com/maxlyth/ha-paneld/releases/redirect-{index}"
+        for index in range(1, 5)
+    ]
+    current_url = _CHECKSUM_URL
+    for redirect_url in redirect_urls:
+        response = session._responses.get(current_url)
+        if response is None:
+            response = _FakeResponse(302, b"", URL(current_url))
+            session._responses[current_url] = response
+        response.status = 302
+        response.headers = CIMultiDict({"Location": redirect_url})
+        current_url = redirect_url
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    requested_urls = [url for url, _kwargs in session.requests]
+    assert requested_urls == [
+        str(release._LATEST_RELEASE_URL),
+        _CHECKSUM_URL,
+        *redirect_urls[:3],
+    ]
+    assert redirect_urls[3] not in requested_urls
+
+
+@pytest.mark.parametrize("location", [None, "", " ", "http://[::1"])
+async def test_rejects_missing_or_malformed_redirect_location(
+    monkeypatch: pytest.MonkeyPatch,
+    signing_key: rsa.RSAPrivateKey,
+    location: str | None,
+) -> None:
+    """A redirect requires one parseable nonempty Location before another GET."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(signing_key)
+    response = session._responses[_CHECKSUM_URL]
+    response.status = 302
+    response.headers = (
+        CIMultiDict() if location is None else CIMultiDict({"Location": location})
     )
 
     with pytest.raises(ReleaseResolutionError):
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert [url for url, _kwargs in session.requests] == [
+        str(release._LATEST_RELEASE_URL),
+        _CHECKSUM_URL,
+    ]
+
+
+async def test_rejects_multiple_redirect_locations(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
+) -> None:
+    """Ambiguous duplicate Location headers cannot select the next request."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _successful_session(signing_key)
+    response = session._responses[_CHECKSUM_URL]
+    response.status = 302
+    response.headers = CIMultiDict(
+        [
+            ("Location", "https://release-assets.githubusercontent.com/first"),
+            ("Location", "https://release-assets.githubusercontent.com/second"),
+        ]
+    )
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert [url for url, _kwargs in session.requests] == [
+        str(release._LATEST_RELEASE_URL),
+        _CHECKSUM_URL,
+    ]
 
 
 async def test_rejects_metadata_redirect() -> None:
     """The GitHub API lookup itself never follows or accepts a redirect."""
     response = _metadata_response(_release_document())
-    response.history = (SimpleNamespace(url=release._LATEST_RELEASE_URL),)
+    response.status = 302
+    response.headers = CIMultiDict({"Location": _CHECKSUM_URL})
+    session = _FakeSession({str(release._LATEST_RELEASE_URL): response})
+
+    with pytest.raises(ReleaseResolutionError):
+        await async_resolve_stable_release(session)  # type: ignore[arg-type]
+    assert [url for url, _kwargs in session.requests] == [
+        str(release._LATEST_RELEASE_URL)
+    ]
+
+
+async def test_rejects_unexpected_response_history() -> None:
+    """A session must not claim it auto-followed when explicitly disabled."""
+    response = _metadata_response(_release_document())
+    response.history = (object(),)
     session = _FakeSession({str(release._LATEST_RELEASE_URL): response})
 
     with pytest.raises(ReleaseResolutionError):
