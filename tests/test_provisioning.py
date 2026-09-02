@@ -6,10 +6,12 @@ import asyncio
 import struct
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from adb_shell import constants as adb_constants
-from adb_shell.exceptions import DeviceAuthError
+from adb_shell.exceptions import AdbConnectionError, DeviceAuthError
+from adb_shell.transport.tcp_transport_async import TcpTransportAsync
 
 from custom_components.ha_paneld import provisioning
 from custom_components.ha_paneld.client import normalize_address
@@ -408,6 +410,41 @@ async def test_connection_packet_body_is_bounded_before_socket_read(
     assert reader.requested_reads == [adb_constants.MESSAGE_SIZE]
     assert excessive_length not in reader.requested_reads
     assert writer.closed is True
+
+
+async def test_connection_has_cumulative_read_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many valid-sized reads cannot fill adb-shell's unbounded packet store."""
+    transport = provisioning._BoundedTcpTransportAsync("panel.local", 5555)
+    underlying_read = AsyncMock(
+        side_effect=[b"x" * provisioning._MAX_ADB_PACKET_BODY_BYTES] * 4 + [b"x"]
+    )
+    monkeypatch.setattr(TcpTransportAsync, "bulk_read", underlying_read)
+
+    for _index in range(4):
+        assert (
+            len(await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0))
+            == provisioning._MAX_ADB_PACKET_BODY_BYTES
+        )
+    with pytest.raises(provisioning._OversizedAdbPacket):
+        await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0)
+
+    assert underlying_read.await_args_list[-1].args == (1, 5.0)
+
+
+async def test_connection_eof_fails_without_busy_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A positive-length read at EOF raises instead of spinning in adb-shell."""
+    transport = provisioning._BoundedTcpTransportAsync("panel.local", 5555)
+    underlying_read = AsyncMock(return_value=b"")
+    monkeypatch.setattr(TcpTransportAsync, "bulk_read", underlying_read)
+
+    with pytest.raises(AdbConnectionError, match="closed"):
+        await transport.bulk_read(adb_constants.MESSAGE_SIZE, 5.0)
+
+    underlying_read.assert_awaited_once_with(adb_constants.MESSAGE_SIZE, 5.0)
 
 
 @pytest.mark.parametrize(

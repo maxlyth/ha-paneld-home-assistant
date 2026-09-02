@@ -30,6 +30,7 @@ _SHELL_TIMEOUT_SECONDS = 5.0
 _CLOSE_TIMEOUT_SECONDS = 2.0
 _MAX_SHELL_RESPONSE_BYTES = 16 * 1024
 _MAX_ADB_PACKET_BODY_BYTES = _MAX_SHELL_RESPONSE_BYTES
+_MAX_ADB_CONNECTION_READ_BYTES = 64 * 1024
 _PACKAGE = "io.github.maxlyth.hapaneld"
 _PACKAGE_MANAGER_LIVENESS_PACKAGE = "android"
 _MIN_ANDROID_SDK = 26
@@ -74,17 +75,30 @@ class _OversizedAdbPacket(Exception):
 class _BoundedTcpTransportAsync(TcpTransportAsync):
     """TCP transport that bounds every adb-shell packet read at its source."""
 
+    def __init__(self, host: str, port: int) -> None:
+        super().__init__(host, port)
+        self._received_bytes = 0
+
     async def bulk_read(
         self, numbytes: int, transport_timeout_s: float | None
     ) -> bytes:
         """Refuse an excessive requested read before touching the socket reader."""
         if (
             not isinstance(numbytes, int)
-            or numbytes < 0
+            or numbytes < 1
             or numbytes > _MAX_ADB_PACKET_BODY_BYTES
         ):
             raise _OversizedAdbPacket
-        return await super().bulk_read(numbytes, transport_timeout_s)
+        remaining = _MAX_ADB_CONNECTION_READ_BYTES - self._received_bytes
+        data = await super().bulk_read(
+            min(numbytes, remaining + 1), transport_timeout_s
+        )
+        if not data:
+            raise AdbConnectionError("ADB peer closed during a bounded read")
+        if len(data) > remaining:
+            raise _OversizedAdbPacket
+        self._received_bytes += len(data)
+        return data
 
 
 class _PackagePresence(StrEnum):
