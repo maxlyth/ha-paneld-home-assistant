@@ -22,6 +22,13 @@ from .client import (
     normalize_address,
 )
 from .const import DEFAULT_PORT, DOMAIN
+from .install_network import (
+    InstallNetworkError,
+    InstallNetworkErrorCode,
+    PinnedPanelTarget,
+    async_pin_install_target,
+    async_revalidate_install_target,
+)
 from .provisioning import InstallTargetProbe, async_probe_install_target
 from .release import (
     ReleaseArtifact,
@@ -45,6 +52,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _pending_health: PanelHealth | None = None
     _pending_probe: InstallTargetProbe | None = None
     _pending_release: ReleaseArtifact | None = None
+    _pending_install_target: PinnedPanelTarget | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -89,6 +97,11 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            self._pending_address = None
+            self._pending_health = None
+            self._pending_probe = None
+            self._pending_release = None
+            self._pending_install_target = None
             try:
                 address = normalize_address(user_input[CONF_ADDRESS])
                 if address.port != DEFAULT_PORT:
@@ -97,75 +110,87 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             except InvalidAddressError:
                 errors["base"] = "invalid_install_address"
             else:
-                client = HaPaneldClient(async_get_clientsession(self.hass), address)
                 try:
-                    health = await client.async_get_health()
-                except CannotConnectError, InvalidResponseError:
-                    try:
-                        # The first probe deliberately has no key. Discovering an
-                        # authorization requirement must remain read-only; only the
-                        # explicit next step may create and offer HA's durable key.
-                        probe = await async_probe_install_target(address)
-                    except Exception:
-                        _LOGGER.exception(
-                            "Unexpected exception while classifying install target"
-                        )
-                        errors["base"] = "unknown"
-                    else:
-                        state = probe.state.value
-                        if state == "adb_unauthorized":
-                            self._pending_address = address
-                            return self._show_authorize_adb()
-                        if state == "install_candidate":
-                            placeholders = _install_candidate_placeholders(probe)
-                            if placeholders is None:
-                                errors["base"] = "retained_or_ambiguous"
-                            else:
-                                try:
-                                    release = await async_resolve_stable_release(
-                                        async_get_clientsession(self.hass)
-                                    )
-                                except ReleaseResolutionError:
-                                    errors["base"] = "cannot_resolve_release"
-                                except Exception:
-                                    _LOGGER.exception(
-                                        "Unexpected exception while resolving "
-                                        "ha-paneld release"
-                                    )
-                                    errors["base"] = "unknown"
-                                else:
-                                    self._pending_address = address
-                                    self._pending_probe = probe
-                                    self._pending_release = release
-                                    return self._show_install_candidate_preview()
-                        else:
-                            errors["base"] = {
-                                "adb_unreachable": "adb_unreachable",
-                                "installed": "installed_without_health",
-                                "retained_or_ambiguous": "retained_or_ambiguous",
-                                "incompatible": "incompatible",
-                            }.get(state, "unknown")
+                    target = await async_pin_install_target(self.hass, address)
+                except InstallNetworkError as err:
+                    errors["base"] = _install_network_error(err)
                 except Exception:
                     _LOGGER.exception(
-                        "Unexpected exception while checking for an existing ha-paneld"
+                        "Unexpected exception while pinning install target"
                     )
                     errors["base"] = "unknown"
                 else:
-                    # Preserve endpoint identity even though entry creation is
-                    # deferred until the user confirms the already-installed panel.
-                    self._async_abort_entries_match(
-                        {CONF_ADDRESS: address.stored_value}
-                    )
                     self._pending_address = address
-                    self._pending_health = health
-                    return self.async_show_form(
-                        step_id="confirm_existing",
-                        data_schema=vol.Schema({}),
-                        description_placeholders={
-                            "address": address.stored_value,
-                            "version": self._pending_health.version,
-                        },
+                    self._pending_install_target = target
+                    client = HaPaneldClient(
+                        async_get_clientsession(self.hass), target.pinned
                     )
+                    try:
+                        health = await client.async_get_health()
+                    except CannotConnectError, InvalidResponseError:
+                        try:
+                            # The first probe deliberately has no key. Discovering an
+                            # authorization requirement must remain read-only; only the
+                            # explicit next step may create and offer HA's durable key.
+                            probe = await async_probe_install_target(target.pinned)
+                        except Exception:
+                            _LOGGER.exception(
+                                "Unexpected exception while classifying install target"
+                            )
+                            errors["base"] = "unknown"
+                        else:
+                            state = probe.state.value
+                            if state == "adb_unauthorized":
+                                return self._show_authorize_adb()
+                            if state == "install_candidate":
+                                placeholders = _install_candidate_placeholders(probe)
+                                if placeholders is None:
+                                    errors["base"] = "retained_or_ambiguous"
+                                else:
+                                    try:
+                                        release = await async_resolve_stable_release(
+                                            async_get_clientsession(self.hass)
+                                        )
+                                    except ReleaseResolutionError:
+                                        errors["base"] = "cannot_resolve_release"
+                                    except Exception:
+                                        _LOGGER.exception(
+                                            "Unexpected exception while resolving "
+                                            "ha-paneld release"
+                                        )
+                                        errors["base"] = "unknown"
+                                    else:
+                                        self._pending_probe = probe
+                                        self._pending_release = release
+                                        return self._show_install_candidate_preview()
+                            else:
+                                errors["base"] = {
+                                    "adb_unreachable": "adb_unreachable",
+                                    "installed": "installed_without_health",
+                                    "retained_or_ambiguous": "retained_or_ambiguous",
+                                    "incompatible": "incompatible",
+                                }.get(state, "unknown")
+                    except Exception:
+                        _LOGGER.exception(
+                            "Unexpected exception while checking for an existing "
+                            "ha-paneld"
+                        )
+                        errors["base"] = "unknown"
+                    else:
+                        # Preserve endpoint identity even though entry creation is
+                        # deferred until the user confirms the already-installed panel.
+                        self._async_abort_entries_match(
+                            {CONF_ADDRESS: address.stored_value}
+                        )
+                        self._pending_health = health
+                        return self.async_show_form(
+                            step_id="confirm_existing",
+                            data_schema=vol.Schema({}),
+                            description_placeholders={
+                                "address": address.stored_value,
+                                "version": self._pending_health.version,
+                            },
+                        )
 
         return self.async_show_form(
             step_id="install_or_upgrade",
@@ -177,14 +202,19 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Wait for explicit approval of Home Assistant's ADB key on the panel."""
-        if self._pending_address is None:
+        if self._pending_address is None or self._pending_install_target is None:
             return self.async_abort(reason="unknown")
         if user_input is None:
             return self._show_authorize_adb()
 
         try:
+            target = await async_revalidate_install_target(
+                self.hass, self._pending_install_target
+            )
             signer = await async_get_adb_signer(self.hass)
-            probe = await async_probe_install_target(self._pending_address, signer)
+            probe = await async_probe_install_target(target.pinned, signer)
+        except InstallNetworkError as err:
+            return self._show_authorize_adb({"base": _install_network_error(err)})
         except AdbCredentialError:
             return self._show_authorize_adb({"base": "adb_credential_error"})
         except Exception:
@@ -245,13 +275,18 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         """Confirm connecting a panel that already runs ha-paneld."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            if self._pending_address is None:
+            if self._pending_address is None or self._pending_install_target is None:
                 return self.async_abort(reason="unknown")
             try:
+                target = await async_revalidate_install_target(
+                    self.hass, self._pending_install_target
+                )
                 client = HaPaneldClient(
-                    async_get_clientsession(self.hass), self._pending_address
+                    async_get_clientsession(self.hass), target.pinned
                 )
                 health = await client.async_get_health()
+            except InstallNetworkError as err:
+                errors["base"] = _install_network_error(err)
             except CannotConnectError, InvalidResponseError:
                 errors["base"] = "cannot_connect"
             except Exception:
@@ -284,6 +319,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             self._pending_address is None
             or self._pending_probe is None
             or self._pending_release is None
+            or self._pending_install_target is None
         ):
             return self.async_abort(reason="unknown")
         if user_input is not None:
@@ -341,3 +377,15 @@ def _install_candidate_placeholders(
         "abi": probe.primary_abi,
         "sdk": str(probe.android_sdk),
     }
+
+
+def _install_network_error(error: InstallNetworkError) -> str:
+    """Map a privacy-safe network refusal to a translated flow error."""
+    return {
+        InstallNetworkErrorCode.INVALID_HOST: "invalid_install_address",
+        InstallNetworkErrorCode.RESOLUTION_FAILED: "install_resolution_failed",
+        InstallNetworkErrorCode.RESOLUTION_TIMEOUT: "install_resolution_timeout",
+        InstallNetworkErrorCode.TOO_MANY_RESULTS: "install_too_many_addresses",
+        InstallNetworkErrorCode.UNSAFE_TARGET: "unsafe_install_target",
+        InstallNetworkErrorCode.PINNED_TARGET_REMOVED: "install_target_changed",
+    }[error.code]

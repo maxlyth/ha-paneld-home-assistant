@@ -15,10 +15,16 @@ from custom_components.ha_paneld.client import (
     CannotConnectError,
     InvalidAddressError,
     InvalidResponseError,
+    PanelAddress,
     PanelHealth,
 )
 from custom_components.ha_paneld.config_flow import HaPaneldConfigFlow
 from custom_components.ha_paneld.const import DOMAIN
+from custom_components.ha_paneld.install_network import (
+    InstallNetworkError,
+    InstallNetworkErrorCode,
+    PinnedPanelTarget,
+)
 from custom_components.ha_paneld.release import ReleaseResolutionError
 
 HEALTH = PanelHealth(
@@ -40,6 +46,34 @@ RELEASE = SimpleNamespace(
     apk_url="https://example.invalid/ha-paneld-v0.9.7.apk",
     sha256="a" * 64,
 )
+
+
+@pytest.fixture(autouse=True)
+def install_network_pin() -> SimpleNamespace:
+    """Keep config-flow tests off DNS while exposing the pinned target calls."""
+
+    async def _pin(_hass: HomeAssistant, address: PanelAddress) -> PinnedPanelTarget:
+        return PinnedPanelTarget(
+            original=address,
+            pinned=PanelAddress(host="192.168.1.23", port=address.port),
+        )
+
+    async def _revalidate(
+        _hass: HomeAssistant, target: PinnedPanelTarget
+    ) -> PinnedPanelTarget:
+        return target
+
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_pin_install_target",
+            AsyncMock(side_effect=_pin),
+        ) as pin_mock,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            AsyncMock(side_effect=_revalidate),
+        ) as revalidate_mock,
+    ):
+        yield SimpleNamespace(pin=pin_mock, revalidate=revalidate_mock)
 
 
 def _probe(state: str, **facts: str | int) -> SimpleNamespace:
@@ -193,6 +227,78 @@ async def test_install_rejects_invalid_address_before_network_calls(
     probe_mock.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("code", "expected_error"),
+    [
+        (InstallNetworkErrorCode.INVALID_HOST, "invalid_install_address"),
+        (InstallNetworkErrorCode.RESOLUTION_FAILED, "install_resolution_failed"),
+        (InstallNetworkErrorCode.RESOLUTION_TIMEOUT, "install_resolution_timeout"),
+        (InstallNetworkErrorCode.TOO_MANY_RESULTS, "install_too_many_addresses"),
+        (InstallNetworkErrorCode.UNSAFE_TARGET, "unsafe_install_target"),
+        (InstallNetworkErrorCode.PINNED_TARGET_REMOVED, "install_target_changed"),
+    ],
+)
+async def test_install_network_refusal_precedes_all_panel_contact(
+    hass: HomeAssistant,
+    code: InstallNetworkErrorCode,
+    expected_error: str,
+) -> None:
+    """Unsafe or unresolved targets cannot reach HTTP or ADB from the install flow."""
+    health_mock = AsyncMock()
+    probe_mock = AsyncMock()
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_pin_install_target",
+            AsyncMock(side_effect=InstallNetworkError(code)),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            health_mock,
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            probe_mock,
+        ),
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "install_or_upgrade"
+    assert result["errors"] == {"base": expected_error}
+    health_mock.assert_not_awaited()
+    probe_mock.assert_not_awaited()
+
+
+async def test_install_uses_pinned_address_for_health_and_adb(
+    hass: HomeAssistant, install_network_pin: SimpleNamespace
+) -> None:
+    """The display identity stays original while both protocols use the LAN pin."""
+    health_mock = AsyncMock(side_effect=CannotConnectError)
+    probe_mock = AsyncMock(return_value=_probe("adb_unreachable"))
+    with (
+        patch("custom_components.ha_paneld.config_flow.HaPaneldClient") as client_class,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            probe_mock,
+        ),
+    ):
+        client_class.return_value.async_get_health = health_mock
+        form = await _start_step(hass, "install_or_upgrade")
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "Panel.local"}
+        )
+
+    assert result["errors"] == {"base": "adb_unreachable"}
+    install_network_pin.pin.assert_awaited_once()
+    assert install_network_pin.pin.await_args.args[1].stored_value == "panel.local"
+    assert client_class.call_args.args[1].stored_value == "192.168.1.23"
+    assert probe_mock.await_args.args[0].stored_value == "192.168.1.23"
+    assert health_mock.await_count == 1
+
+
 async def test_install_existing_panel_requires_confirmation(
     hass: HomeAssistant,
 ) -> None:
@@ -252,6 +358,38 @@ async def test_install_existing_panel_rechecks_health_before_create(
     assert result["step_id"] == "confirm_existing"
     assert result["errors"] == {"base": "cannot_connect"}
     assert health_mock.await_count == 2
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_install_existing_panel_revalidates_pin_before_confirmation(
+    hass: HomeAssistant,
+) -> None:
+    """A healthy endpoint cannot be connected through a changed DNS target."""
+    health_mock = AsyncMock(return_value=HEALTH)
+    with patch(
+        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        confirm = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+        with patch(
+            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            AsyncMock(
+                side_effect=InstallNetworkError(
+                    InstallNetworkErrorCode.PINNED_TARGET_REMOVED
+                )
+            ),
+        ):
+            result = await hass.config_entries.flow.async_configure(
+                confirm["flow_id"], {}
+            )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "confirm_existing"
+    assert result["errors"] == {"base": "install_target_changed"}
+    assert health_mock.await_count == 1
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
@@ -406,7 +544,7 @@ async def test_install_candidate_readiness_is_non_mutating_prototype(
         assert not hass.config_entries.async_entries(DOMAIN)
         probe_mock.assert_awaited_once()
         assert len(probe_mock.await_args.args) == 1
-        assert probe_mock.await_args.args[0].stored_value == "panel.local"
+        assert probe_mock.await_args.args[0].stored_value == "192.168.1.23"
         release_mock.assert_awaited_once()
 
         refreshed = await hass.config_entries.flow.async_configure(confirm["flow_id"])
@@ -567,7 +705,7 @@ async def test_install_unauthorized_requires_physical_approval_without_creating_
     signer_mock.assert_not_awaited()
     probe_mock.assert_awaited_once()
     assert len(probe_mock.await_args.args) == 1
-    assert probe_mock.await_args.args[0].stored_value == "panel.local"
+    assert probe_mock.await_args.args[0].stored_value == "192.168.1.23"
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
@@ -607,7 +745,54 @@ async def test_install_authorization_retry_uses_persistent_signer(
     assert result["errors"] == {"base": "adb_still_unauthorized"}
     signer_mock.assert_awaited_once_with(hass)
     assert len(probe_mock.await_args_list[0].args) == 1
+    assert probe_mock.await_args_list[0].args[0].stored_value == "192.168.1.23"
+    assert probe_mock.await_args_list[1].args[0].stored_value == "192.168.1.23"
     assert probe_mock.await_args_list[1].args[1] is signer
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_install_authorization_revalidates_pin_before_loading_key(
+    hass: HomeAssistant,
+) -> None:
+    """DNS drift blocks the authorization attempt before a key can be offered."""
+    signer_mock = AsyncMock()
+    probe_mock = AsyncMock(return_value=_probe("adb_unauthorized"))
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            signer_mock,
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            probe_mock,
+        ),
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        authorize = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+        with patch(
+            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            AsyncMock(
+                side_effect=InstallNetworkError(
+                    InstallNetworkErrorCode.PINNED_TARGET_REMOVED
+                )
+            ),
+        ) as revalidate_mock:
+            result = await hass.config_entries.flow.async_configure(
+                authorize["flow_id"], {}
+            )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "authorize_adb"
+    assert result["errors"] == {"base": "install_target_changed"}
+    revalidate_mock.assert_awaited_once()
+    signer_mock.assert_not_awaited()
+    assert probe_mock.await_count == 1
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
@@ -665,6 +850,8 @@ async def test_install_authorization_approval_reaches_release_preview(
         "sha256": "a" * 64,
     }
     signer_mock.assert_awaited_once_with(hass)
+    assert probe_mock.await_args_list[0].args[0].stored_value == "192.168.1.23"
+    assert probe_mock.await_args_list[1].args[0].stored_value == "192.168.1.23"
     assert probe_mock.await_args_list[1].args[1] is signer
     release_mock.assert_awaited_once()
     assert not hass.config_entries.async_entries(DOMAIN)
