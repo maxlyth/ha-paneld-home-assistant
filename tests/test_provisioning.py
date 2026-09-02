@@ -145,6 +145,19 @@ class _FakeConnectionWriter:
         return None
 
 
+class _ChunkedShellDevice:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.yielded_chunks = 0
+
+    async def streaming_shell(
+        self, _command: str, **_kwargs: Any
+    ) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            self.yielded_chunks += 1
+            yield chunk
+
+
 def _install_fake(monkeypatch: pytest.MonkeyPatch, fake: _FakeAdbDevice) -> None:
     nonces = iter((_FIRST_NONCE, _SECOND_NONCE, _THIRD_NONCE))
     monkeypatch.setattr(provisioning, "token_hex", lambda _bytes: next(nonces))
@@ -455,7 +468,12 @@ async def test_connection_budget_counts_received_not_requested_bytes(
             await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0)
             == b"x"
         )
-    final = await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0)
+    try:
+        final = await transport.bulk_read(provisioning._MAX_ADB_PACKET_BODY_BYTES, 5.0)
+    except provisioning._OversizedAdbPacket as err:
+        raise AssertionError(
+            "fragmented reads exhausted the actual-byte budget"
+        ) from err
 
     assert len(final) == provisioning._MAX_ADB_PACKET_BODY_BYTES
     assert underlying_read.await_args_list[-1].args == (
@@ -476,6 +494,18 @@ async def test_connection_eof_fails_without_busy_loop(
         await transport.bulk_read(adb_constants.MESSAGE_SIZE, 5.0)
 
     underlying_read.assert_awaited_once_with(adb_constants.MESSAGE_SIZE, 5.0)
+
+
+async def test_shell_output_limit_stops_before_a_second_chunk() -> None:
+    """The aggregate shell bound rejects before consuming later output."""
+    device = _ChunkedShellDevice(
+        [b" " * (provisioning._MAX_SHELL_RESPONSE_BYTES + 1), b"not consumed"]
+    )
+
+    with pytest.raises(provisioning._MalformedProbeResponse):
+        await provisioning._async_bounded_shell(device, "read-only")  # type: ignore[arg-type]
+
+    assert device.yielded_chunks == 1
 
 
 @pytest.mark.parametrize(
