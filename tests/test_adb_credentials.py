@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import os
 import struct
 from hashlib import sha1, sha256
 from pathlib import Path
@@ -24,6 +26,7 @@ from custom_components.ha_paneld.adb_credentials import (
     _StoredCredential,
     async_get_adb_credential,
     async_get_adb_signer,
+    async_get_durable_adb_credential,
 )
 from custom_components.ha_paneld.const import DOMAIN
 
@@ -34,6 +37,20 @@ def _serialized(credential: _StoredCredential) -> dict[str, str]:
         "private_key_pkcs8_pem": credential.private_key,
         "public_key_adb": credential.public_key,
     }
+
+
+def _stored_document(credential: _StoredCredential) -> dict[str, object]:
+    return {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"{DOMAIN}.adb_key",
+        "data": _serialized(credential),
+    }
+
+
+def _write_store(path: Path, credential: _StoredCredential) -> None:
+    path.write_text(json.dumps(_stored_document(credential)), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _other_public_key() -> str:
@@ -288,6 +305,72 @@ async def test_process_wide_accessor_rejects_foreign_manager_state(
         await async_get_adb_signer(hass)
 
 
+async def test_durable_accessor_reloads_replaced_key_instead_of_cached_signer(
+    hass: HomeAssistant,
+) -> None:
+    """Mutation checks observe current Store bytes, not an earlier memory cache."""
+    original = _generate_credential()
+    replacement = _generate_credential()
+    manager = AdbCredentialManager(hass)
+    manager._credential = original
+
+    with (
+        patch.object(adb_credentials, "_store_presence", return_value=(True, False)),
+        patch.object(
+            adb_credentials,
+            "_read_durable_credential",
+            return_value=replacement,
+        ) as read,
+    ):
+        durable = await manager.async_get_durable_credential()
+
+    read.assert_called_once_with(manager._store.path)
+    assert durable.signer.GetPublicKey() == replacement.public_key
+    assert durable.signer.GetPublicKey() != original.public_key
+    assert (
+        durable.generation_id
+        == sha256(
+            base64.b64decode(replacement.public_key.partition(" ")[0], validate=True)
+        ).hexdigest()
+    )
+
+
+async def test_durable_accessor_never_regenerates_a_missing_cached_key(
+    hass: HomeAssistant,
+) -> None:
+    """Deletion after caching revokes mutation authority instead of rotating it."""
+    manager = AdbCredentialManager(hass)
+    manager._credential = _generate_credential()
+
+    with (
+        patch.object(adb_credentials, "_store_presence", return_value=(False, False)),
+        patch.object(
+            adb_credentials,
+            "_read_durable_credential",
+            side_effect=AdbCredentialError,
+        ) as read,
+        patch.object(adb_credentials, "_generate_credential") as generate,
+        pytest.raises(AdbCredentialError),
+    ):
+        await manager.async_get_durable_credential()
+
+    read.assert_called_once_with(manager._store.path)
+    generate.assert_not_called()
+
+
+async def test_process_wide_durable_accessor_uses_shared_manager(
+    hass: HomeAssistant,
+) -> None:
+    """Executor callers use the same process authority as authorization flows."""
+    manager = MagicMock(spec=AdbCredentialManager)
+    expected = object()
+    manager.async_get_durable_credential = AsyncMock(return_value=expected)
+    hass.data[f"{DOMAIN}.adb_credential_manager"] = manager
+
+    assert await async_get_durable_adb_credential(hass) is expected
+    manager.async_get_durable_credential.assert_awaited_once_with()
+
+
 @pytest.mark.parametrize("presence", [(True, False), (False, True)])
 async def test_missing_loaded_data_with_store_evidence_never_regenerates(
     hass: HomeAssistant, presence: tuple[bool, bool]
@@ -439,6 +522,178 @@ def test_store_privacy_check_requires_regular_owner_only_file(tmp_path: Path) ->
 
     credential_path.chmod(0o640)
     assert not adb_credentials._store_is_private(str(credential_path))
+
+    credential_path.chmod(0o600)
+    with patch.object(adb_credentials.os, "geteuid", return_value=os.geteuid() + 1):
+        assert not adb_credentials._store_is_private(str(credential_path))
+
+
+def test_durable_reader_binds_exact_private_store_file(tmp_path: Path) -> None:
+    """The returned key is parsed from the same bounded inode that was checked."""
+    credential = _generate_credential()
+    store_path = tmp_path / "ha_paneld.adb_key"
+    _write_store(store_path, credential)
+
+    assert adb_credentials._read_durable_credential(str(store_path)) == credential
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda document: document.update(extra=True),
+        lambda document: document.update(version=True),
+        lambda document: document.update(version=2),
+        lambda document: document.update(minor_version=False),
+        lambda document: document.update(key="other"),
+        lambda document: document.update(data={}),
+    ],
+)
+def test_durable_reader_rejects_invalid_store_wrapper(tmp_path: Path, mutation) -> None:
+    """Direct reads retain Home Assistant Store identity and schema checks."""
+    store_path = tmp_path / "ha_paneld.adb_key"
+    document = _stored_document(_generate_credential())
+    mutation(document)
+    store_path.write_text(json.dumps(document), encoding="utf-8")
+    store_path.chmod(0o600)
+
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+
+def test_durable_reader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+    """A duplicate wrapper or credential field cannot override trusted bytes."""
+    credential = _generate_credential()
+    store_path = tmp_path / "ha_paneld.adb_key"
+    body = json.dumps(_stored_document(credential))
+    body = body.replace('"version": 1,', '"version": 1, "version": 1,', 1)
+    store_path.write_text(body, encoding="utf-8")
+    store_path.chmod(0o600)
+
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+
+def test_durable_reader_rejects_path_replacement_during_read(tmp_path: Path) -> None:
+    """An atomic path replacement cannot authorize bytes from a stale inode."""
+    original = _generate_credential()
+    replacement = _generate_credential()
+    store_path = tmp_path / "ha_paneld.adb_key"
+    replacement_path = tmp_path / "replacement"
+    _write_store(store_path, original)
+    _write_store(replacement_path, replacement)
+    real_read = os.read
+    replaced = False
+
+    def replace_after_read(file_fd: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = real_read(file_fd, size)
+        if chunk and not replaced:
+            replaced = True
+            os.replace(replacement_path, store_path)
+        return chunk
+
+    with (
+        patch.object(adb_credentials.os, "read", side_effect=replace_after_read),
+        pytest.raises(AdbCredentialError),
+    ):
+        adb_credentials._read_durable_credential(str(store_path))
+
+    assert replaced
+
+
+def test_durable_reader_rejects_same_inode_overwrite_during_read(
+    tmp_path: Path,
+) -> None:
+    """Same-size mutation cannot return bytes no longer held by the durable path."""
+    original = _generate_credential()
+    replacement = _generate_credential()
+    original_body = json.dumps(_stored_document(original)).encode()
+    replacement_body = json.dumps(_stored_document(replacement)).encode()
+    assert len(original_body) == len(replacement_body)
+    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path.write_bytes(original_body)
+    store_path.chmod(0o600)
+    real_read = os.read
+    replaced = False
+
+    def overwrite_after_read(file_fd: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = real_read(file_fd, size)
+        if chunk and not replaced:
+            replaced = True
+            overwrite_fd = os.open(store_path, os.O_WRONLY | os.O_TRUNC)
+            try:
+                os.write(overwrite_fd, replacement_body)
+                os.fsync(overwrite_fd)
+            finally:
+                os.close(overwrite_fd)
+        return chunk
+
+    with (
+        patch.object(adb_credentials.os, "read", side_effect=overwrite_after_read),
+        pytest.raises(AdbCredentialError),
+    ):
+        adb_credentials._read_durable_credential(str(store_path))
+
+    assert replaced
+
+
+@pytest.mark.parametrize("body", [b"\xff", b"{", b"[]", b""])
+def test_durable_reader_rejects_malformed_or_empty_json(
+    tmp_path: Path, body: bytes
+) -> None:
+    """Invalid on-disk serialization never reaches the credential parser."""
+    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path.write_bytes(body)
+    store_path.chmod(0o600)
+
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+
+def test_durable_reader_rejects_foreign_owner(tmp_path: Path) -> None:
+    """Owner-only mode does not authorize a Store file owned by another uid."""
+    store_path = tmp_path / "ha_paneld.adb_key"
+    _write_store(store_path, _generate_credential())
+
+    with (
+        patch.object(adb_credentials.os, "geteuid", return_value=os.geteuid() + 1),
+        pytest.raises(AdbCredentialError),
+    ):
+        adb_credentials._read_durable_credential(str(store_path))
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o400, 0o640])
+def test_durable_reader_rejects_non_private_or_missing_file(
+    tmp_path: Path, mode: int
+) -> None:
+    """Direct mutation authority requires one present owner-readable 0600 file."""
+    store_path = tmp_path / "ha_paneld.adb_key"
+    _write_store(store_path, _generate_credential())
+    store_path.chmod(mode)
+
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+    store_path.unlink()
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+
+def test_durable_reader_rejects_symlink_and_excessive_file(tmp_path: Path) -> None:
+    """No link or unbounded JSON body can become ADB mutation authority."""
+    target_path = tmp_path / "target"
+    _write_store(target_path, _generate_credential())
+    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path.symlink_to(target_path)
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+    store_path.unlink()
+    store_path.write_bytes(b" " * (16 * 1024 + 1))
+    store_path.chmod(0o600)
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
 
 
 def test_store_privacy_check_rejects_symlink(tmp_path: Path) -> None:

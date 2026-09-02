@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import stat
 import struct
@@ -27,6 +28,7 @@ _STORE_KEY = f"{DOMAIN}.adb_key"
 _MANAGER_DATA_KEY = f"{DOMAIN}.adb_credential_manager"
 _MAX_PRIVATE_KEY_LENGTH = 4096
 _MAX_PUBLIC_KEY_LENGTH = 1024
+_MAX_STORE_BYTES = 16 * 1024
 _FORMAT = "adb-rsa-2048-v1"
 _RSA_BITS = 2048
 _MODULUS_BYTES = _RSA_BITS // 8
@@ -183,10 +185,112 @@ def _store_is_private(path_text: str) -> bool:
     """Return whether a persisted secret is a regular owner-only POSIX file."""
     path = Path(path_text)
     try:
-        mode = path.lstat().st_mode
-        return stat.S_ISREG(mode) and (mode & 0o777) == 0o600
+        metadata = path.lstat()
+        return (
+            stat.S_ISREG(metadata.st_mode)
+            and (metadata.st_mode & 0o777) == 0o600
+            and metadata.st_uid == os.geteuid()
+        )
     except OSError as err:
         raise AdbCredentialError from err
+
+
+def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise AdbCredentialError
+        document[key] = value
+    return document
+
+
+def _metadata_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _parse_store_document(body: bytes) -> _StoredCredential:
+    try:
+        document = json.loads(
+            body.decode("utf-8"), object_pairs_hook=_object_without_duplicates
+        )
+    except AdbCredentialError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, TypeError) as err:
+        raise AdbCredentialError from err
+    if not isinstance(document, dict) or document.keys() != {
+        "version",
+        "minor_version",
+        "key",
+        "data",
+    }:
+        raise AdbCredentialError
+    if (
+        type(document["version"]) is not int
+        or document["version"] != _STORE_VERSION
+        or type(document["minor_version"]) is not int
+        or document["minor_version"] != 1
+        or document["key"] != _STORE_KEY
+    ):
+        raise AdbCredentialError
+    return _parse_stored_credential(document["data"])
+
+
+def _read_durable_credential(path_text: str) -> _StoredCredential:
+    """Read and validate one exact no-follow Store file descriptor."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        file_fd = os.open(path_text, flags)
+    except OSError as err:
+        raise AdbCredentialError from err
+    try:
+        before = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_uid != os.geteuid()
+            or not 1 <= before.st_size <= _MAX_STORE_BYTES
+        ):
+            raise AdbCredentialError
+        body = bytearray()
+        while chunk := os.read(file_fd, min(4096, _MAX_STORE_BYTES + 1 - len(body))):
+            body.extend(chunk)
+            if len(body) > _MAX_STORE_BYTES:
+                raise AdbCredentialError
+        after = os.fstat(file_fd)
+        path_after = os.lstat(path_text)
+        if (
+            _metadata_identity(before) != _metadata_identity(after)
+            or _metadata_identity(after) != _metadata_identity(path_after)
+            or len(body) != before.st_size
+        ):
+            raise AdbCredentialError
+        credential = _parse_store_document(bytes(body))
+        final = os.fstat(file_fd)
+        final_path = os.lstat(path_text)
+        if _metadata_identity(after) != _metadata_identity(final) or _metadata_identity(
+            final
+        ) != _metadata_identity(final_path):
+            raise AdbCredentialError
+        return credential
+    except AdbCredentialError:
+        raise
+    except OSError as err:
+        raise AdbCredentialError from err
+    finally:
+        os.close(file_fd)
 
 
 class AdbCredentialManager:
@@ -268,6 +372,31 @@ class AdbCredentialManager:
         """Return the shared signer for existing ADB consumers."""
         return (await self.async_get_credential()).signer
 
+    async def async_get_durable_credential(self) -> AdbCredential:
+        """Reload and verify the exact persisted identity without regenerating it."""
+        async with self._lock:
+            try:
+                _existed, corrupt = await self._hass.async_add_executor_job(
+                    _store_presence, self._store.path
+                )
+                if corrupt:
+                    raise AdbCredentialError
+                credential = await self._hass.async_add_executor_job(
+                    _read_durable_credential, self._store.path
+                )
+                self._credential = credential
+                return AdbCredential(
+                    signer=PythonRSASigner(
+                        credential.public_key,
+                        credential.private_key,
+                    ),
+                    generation_id=_credential_generation_id(credential.public_key),
+                )
+            except AdbCredentialError:
+                raise
+            except Exception as err:
+                raise AdbCredentialError from err
+
 
 def _get_adb_credential_manager(hass: HomeAssistant) -> AdbCredentialManager:
     """Return the guarded process-wide credential authority."""
@@ -283,6 +412,11 @@ def _get_adb_credential_manager(hass: HomeAssistant) -> AdbCredentialManager:
 async def async_get_adb_credential(hass: HomeAssistant) -> AdbCredential:
     """Return the process-wide signer and stable public-key generation ID."""
     return await _get_adb_credential_manager(hass).async_get_credential()
+
+
+async def async_get_durable_adb_credential(hass: HomeAssistant) -> AdbCredential:
+    """Reload the current durable ADB identity for a mutation boundary."""
+    return await _get_adb_credential_manager(hass).async_get_durable_credential()
 
 
 async def async_get_adb_signer(hass: HomeAssistant) -> PythonRSASigner:
