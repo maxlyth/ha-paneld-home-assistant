@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 from collections.abc import Generator
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -31,10 +32,13 @@ from custom_components.ha_paneld.install_jobs import (
     InstallResultCode,
     InstallTarget,
     async_get_install_job_manager,
+    install_plan_sha256,
 )
 
 SHA = "a" * 64
 CREDENTIAL_ID = "b" * 64
+CURRENT_ENTRY_ID = "01M1J723MDQ69QDQVCRXKYZBJV"
+LEGACY_ENTRY_ID = "0123456789abcdef0123456789abcdef"
 _REAL_STORE_PRESENCE = install_jobs._store_presence
 
 
@@ -110,10 +114,12 @@ async def create(
     install_target: InstallTarget | None = None,
     install_artifact: InstallArtifact | None = None,
 ):
+    selected_target = install_target or target()
+    selected_artifact = install_artifact or artifact()
     return await manager.async_create_or_join(
-        install_target or target(),
-        install_artifact or artifact(),
-        SHA,
+        selected_target,
+        selected_artifact,
+        install_plan_sha256(selected_target, selected_artifact, CREDENTIAL_ID),
         CREDENTIAL_ID,
     )
 
@@ -188,6 +194,64 @@ async def test_create_is_durable_private_and_has_no_unsafe_fields(
     assert json.loads(raw)["jobs"][0]["adb_credential_id"] == CREDENTIAL_ID
 
 
+async def test_create_rejects_a_plan_digest_not_bound_to_frozen_facts(
+    hass: HomeAssistant,
+) -> None:
+    """A caller cannot persist an arbitrary well-shaped plan digest."""
+    manager = InstallJobManager(hass, now=Clock())
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_create_or_join(
+            target(), artifact(), "c" * 64, CREDENTIAL_ID
+        )
+
+    assert await manager.async_list() == ()
+
+
+@pytest.mark.parametrize(
+    "invalid_target",
+    [
+        target(address="192.168.1.24", pinned_address="192.168.1.23"),
+        target(address="203.0.113.23", pinned_address="192.168.1.23"),
+        target(address="bad_host.local", pinned_address="192.168.1.23"),
+        target(address="192.168.1", pinned_address="192.168.1.23"),
+    ],
+)
+def test_job_authority_rejects_targets_the_network_plan_cannot_produce(
+    invalid_target: InstallTarget,
+) -> None:
+    """Direct callers cannot bypass original-to-pinned identity validation."""
+    with pytest.raises(InstallJobStoreError):
+        install_plan_sha256(invalid_target, artifact(), CREDENTIAL_ID)
+
+
+@pytest.mark.parametrize(
+    "invalid_artifact",
+    [
+        InstallArtifact(
+            **{
+                **asdict(artifact()),
+                "release_tag": "v" + "1" * 62 + ".2.3",
+                "version_name": "1" * 62 + ".2.3",
+                "apk_name": "ha-paneld-v" + "1" * 62 + ".2.3-manual-setup-required.apk",
+            }
+        ),
+        InstallArtifact(
+            **{
+                **asdict(artifact()),
+                "database_compatibility": ("hapaneld-db:v1:ha-paneld.db:1:9999999999"),
+            }
+        ),
+    ],
+)
+def test_job_authority_matches_authenticated_descriptor_bounds(
+    invalid_artifact: InstallArtifact,
+) -> None:
+    """Receipt validation accepts no descriptor the release parser rejects."""
+    with pytest.raises(InstallJobStoreError):
+        install_plan_sha256(target(), invalid_artifact, CREDENTIAL_ID)
+
+
 async def test_restart_reloads_same_immutable_receipt(hass: HomeAssistant) -> None:
     """Pre-entry work survives a manager restart without a placeholder entry."""
     clock = Clock()
@@ -231,6 +295,64 @@ async def test_restart_reclaims_pre_mutation_but_quarantines_ambiguous_phase(
     assert quarantined.is_terminal
 
 
+@pytest.mark.parametrize(
+    "phase", [InstallPhase.STAGING, InstallPhase.INSTALLING, InstallPhase.LAUNCHING]
+)
+async def test_restart_quarantines_every_ambiguous_mutation_phase(
+    hass: HomeAssistant, phase: InstallPhase
+) -> None:
+    """A new process never replays a phase whose side effect may have started."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    if phase is InstallPhase.INSTALLING:
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, InstallPhase.INSTALLING
+        )
+    elif phase is InstallPhase.LAUNCHING:
+        for next_phase in (
+            InstallPhase.INSTALLING,
+            InstallPhase.INSTALLED,
+            InstallPhase.LAUNCHING,
+        ):
+            receipt = await manager.async_transition(
+                receipt.job_id, receipt.revision, next_phase
+            )
+
+    quarantined = await InstallJobManager(hass, now=Clock()).async_claim(
+        receipt.job_id, receipt.revision
+    )
+
+    assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+
+
+@pytest.mark.parametrize("phase", [InstallPhase.INSTALLED, InstallPhase.HEALTH_CHECK])
+async def test_restart_reclaims_safe_post_mutation_phase(
+    hass: HomeAssistant, phase: InstallPhase
+) -> None:
+    """Known install success and read-only health polling remain resumable."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    for next_phase in (InstallPhase.INSTALLING, InstallPhase.INSTALLED):
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, next_phase
+        )
+    if phase is InstallPhase.HEALTH_CHECK:
+        for next_phase in (InstallPhase.LAUNCHING, InstallPhase.HEALTH_CHECK):
+            receipt = await manager.async_transition(
+                receipt.job_id, receipt.revision, next_phase
+            )
+
+    reclaimed = await InstallJobManager(hass, now=Clock()).async_claim(
+        receipt.job_id, receipt.revision
+    )
+
+    assert reclaimed.phase is phase
+    assert reclaimed.executor_generation == receipt.executor_generation + 1
+
+
 @pytest.mark.parametrize("at_mutation_barrier", [False, True])
 async def test_restart_at_attempt_ceiling_becomes_recovery_required(
     hass: HomeAssistant, at_mutation_barrier: bool
@@ -270,6 +392,49 @@ async def test_restart_at_attempt_ceiling_becomes_recovery_required(
     assert exhausted.result_code == InstallResultCode.VERIFICATION_REQUIRED
     assert exhausted.attempt == exhausted.executor_generation == 32
     assert exhausted.revision == receipt.revision + 1
+
+
+async def test_restart_quarantine_prunes_full_terminal_history_before_save(
+    hass: HomeAssistant,
+) -> None:
+    """The crash path cannot persist an unreadable thirty-third terminal job."""
+    clock = Clock()
+    manager = InstallJobManager(hass, now=clock)
+    for number in range(32):
+        receipt, _ = await create(
+            manager,
+            install_target=target(
+                f"old-{number}.local",
+                f"OLD-SERIAL-{number}",
+                f"192.168.4.{number + 20}",
+            ),
+        )
+        receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, InstallPhase.AUTHORIZING
+        )
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.FAILED,
+            result_code=InstallResultCode.AUTHORIZATION_FAILED,
+        )
+        clock.advance()
+    active, _ = await create(
+        manager,
+        install_target=target("active.local", "ACTIVE-SERIAL", "192.168.4.100"),
+    )
+    active = await transition_to_staging(manager, active.job_id)
+    clock.advance()
+
+    recovered = await InstallJobManager(hass, now=clock).async_claim(
+        active.job_id, active.revision
+    )
+    receipts = await InstallJobManager(hass, now=clock).async_list()
+
+    assert recovered.phase is InstallPhase.RECOVERY_REQUIRED
+    assert len(receipts) == 32
+    assert recovered.job_id in {receipt.job_id for receipt in receipts}
 
 
 async def test_unclaimed_executor_cannot_progress_or_cross_barrier(
@@ -329,7 +494,10 @@ async def test_colliding_active_frozen_facts_conflict(
 
     with pytest.raises(InstallJobConflictError):
         await manager.async_create_or_join(
-            other_target, other_artifact, SHA, credential_id
+            other_target,
+            other_artifact,
+            install_plan_sha256(other_target, other_artifact, credential_id),
+            credential_id,
         )
 
 
@@ -351,6 +519,23 @@ async def test_distinct_targets_are_bounded(hass: HomeAssistant) -> None:
             manager,
             install_target=target("panel-4.local", "SERIAL-4", "192.168.1.24"),
         )
+
+
+async def test_find_active_requires_exact_original_and_pinned_identity(
+    hass: HomeAssistant,
+) -> None:
+    """A reopened flow attaches only to its exact frozen network identity."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+
+    assert await manager.async_find_active("panel.local", "192.168.1.23") == receipt
+    assert await manager.async_find_active("other.local", "192.168.1.24") is None
+    with pytest.raises(InstallJobConflictError):
+        await manager.async_find_active("alias.local", "192.168.1.23")
+    with pytest.raises(InstallJobConflictError):
+        await manager.async_find_active("panel.local", "192.168.1.24")
+    with pytest.raises(InstallJobStoreError):
+        await manager.async_find_active("Panel.local", "192.168.1.23")
 
 
 async def test_transitions_are_cas_serialized(hass: HomeAssistant) -> None:
@@ -450,17 +635,128 @@ async def test_full_success_path_requires_health_before_entry_consumption(
             InstallPhase.CONSUMED,
             health_checked_at=clock(),
             result_code=InstallResultCode.ENTRY_CREATED,
-            consumed_entry_id="0123456789abcdef0123456789abcdef",
+            consumed_entry_id=CURRENT_ENTRY_ID,
         )
     receipt = await manager.async_transition(
         receipt.job_id,
         receipt.revision,
         InstallPhase.CONSUMED,
         result_code=InstallResultCode.ENTRY_CREATED,
-        consumed_entry_id="0123456789abcdef0123456789abcdef",
+        consumed_entry_id=CURRENT_ENTRY_ID,
     )
     assert receipt.is_terminal
-    assert receipt.consumed_entry_id == "0123456789abcdef0123456789abcdef"
+    assert receipt.consumed_entry_id == CURRENT_ENTRY_ID
+
+
+async def test_healthy_receipt_can_be_quarantined_after_late_health_drift(
+    hass: HomeAssistant,
+) -> None:
+    """A stale healthy observation cannot force config-entry creation."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    for phase in (
+        InstallPhase.INSTALLING,
+        InstallPhase.INSTALLED,
+        InstallPhase.LAUNCHING,
+        InstallPhase.HEALTH_CHECK,
+    ):
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, phase
+        )
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.HEALTHY_UNCLAIMED,
+        health_checked_at=Clock()(),
+    )
+
+    quarantined = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.RECOVERY_REQUIRED,
+        result_code=InstallResultCode.VERIFICATION_REQUIRED,
+    )
+
+    assert quarantined.is_terminal
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+
+
+@pytest.mark.parametrize("entry_id", [CURRENT_ENTRY_ID, LEGACY_ENTRY_ID])
+async def test_consumption_accepts_current_and_legacy_home_assistant_entry_ids(
+    hass: HomeAssistant, entry_id: str
+) -> None:
+    """Receipt identity follows Home Assistant across its entry-ID migration."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    for phase in (
+        InstallPhase.INSTALLING,
+        InstallPhase.INSTALLED,
+        InstallPhase.LAUNCHING,
+        InstallPhase.HEALTH_CHECK,
+    ):
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, phase
+        )
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.HEALTHY_UNCLAIMED,
+        health_checked_at=Clock()(),
+    )
+
+    consumed = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.CONSUMED,
+        result_code=InstallResultCode.ENTRY_CREATED,
+        consumed_entry_id=entry_id,
+    )
+
+    assert consumed.consumed_entry_id == entry_id
+
+
+@pytest.mark.parametrize(
+    "entry_id",
+    [
+        "01m1j723mdq69qdqvcrxkyzbjv",
+        "8" * 26,
+        "not-an-entry-id",
+        "g" * 32,
+    ],
+)
+async def test_consumption_rejects_noncanonical_entry_ids(
+    hass: HomeAssistant, entry_id: str
+) -> None:
+    """Only canonical HA identities may close a healthy receipt."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    for phase in (
+        InstallPhase.INSTALLING,
+        InstallPhase.INSTALLED,
+        InstallPhase.LAUNCHING,
+        InstallPhase.HEALTH_CHECK,
+    ):
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, phase
+        )
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.HEALTHY_UNCLAIMED,
+        health_checked_at=Clock()(),
+    )
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.CONSUMED,
+            result_code=InstallResultCode.ENTRY_CREATED,
+            consumed_entry_id=entry_id,
+        )
 
 
 @pytest.mark.parametrize(
@@ -657,6 +953,37 @@ async def test_barrier_rejects_wrong_phase_and_revision(hass: HomeAssistant) -> 
         )
 
 
+@pytest.mark.parametrize(
+    "barrier", [InstallPhase.STAGING, InstallPhase.INSTALLING, InstallPhase.LAUNCHING]
+)
+async def test_every_mutation_phase_has_a_positive_durable_barrier(
+    hass: HomeAssistant, barrier: InstallPhase
+) -> None:
+    """Each external side-effect boundary can be verified at its exact receipt."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    if barrier is InstallPhase.INSTALLING:
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, InstallPhase.INSTALLING
+        )
+    elif barrier is InstallPhase.LAUNCHING:
+        for phase in (
+            InstallPhase.INSTALLING,
+            InstallPhase.INSTALLED,
+            InstallPhase.LAUNCHING,
+        ):
+            receipt = await manager.async_transition(
+                receipt.job_id, receipt.revision, phase
+            )
+
+    verified = await manager.async_verify_mutation_barrier(
+        receipt.job_id, receipt.revision, barrier
+    )
+
+    assert verified == receipt
+
+
 async def test_swallowed_store_write_failure_fails_closed(hass: HomeAssistant) -> None:
     """A save is never accepted without a byte-equivalent fresh Store load."""
     writer = MagicMock()
@@ -700,6 +1027,7 @@ async def test_swallowed_store_write_failure_fails_closed(hass: HomeAssistant) -
         ),
         lambda document: document["jobs"][0].update(attempt=1),
         lambda document: document["jobs"][0].update(actual_apk_bytes=12_345),
+        lambda document: document["jobs"][0].update(plan_sha256="c" * 64),
     ],
 )
 async def test_corrupt_or_excessive_stored_documents_fail_closed(
@@ -718,6 +1046,97 @@ async def test_corrupt_or_excessive_stored_documents_fail_closed(
 
     with pytest.raises(InstallJobStoreError):
         await InstallJobManager(hass, now=Clock()).async_list()
+
+
+@pytest.mark.parametrize(
+    "incompatible_target",
+    [
+        InstallTarget(
+            address="panel.local",
+            pinned_address="192.168.1.23",
+            adb_serial="SERIAL-1",
+            model="Test Panel",
+            primary_abi="x86",
+            android_sdk=34,
+        ),
+        InstallTarget(
+            address="panel.local",
+            pinned_address="192.168.1.23",
+            adb_serial="SERIAL-1",
+            model="Test Panel",
+            primary_abi="arm64-v8a",
+            android_sdk=25,
+        ),
+    ],
+)
+def test_reload_rejects_incompatible_frozen_target_artifact_pair(
+    incompatible_target: InstallTarget,
+) -> None:
+    """Storage parsing repeats cross-object API and ABI admission."""
+    receipt = install_jobs.InstallJobReceipt(
+        job_id="1" * 32,
+        revision=0,
+        executor_generation=0,
+        created_at=Clock()(),
+        updated_at=Clock()(),
+        phase=InstallPhase.APPROVED,
+        cancel_requested=False,
+        attempt=0,
+        target=incompatible_target,
+        artifact=artifact(),
+        plan_sha256=install_plan_sha256(incompatible_target, artifact(), CREDENTIAL_ID),
+        adb_credential_id=CREDENTIAL_ID,
+    )
+
+    with pytest.raises(InstallJobStoreError):
+        install_jobs._parse_document(
+            {
+                "format": "ha-paneld-install-jobs-v1",
+                "jobs": [install_jobs._serialize_receipt(receipt)],
+            }
+        )
+
+
+@pytest.mark.parametrize("collision", ["address", "pin", "serial"])
+async def test_reload_rejects_duplicate_active_target_identity(
+    hass: HomeAssistant, collision: str
+) -> None:
+    """A forged store cannot authorize two workers for one logical panel."""
+    manager = InstallJobManager(hass, now=Clock())
+    first, _ = await create(manager)
+    second_target = target("other.local", "SERIAL-2", "192.168.1.24")
+    replacements = {
+        "address": first.target.address,
+        "pinned_address": first.target.pinned_address,
+        "adb_serial": first.target.adb_serial,
+    }
+    collision_field = {
+        "address": "address",
+        "pin": "pinned_address",
+        "serial": "adb_serial",
+    }[collision]
+    second_target = InstallTarget(
+        **{
+            **asdict(second_target),
+            collision_field: replacements[collision_field],
+        }
+    )
+    second = replace(
+        first,
+        job_id="2" * 32,
+        target=second_target,
+        plan_sha256=install_plan_sha256(second_target, first.artifact, CREDENTIAL_ID),
+    )
+    document = {
+        "format": "ha-paneld-install-jobs-v1",
+        "jobs": [
+            install_jobs._serialize_receipt(first),
+            install_jobs._serialize_receipt(second),
+        ],
+    }
+
+    with pytest.raises(InstallJobStoreError):
+        install_jobs._parse_document(copy.deepcopy(document))
 
 
 async def test_missing_job_and_bad_revision_are_distinct(hass: HomeAssistant) -> None:
@@ -785,10 +1204,11 @@ async def test_invalid_descriptor_or_target_never_creates_receipt(
     with pytest.raises(InstallJobStoreError):
         await create(manager, install_artifact=invalid_artifact)
     with pytest.raises(InstallJobTransitionError):
+        incompatible_target = InstallTarget(**{**asdict(target()), "android_sdk": 25})
         await manager.async_create_or_join(
-            InstallTarget(**{**asdict(target()), "android_sdk": 25}),
+            incompatible_target,
             artifact(),
-            SHA,
+            install_plan_sha256(incompatible_target, artifact(), CREDENTIAL_ID),
             CREDENTIAL_ID,
         )
     assert await manager.async_list() == ()

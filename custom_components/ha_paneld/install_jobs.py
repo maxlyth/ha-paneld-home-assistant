@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import os
 import re
 import stat
@@ -16,22 +17,29 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
 from secrets import token_hex
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util.ulid import bytes_to_ulid, ulid_to_bytes_or_none
 
 from .client import InvalidAddressError, normalize_address
 from .const import DOMAIN
-from .install_network import is_allowed_install_address
+from .install_network import (
+    InstallNetworkError,
+    _resolver_hostname,
+    is_allowed_install_address,
+)
 
 _STORE_VERSION = 1
 _STORE_KEY = f"{DOMAIN}.install_jobs"
 _MANAGER_DATA_KEY = f"{DOMAIN}.install_job_manager"
 _LOCK_DATA_KEY = f"{DOMAIN}.install_job_store_lock"
 _FORMAT = "ha-paneld-install-jobs-v1"
+_PLAN_SCHEMA = "io.github.maxlyth.hapaneld.install-plan.v1"
 _MAX_STORE_BYTES = 128 * 1024
 _MAX_ACTIVE_JOBS = 4
 _MAX_TERMINAL_JOBS = 32
@@ -43,6 +51,7 @@ _MAX_SDK = 100
 _MAX_ADDRESS_LENGTH = 255
 _MAX_MODEL_LENGTH = 128
 _MAX_RELEASE_TEXT_LENGTH = 128
+_MAX_RELEASE_TAG_LENGTH = 64
 _MAX_APK_NAME_LENGTH = 255
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -234,15 +243,14 @@ _RECOVERY_SOURCE_PHASES = frozenset(
         InstallPhase.INSTALLED,
         InstallPhase.LAUNCHING,
         InstallPhase.HEALTH_CHECK,
+        InstallPhase.HEALTHY_UNCLAIMED,
     }
 )
 _RESTART_AMBIGUOUS_PHASES = frozenset(
     {
         InstallPhase.STAGING,
         InstallPhase.INSTALLING,
-        InstallPhase.INSTALLED,
         InstallPhase.LAUNCHING,
-        InstallPhase.HEALTH_CHECK,
     }
 )
 _NEXT_PHASE: Mapping[InstallPhase, frozenset[InstallPhase]] = {
@@ -300,7 +308,9 @@ _NEXT_PHASE: Mapping[InstallPhase, frozenset[InstallPhase]] = {
             InstallPhase.RECOVERY_REQUIRED,
         }
     ),
-    InstallPhase.HEALTHY_UNCLAIMED: frozenset({InstallPhase.CONSUMED}),
+    InstallPhase.HEALTHY_UNCLAIMED: frozenset(
+        {InstallPhase.CONSUMED, InstallPhase.RECOVERY_REQUIRED}
+    ),
 }
 
 
@@ -421,7 +431,14 @@ def _parse_target(value: object) -> InstallTarget:
             or not is_allowed_install_address(pinned_ip)
         ):
             raise InstallJobStoreError
-    except (InvalidAddressError, ValueError) as err:
+        try:
+            original_ip = ipaddress.ip_address(original.host)
+        except ValueError:
+            _resolver_hostname(original.host)
+        else:
+            if original_ip != pinned_ip:
+                raise InstallJobStoreError
+    except (InstallNetworkError, InvalidAddressError, ValueError) as err:
         raise InstallJobStoreError from err
     model = _safe_text(value["model"], _MAX_MODEL_LENGTH)
     adb_serial = _safe_text(value["adb_serial"], 128)
@@ -474,13 +491,16 @@ def _parse_artifact(value: object) -> InstallArtifact:
         or signer != _RELEASE_SIGNER_SHA256
         or not isinstance(abis, (list, tuple))
         or tuple(abis) != _SUPPORTED_ABIS
+        or len(release_tag) > _MAX_RELEASE_TAG_LENGTH
         or _RELEASE_TAG.fullmatch(release_tag) is None
         or version_name != release_tag.removeprefix("v")
         or apk_name != f"ha-paneld-{release_tag}-manual-setup-required.apk"
         or _APK_NAME.fullmatch(apk_name) is None
         or _SHA256.fullmatch(apk_sha256) is None
         or database_match is None
+        or any(len(group) > 10 for group in database_match.groups())
         or int(database_match.group(1)) > int(database_match.group(2))
+        or int(database_match.group(2)) > 2**31 - 1
     ):
         raise InstallJobStoreError
     return InstallArtifact(
@@ -498,6 +518,46 @@ def _parse_artifact(value: object) -> InstallArtifact:
         database_compatibility=database,
         launch_component=_LAUNCH_COMPONENT,
     )
+
+
+def install_plan_sha256(
+    target: InstallTarget,
+    artifact: InstallArtifact,
+    adb_credential_id: str,
+) -> str:
+    """Bind every frozen mutation input into one canonical plan digest."""
+    parsed_target = _parse_target(asdict(target))
+    parsed_artifact = _parse_artifact(asdict(artifact))
+    credential_id = _safe_text(adb_credential_id, 64)
+    if _SHA256.fullmatch(credential_id) is None:
+        raise InstallJobStoreError
+    document = {
+        "schema": _PLAN_SCHEMA,
+        "target": asdict(parsed_target),
+        "artifact": asdict(parsed_artifact),
+        "adb_credential_id": credential_id,
+    }
+    canonical = (
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("ascii")
+    return sha256(canonical).hexdigest()
+
+
+def _is_config_entry_id(value: str) -> bool:
+    """Accept both legacy hexadecimal IDs and canonical current HA ULIDs."""
+    if _HEX_32.fullmatch(value) is not None:
+        return True
+    if len(value) != 26:
+        return False
+    decoded = ulid_to_bytes_or_none(value)
+    return decoded is not None and bytes_to_ulid(decoded) == value
 
 
 def _parse_receipt(value: object) -> InstallJobReceipt:
@@ -550,7 +610,7 @@ def _parse_receipt(value: object) -> InstallJobReceipt:
     entry_id = value["consumed_entry_id"]
     if entry_id is not None:
         entry_id = _safe_text(entry_id, 32)
-        if _HEX_32.fullmatch(entry_id) is None:
+        if not _is_config_entry_id(entry_id):
             raise InstallJobStoreError
     receipt = InstallJobReceipt(
         job_id=job_id,
@@ -582,6 +642,17 @@ def _validate_receipt_invariants(receipt: InstallJobReceipt) -> None:
     if (
         receipt.actual_apk_bytes is not None
         and receipt.actual_apk_bytes != receipt.artifact.apk_size
+    ):
+        raise InstallJobStoreError
+    if receipt.plan_sha256 != install_plan_sha256(
+        receipt.target,
+        receipt.artifact,
+        receipt.adb_credential_id,
+    ):
+        raise InstallJobStoreError
+    if (
+        receipt.target.primary_abi not in receipt.artifact.supported_abis
+        or receipt.target.android_sdk < receipt.artifact.min_sdk
     ):
         raise InstallJobStoreError
     if (
@@ -660,6 +731,9 @@ def _parse_document(value: object) -> dict[str, InstallJobReceipt]:
     parsed: dict[str, InstallJobReceipt] = {}
     active_count = 0
     terminal_count = 0
+    active_addresses: set[str] = set()
+    active_pins: set[str] = set()
+    active_serials: set[str] = set()
     for raw_job in jobs:
         receipt = _parse_receipt(raw_job)
         if receipt.job_id in parsed:
@@ -669,6 +743,15 @@ def _parse_document(value: object) -> dict[str, InstallJobReceipt]:
             terminal_count += 1
         else:
             active_count += 1
+            if (
+                receipt.target.address in active_addresses
+                or receipt.target.pinned_address in active_pins
+                or receipt.target.adb_serial in active_serials
+            ):
+                raise InstallJobStoreError
+            active_addresses.add(receipt.target.address)
+            active_pins.add(receipt.target.pinned_address)
+            active_serials.add(receipt.target.adb_serial)
     if active_count > _MAX_ACTIVE_JOBS or terminal_count > _MAX_TERMINAL_JOBS:
         raise InstallJobStoreError
     return parsed
@@ -847,8 +930,9 @@ class InstallJobManager:
         """
         target = _parse_target(asdict(target))
         artifact = _parse_artifact(asdict(artifact))
+        expected_plan_sha256 = install_plan_sha256(target, artifact, adb_credential_id)
         if (
-            _SHA256.fullmatch(plan_sha256) is None
+            plan_sha256 != expected_plan_sha256
             or _SHA256.fullmatch(adb_credential_id) is None
             or target.primary_abi not in artifact.supported_abis
             or target.android_sdk < artifact.min_sdk
@@ -917,6 +1001,48 @@ class InstallJobManager:
                 sorted(jobs.values(), key=lambda item: (item.created_at, item.job_id))
             )
 
+    async def async_find_active(
+        self, address: str, pinned_address: str
+    ) -> InstallJobReceipt | None:
+        """Find an exact active target without contacting the panel."""
+        try:
+            original = normalize_address(address)
+            pinned = normalize_address(pinned_address)
+            pinned_ip = ipaddress.ip_address(pinned.host)
+            if (
+                original.stored_value != address
+                or pinned.stored_value != pinned_address
+                or pinned.host != str(pinned_ip)
+                or pinned.port != original.port
+                or not is_allowed_install_address(pinned_ip)
+            ):
+                raise InstallJobStoreError
+            try:
+                original_ip = ipaddress.ip_address(original.host)
+            except ValueError:
+                _resolver_hostname(original.host)
+            else:
+                if original_ip != pinned_ip:
+                    raise InstallJobStoreError
+        except (InstallNetworkError, InvalidAddressError, ValueError) as err:
+            raise InstallJobStoreError from err
+        async with self._lock:
+            jobs = await self._async_load_locked(refresh=True)
+            for receipt in jobs.values():
+                if receipt.is_terminal:
+                    continue
+                if (
+                    receipt.target.address == address
+                    or receipt.target.pinned_address == pinned_address
+                ):
+                    if (
+                        receipt.target.address == address
+                        and receipt.target.pinned_address == pinned_address
+                    ):
+                        return receipt
+                    raise InstallJobConflictError
+            return None
+
     async def async_request_cancel(
         self, job_id: str, expected_revision: int
     ) -> InstallJobReceipt:
@@ -966,6 +1092,7 @@ class InstallJobManager:
                     result_code=InstallResultCode.VERIFICATION_REQUIRED,
                 )
                 jobs[job_id] = exhausted
+                self._prune(jobs, exhausted.updated_at)
                 await self._async_save_locked(jobs)
                 return self._jobs[job_id]  # type: ignore[index]
             phase = current.phase
@@ -983,6 +1110,7 @@ class InstallJobManager:
                 result_code=result_code,
             )
             jobs[job_id] = updated
+            self._prune(jobs, updated.updated_at)
             await self._async_save_locked(jobs)
             persisted = self._jobs[job_id]  # type: ignore[index]
             if not persisted.is_terminal:
@@ -1017,10 +1145,7 @@ class InstallJobManager:
             parsed_entry_id = (
                 None if consumed_entry_id is None else _safe_text(consumed_entry_id, 32)
             )
-            if (
-                parsed_entry_id is not None
-                and _HEX_32.fullmatch(parsed_entry_id) is None
-            ):
+            if parsed_entry_id is not None and not _is_config_entry_id(parsed_entry_id):
                 raise InstallJobStoreError
         except InstallJobStoreError as err:
             raise InstallJobTransitionError from err
@@ -1038,7 +1163,7 @@ class InstallJobManager:
             if (
                 not (
                     current.phase == InstallPhase.HEALTHY_UNCLAIMED
-                    and phase == InstallPhase.CONSUMED
+                    and phase in {InstallPhase.CONSUMED, InstallPhase.RECOVERY_REQUIRED}
                 )
                 and self._claimed_jobs.get(job_id) != current.executor_generation
             ):
@@ -1100,9 +1225,14 @@ class InstallJobManager:
                     current.actual_apk_bytes if parsed_actual is None else parsed_actual
                 ),
                 health_checked_at=(
-                    current.health_checked_at
-                    if parsed_health is None
-                    else parsed_health
+                    None
+                    if current.phase == InstallPhase.HEALTHY_UNCLAIMED
+                    and phase == InstallPhase.RECOVERY_REQUIRED
+                    else (
+                        current.health_checked_at
+                        if parsed_health is None
+                        else parsed_health
+                    )
                 ),
                 result_code=result_code,
                 consumed_entry_id=parsed_entry_id,
