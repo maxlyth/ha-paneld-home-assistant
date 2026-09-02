@@ -367,6 +367,35 @@ async def test_rejects_release_with_any_required_asset_missing(
         await async_resolve_stable_release(session)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("missing_index", [0, 1, 2])
+def test_required_triplet_is_rejected_before_any_asset_fetch(
+    missing_index: int,
+) -> None:
+    """Triplet completeness is enforced independently of later URL requests."""
+    assets = _required_assets_for_tag(_TAG)
+    del assets[missing_index]
+    document = _release_document(assets=assets)
+
+    with pytest.raises(ReleaseResolutionError):
+        release._parse_release_metadata(json.dumps(document).encode())
+
+
+def test_release_asset_count_bound_uses_otherwise_valid_assets() -> None:
+    """The asset-count limit is independent of per-asset validation."""
+    assets = _required_assets_for_tag(_TAG)
+    assets.extend(
+        {
+            "name": f"irrelevant-{index}.txt",
+            "browser_download_url": f"https://example.invalid/{index}",
+        }
+        for index in range(release._MAX_RELEASE_ASSETS - len(assets) + 1)
+    )
+    document = _release_document(assets=assets)
+
+    with pytest.raises(ReleaseResolutionError):
+        release._parse_release_metadata(json.dumps(document).encode())
+
+
 async def test_rejects_wrongly_named_asset_triplet() -> None:
     """A plausible APK for another tag is not a substitute for the exact asset."""
     wrong_apk = "ha-paneld-v1.2.4-manual-setup-required.apk"
