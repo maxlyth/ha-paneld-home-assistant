@@ -390,6 +390,28 @@ async def test_authentication_request_is_reported_without_a_shell_command(
     assert fake.closed is True
 
 
+async def test_explicit_authorization_probe_uses_only_the_supplied_signer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The post-consent connection offers exactly the persisted ADB identity."""
+    signer = object()
+    fake = _FakeAdbDevice(
+        [], connect_error=DeviceAuthError("Device authentication required")
+    )
+    _install_fake(monkeypatch, fake)
+
+    probe = await async_probe_install_target(
+        normalize_address("panel.local"),
+        signer,  # type: ignore[arg-type]
+    )
+
+    assert probe.state is InstallTargetState.ADB_UNAUTHORIZED
+    assert fake.connect_kwargs is not None
+    assert fake.connect_kwargs["rsa_keys"] == [signer]
+    assert fake.commands == []
+    assert fake.closed is True
+
+
 async def test_connection_packet_body_is_bounded_before_socket_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

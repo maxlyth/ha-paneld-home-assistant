@@ -11,6 +11,7 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
 
+from .adb_credentials import AdbCredentialError, async_get_adb_signer
 from .client import (
     CannotConnectError,
     HaPaneldClient,
@@ -101,6 +102,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                     health = await client.async_get_health()
                 except CannotConnectError, InvalidResponseError:
                     try:
+                        # The first probe deliberately has no key. Discovering an
+                        # authorization requirement must remain read-only; only the
+                        # explicit next step may create and offer HA's durable key.
                         probe = await async_probe_install_target(address)
                     except Exception:
                         _LOGGER.exception(
@@ -109,6 +113,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                         errors["base"] = "unknown"
                     else:
                         state = probe.state.value
+                        if state == "adb_unauthorized":
+                            self._pending_address = address
+                            return self._show_authorize_adb()
                         if state == "install_candidate":
                             placeholders = _install_candidate_placeholders(probe)
                             if placeholders is None:
@@ -134,7 +141,6 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                         else:
                             errors["base"] = {
                                 "adb_unreachable": "adb_unreachable",
-                                "adb_unauthorized": "adb_unauthorized",
                                 "installed": "installed_without_health",
                                 "retained_or_ambiguous": "retained_or_ambiguous",
                                 "incompatible": "incompatible",
@@ -164,6 +170,72 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="install_or_upgrade",
             data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
+            errors=errors,
+        )
+
+    async def async_step_authorize_adb(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Wait for explicit approval of Home Assistant's ADB key on the panel."""
+        if self._pending_address is None:
+            return self.async_abort(reason="unknown")
+        if user_input is None:
+            return self._show_authorize_adb()
+
+        try:
+            signer = await async_get_adb_signer(self.hass)
+            probe = await async_probe_install_target(self._pending_address, signer)
+        except AdbCredentialError:
+            return self._show_authorize_adb({"base": "adb_credential_error"})
+        except Exception:
+            _LOGGER.exception("Unexpected exception while retrying ADB authorization")
+            return self._show_authorize_adb({"base": "unknown"})
+
+        state = probe.state.value
+        if state == "adb_unauthorized":
+            return self._show_authorize_adb({"base": "adb_still_unauthorized"})
+        if state == "install_candidate":
+            placeholders = _install_candidate_placeholders(probe)
+            if placeholders is None:
+                return self.async_abort(reason="unknown")
+            try:
+                release = await async_resolve_stable_release(
+                    async_get_clientsession(self.hass)
+                )
+            except ReleaseResolutionError:
+                return self._show_authorize_adb({"base": "cannot_resolve_release"})
+            except Exception:
+                _LOGGER.exception(
+                    "Unexpected exception while resolving ha-paneld release"
+                )
+                return self._show_authorize_adb({"base": "unknown"})
+            self._pending_probe = probe
+            self._pending_release = release
+            return self._show_install_candidate_preview()
+
+        return self._show_authorize_adb(
+            {
+                "base": {
+                    "adb_unreachable": "adb_unreachable",
+                    "installed": "installed_without_health",
+                    "retained_or_ambiguous": "retained_or_ambiguous",
+                    "incompatible": "incompatible",
+                }.get(state, "unknown")
+            }
+        )
+
+    def _show_authorize_adb(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Show the physical ADB trust checkpoint."""
+        return self.async_show_form(
+            step_id="authorize_adb",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "address": self._pending_address.stored_value
+                if self._pending_address is not None
+                else ""
+            },
             errors=errors,
         )
 

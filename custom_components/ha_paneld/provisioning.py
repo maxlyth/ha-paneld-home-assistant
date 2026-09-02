@@ -10,6 +10,7 @@ from re import ASCII, fullmatch
 from secrets import token_hex
 
 from adb_shell.adb_device_async import AdbDeviceAsync
+from adb_shell.auth.sign_pythonrsa import PythonRSASigner
 from adb_shell.exceptions import (
     AdbConnectionError,
     AdbTimeoutError,
@@ -388,11 +389,13 @@ async def _async_close(device: AdbDeviceAsync) -> None:
             await device.close()
 
 
-async def async_probe_install_target(address: PanelAddress) -> InstallTargetProbe:
+async def async_probe_install_target(
+    address: PanelAddress, signer: PythonRSASigner | None = None
+) -> InstallTargetProbe:
     """Probe package absence without claiming installation admission.
 
-    No key is generated or sent. A target that requests authentication is reported
-    separately so a later, explicit flow can own the user's trust decision. An
+    When a signer is supplied, ADB may present its public key to the panel so the
+    user can approve this Home Assistant instance explicitly. An
     ``INSTALL_CANDIDATE`` result still requires a later privileged residual-state
     check before any installation may be admitted.
     """
@@ -408,7 +411,7 @@ async def async_probe_install_target(address: PanelAddress) -> InstallTargetProb
     try:
         async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
             connected = await device.connect(
-                rsa_keys=[],
+                rsa_keys=[] if signer is None else [signer],
                 transport_timeout_s=_CONNECT_TIMEOUT_SECONDS,
                 auth_timeout_s=_CONNECT_TIMEOUT_SECONDS,
                 read_timeout_s=_CONNECT_TIMEOUT_SECONDS,

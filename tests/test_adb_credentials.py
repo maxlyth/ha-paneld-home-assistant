@@ -1,0 +1,563 @@
+"""Tests for the persistent integration-owned ADB credential."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import struct
+from hashlib import sha1
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
+from homeassistant.core import HomeAssistant
+
+from custom_components.ha_paneld import adb_credentials
+from custom_components.ha_paneld.adb_credentials import (
+    AdbCredentialError,
+    AdbCredentialManager,
+    _generate_credential,
+    _parse_stored_credential,
+    _StoredCredential,
+    async_get_adb_signer,
+)
+from custom_components.ha_paneld.const import DOMAIN
+
+
+def _serialized(credential: _StoredCredential) -> dict[str, str]:
+    return {
+        "format": "adb-rsa-2048-v1",
+        "private_key_pkcs8_pem": credential.private_key,
+        "public_key_adb": credential.public_key,
+    }
+
+
+def _other_public_key() -> str:
+    return _generate_credential().public_key
+
+
+def test_generated_credential_is_a_consistent_android_adb_key() -> None:
+    """Generated private material, Android public bytes and signer all agree."""
+    credential = _generate_credential()
+    loaded = serialization.load_pem_private_key(
+        credential.private_key.encode("ascii"), password=None
+    )
+    assert isinstance(loaded, rsa.RSAPrivateKey)
+    assert loaded.key_size == 2048
+
+    encoded_key, comment = credential.public_key.split(" ", maxsplit=1)
+    assert comment == "ha-paneld@home-assistant"
+    android_key = base64.b64decode(encoded_key, validate=True)
+    words, n0inv, modulus_le, rr_le, exponent = struct.unpack(
+        "<II256s256sI", android_key
+    )
+
+    public_numbers = loaded.public_key().public_numbers()
+    assert words == 64
+    assert exponent == public_numbers.e == 65537
+    assert int.from_bytes(modulus_le, "little") == public_numbers.n
+    assert n0inv == (1 << 32) - pow(public_numbers.n % (1 << 32), -1, 1 << 32)
+    assert int.from_bytes(rr_le, "little") == pow(1 << 2048, 2, public_numbers.n)
+
+    parsed = _parse_stored_credential(_serialized(credential))
+    assert parsed == credential
+    signer = adb_credentials.PythonRSASigner(parsed.public_key, parsed.private_key)
+    challenge_digest = sha1(b"ha-paneld credential consistency").digest()
+    loaded.public_key().verify(
+        signer.Sign(challenge_digest),
+        challenge_digest,
+        padding.PKCS1v15(),
+        utils.Prehashed(hashes.SHA1()),
+    )
+    assert signer.GetPublicKey() == credential.public_key
+
+
+def test_generation_uses_private_temporary_paths() -> None:
+    """Generation exposes no group/world-readable directory or key path."""
+    keygen = adb_credentials.keygen
+    observed_modes: dict[str, int] = {}
+
+    def audited_keygen(path_text: str) -> None:
+        private_path = Path(path_text)
+        public_path = Path(f"{path_text}.pub")
+        observed_modes.update(
+            directory=private_path.parent.stat().st_mode & 0o777,
+            private=private_path.stat().st_mode & 0o777,
+            public=public_path.stat().st_mode & 0o777,
+        )
+        keygen(path_text)
+
+    with patch.object(adb_credentials, "keygen", side_effect=audited_keygen):
+        _generate_credential()
+
+    assert observed_modes == {"directory": 0o700, "private": 0o600, "public": 0o600}
+
+
+@pytest.mark.parametrize("oversize_path", ["private", "public"])
+def test_generation_rejects_oversize_generated_files(oversize_path: str) -> None:
+    """Unexpectedly large keygen output is rejected before being read or persisted."""
+
+    def oversize_keygen(path_text: str) -> None:
+        private_path = Path(path_text)
+        public_path = Path(f"{path_text}.pub")
+        private_path.write_text(
+            "x" * (4097 if oversize_path == "private" else 1), encoding="ascii"
+        )
+        public_path.write_text(
+            "x" * (1025 if oversize_path == "public" else 1), encoding="ascii"
+        )
+
+    with (
+        patch.object(adb_credentials, "keygen", side_effect=oversize_keygen),
+        pytest.raises(AdbCredentialError),
+    ):
+        _generate_credential()
+
+
+async def test_manager_constructs_private_atomic_store(
+    hass: HomeAssistant,
+) -> None:
+    """The credential lives in an integration-private atomically written Store."""
+    with patch.object(adb_credentials, "Store") as store_class:
+        manager = AdbCredentialManager(hass)
+
+    assert manager is not None
+    store_class.assert_called_once_with(
+        hass,
+        1,
+        f"{DOMAIN}.adb_key",
+        private=True,
+        atomic_writes=True,
+    )
+
+
+async def test_manager_persists_and_reuses_one_credential(
+    hass: HomeAssistant,
+) -> None:
+    """A new manager after an in-process restart reuses durable key material."""
+    generation_count = 0
+    generate = _generate_credential
+    persisted: dict[str, str] = {}
+
+    initial_store = MagicMock()
+    initial_store.path = "/not/read/by/this/test"
+    initial_store.async_load = AsyncMock(return_value=None)
+
+    async def save(data: dict[str, str]) -> None:
+        persisted.update(data)
+
+    initial_store.async_save = AsyncMock(side_effect=save)
+    verification_store = MagicMock()
+    verification_store.async_load = AsyncMock(side_effect=lambda: persisted.copy())
+    restarted_store = MagicMock()
+    restarted_store.path = "/not/read/by/this/test"
+    restarted_store.async_load = AsyncMock(side_effect=lambda: persisted.copy())
+
+    def counted_generate() -> _StoredCredential:
+        nonlocal generation_count
+        generation_count += 1
+        return generate()
+
+    with (
+        patch.object(
+            adb_credentials,
+            "Store",
+            side_effect=[initial_store, verification_store, restarted_store],
+        ),
+        patch.object(
+            adb_credentials,
+            "_store_presence",
+            side_effect=[(False, False), (True, False)],
+        ),
+        patch.object(adb_credentials, "_store_is_private", return_value=True),
+        patch.object(
+            adb_credentials, "_generate_credential", side_effect=counted_generate
+        ),
+    ):
+        first = await AdbCredentialManager(hass).async_get_signer()
+        second = await AdbCredentialManager(hass).async_get_signer()
+
+    assert generation_count == 1
+    assert second.GetPublicKey() == first.GetPublicKey()
+    digest = sha1(b"durable identity").digest()
+    assert second.Sign(digest) == first.Sign(digest)
+
+
+async def test_manager_serializes_concurrent_generation(
+    hass: HomeAssistant,
+) -> None:
+    """All overlapping consumers wait for the same one-time generation."""
+    load_started = asyncio.Event()
+    release_load = asyncio.Event()
+    generation_count = 0
+    generate = _generate_credential
+    persisted: dict[str, str] = {}
+
+    initial_store = MagicMock()
+    initial_store.path = "/not/read/by/this/test"
+
+    async def gated_load() -> None:
+        load_started.set()
+        await release_load.wait()
+        return None
+
+    async def save(data: dict[str, str]) -> None:
+        persisted.update(data)
+
+    initial_store.async_load = AsyncMock(side_effect=gated_load)
+    initial_store.async_save = AsyncMock(side_effect=save)
+    verification_store = MagicMock()
+    verification_store.async_load = AsyncMock(side_effect=lambda: persisted.copy())
+
+    def counted_generate() -> _StoredCredential:
+        nonlocal generation_count
+        generation_count += 1
+        return generate()
+
+    with (
+        patch.object(
+            adb_credentials,
+            "Store",
+            side_effect=[initial_store, verification_store],
+        ),
+        patch.object(adb_credentials, "_store_presence", return_value=(False, False)),
+        patch.object(adb_credentials, "_store_is_private", return_value=True),
+        patch.object(
+            adb_credentials, "_generate_credential", side_effect=counted_generate
+        ),
+    ):
+        manager = AdbCredentialManager(hass)
+        first_task = asyncio.create_task(manager.async_get_signer())
+        await asyncio.wait_for(load_started.wait(), timeout=10)
+        waiting_tasks = [
+            asyncio.create_task(manager.async_get_signer()) for _ in range(15)
+        ]
+        await asyncio.sleep(0)
+        release_load.set()
+        signers = await asyncio.gather(first_task, *waiting_tasks)
+
+    assert generation_count == 1
+    assert {signer.GetPublicKey() for signer in signers} == {signers[0].GetPublicKey()}
+    digest = sha1(b"single flight").digest()
+    assert {signer.Sign(digest) for signer in signers} == {signers[0].Sign(digest)}
+
+
+async def test_process_wide_accessor_reuses_one_manager(
+    hass: HomeAssistant,
+) -> None:
+    """Independent callers receive signers backed by the process-wide authority."""
+    credential = _generate_credential()
+    serialized = _serialized(credential)
+    store = MagicMock()
+    store.path = "/not/read/by/this/test"
+    store.async_load = AsyncMock(return_value=serialized)
+    with (
+        patch.object(adb_credentials, "Store", return_value=store),
+        patch.object(adb_credentials, "_store_presence", return_value=(True, False)),
+        patch.object(adb_credentials, "_store_is_private", return_value=True),
+    ):
+        first, second = await asyncio.gather(
+            async_get_adb_signer(hass), async_get_adb_signer(hass)
+        )
+
+    assert first.GetPublicKey() == second.GetPublicKey()
+    managers = [
+        value for value in hass.data.values() if isinstance(value, AdbCredentialManager)
+    ]
+    assert len(managers) == 1
+
+
+async def test_process_wide_accessor_rejects_foreign_manager_state(
+    hass: HomeAssistant,
+) -> None:
+    """Corrupt process state cannot silently replace the credential authority."""
+    hass.data[f"{DOMAIN}.adb_credential_manager"] = object()
+
+    with pytest.raises(AdbCredentialError):
+        await async_get_adb_signer(hass)
+
+
+@pytest.mark.parametrize("presence", [(True, False), (False, True)])
+async def test_missing_loaded_data_with_store_evidence_never_regenerates(
+    hass: HomeAssistant, presence: tuple[bool, bool]
+) -> None:
+    """A missing or quarantined credential is an error, not key rotation."""
+    store = MagicMock()
+    store.path = "/not/read/by/this/test"
+    store.async_load = AsyncMock(return_value=None)
+
+    with (
+        patch.object(adb_credentials, "Store", return_value=store),
+        patch.object(adb_credentials, "_store_presence", return_value=presence),
+        patch.object(adb_credentials, "_generate_credential") as generate,
+        pytest.raises(AdbCredentialError),
+    ):
+        await AdbCredentialManager(hass).async_get_signer()
+
+    generate.assert_not_called()
+    store.async_load.assert_awaited_once_with()
+
+
+async def test_corrupt_loaded_credential_never_regenerates(
+    hass: HomeAssistant,
+) -> None:
+    """Invalid persisted bytes fail closed without replacing panel trust."""
+    store = MagicMock()
+    store.path = "/not/read/by/this/test"
+    store.async_load = AsyncMock(
+        return_value={
+            "format": "adb-rsa-2048-v1",
+            "private_key_pkcs8_pem": "invalid",
+            "public_key_adb": "invalid",
+        }
+    )
+
+    with (
+        patch.object(adb_credentials, "Store", return_value=store),
+        patch.object(adb_credentials, "_store_presence", return_value=(True, False)),
+        patch.object(adb_credentials, "_generate_credential") as generate,
+        pytest.raises(AdbCredentialError),
+    ):
+        await AdbCredentialManager(hass).async_get_signer()
+
+    generate.assert_not_called()
+
+
+async def test_loaded_credential_is_refused_without_private_file(
+    hass: HomeAssistant,
+) -> None:
+    """Valid key bytes are not enough when their backing file is not private."""
+    store = MagicMock()
+    store.path = "/not/read/by/this/test"
+    store.async_load = AsyncMock(return_value=_serialized(_generate_credential()))
+
+    with (
+        patch.object(adb_credentials, "Store", return_value=store),
+        patch.object(adb_credentials, "_store_presence", return_value=(True, False)),
+        patch.object(adb_credentials, "_store_is_private", return_value=False),
+        pytest.raises(AdbCredentialError),
+    ):
+        await AdbCredentialManager(hass).async_get_signer()
+
+
+async def test_manager_translates_unexpected_store_failure(
+    hass: HomeAssistant,
+) -> None:
+    """Backend failures do not escape the credential authority abstraction."""
+    store = MagicMock()
+    store.path = "/not/read/by/this/test"
+    store.async_load = AsyncMock(side_effect=RuntimeError("backend failed"))
+
+    with (
+        patch.object(adb_credentials, "Store", return_value=store),
+        patch.object(adb_credentials, "_store_presence", return_value=(True, False)),
+        pytest.raises(AdbCredentialError) as caught,
+    ):
+        await AdbCredentialManager(hass).async_get_signer()
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+@pytest.mark.parametrize(
+    "persisted",
+    [
+        None,
+        {},
+        {"private_key": "changed", "public_key": "changed"},
+    ],
+)
+async def test_new_credential_is_refused_without_exact_persisted_readback(
+    hass: HomeAssistant, persisted: object
+) -> None:
+    """A generated identity is never offered to ADB unless durable bytes agree."""
+    initial_store = MagicMock()
+    initial_store.async_load = AsyncMock(return_value=None)
+    initial_store.async_save = AsyncMock()
+    verification_store = MagicMock()
+    verification_store.async_load = AsyncMock(return_value=persisted)
+
+    initial_store.path = "/not/read/by/this/test"
+    with (
+        patch.object(
+            adb_credentials, "Store", side_effect=[initial_store, verification_store]
+        ),
+        patch.object(adb_credentials, "_store_presence", return_value=(False, False)),
+        patch.object(adb_credentials, "_store_is_private", return_value=True),
+    ):
+        manager = AdbCredentialManager(hass)
+        with pytest.raises(AdbCredentialError):
+            await manager.async_get_signer()
+
+    initial_store.async_save.assert_awaited_once()
+    verification_store.async_load.assert_awaited_once_with()
+
+
+async def test_new_credential_is_refused_when_readback_is_not_exactly_private(
+    hass: HomeAssistant,
+) -> None:
+    """Even an exact read-back is unusable unless the secret file is mode 0600."""
+    credential = _generate_credential()
+    serialized = _serialized(credential)
+    initial_store = MagicMock()
+    initial_store.path = "/not/read/by/this/test"
+    initial_store.async_load = AsyncMock(return_value=None)
+    initial_store.async_save = AsyncMock()
+    verification_store = MagicMock()
+    verification_store.async_load = AsyncMock(return_value=serialized)
+
+    with (
+        patch.object(
+            adb_credentials, "Store", side_effect=[initial_store, verification_store]
+        ),
+        patch.object(adb_credentials, "_store_presence", return_value=(False, False)),
+        patch.object(adb_credentials, "_store_is_private", return_value=False),
+        patch.object(adb_credentials, "_generate_credential", return_value=credential),
+        pytest.raises(AdbCredentialError),
+    ):
+        await AdbCredentialManager(hass).async_get_signer()
+
+    initial_store.async_save.assert_awaited_once_with(serialized)
+
+
+def test_store_privacy_check_requires_regular_owner_only_file(tmp_path: Path) -> None:
+    """Credential read-back accepts exactly a regular 0600 file."""
+    credential_path = tmp_path / "credential"
+    credential_path.write_text("secret", encoding="ascii")
+    credential_path.chmod(0o600)
+    assert adb_credentials._store_is_private(str(credential_path))
+
+    credential_path.chmod(0o640)
+    assert not adb_credentials._store_is_private(str(credential_path))
+
+
+def test_store_privacy_check_rejects_symlink(tmp_path: Path) -> None:
+    """A 0600 target cannot make a symlink masquerade as the secret Store file."""
+    target_path = tmp_path / "target"
+    target_path.write_text("secret", encoding="ascii")
+    target_path.chmod(0o600)
+    link_path = tmp_path / "credential"
+    link_path.symlink_to(target_path)
+
+    assert adb_credentials._store_presence(str(link_path)) == (True, False)
+    assert not adb_credentials._store_is_private(str(link_path))
+
+
+def test_store_presence_detects_exact_and_quarantined_files(tmp_path: Path) -> None:
+    """Store evidence survives a missing current file and blocks key replacement."""
+    storage_path = tmp_path / "ha_paneld.adb_credentials"
+    assert adb_credentials._store_presence(str(storage_path)) == (False, False)
+
+    storage_path.write_text("current", encoding="ascii")
+    assert adb_credentials._store_presence(str(storage_path)) == (True, False)
+
+    storage_path.unlink()
+    (tmp_path / "ha_paneld.adb_credentials.corrupt.2026-09-02").write_text(
+        "quarantined", encoding="ascii"
+    )
+    assert adb_credentials._store_presence(str(storage_path)) == (False, True)
+
+    absent_parent_path = tmp_path / "absent" / "credential"
+    assert adb_credentials._store_presence(str(absent_parent_path)) == (False, False)
+
+
+def test_store_presence_translates_filesystem_failures() -> None:
+    """Presence inspection errors fail closed behind the credential exception."""
+    with (
+        patch.object(adb_credentials.os.path, "lexists", side_effect=OSError),
+        pytest.raises(AdbCredentialError),
+    ):
+        adb_credentials._store_presence("/not/read/by/this/test")
+
+
+def test_store_privacy_translates_missing_or_unreadable_file() -> None:
+    """Missing or unreadable persisted secrets fail closed."""
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._store_is_private("/not/read/by/this/test")
+
+    with (
+        patch.object(Path, "lstat", side_effect=OSError),
+        pytest.raises(AdbCredentialError),
+    ):
+        adb_credentials._store_is_private("/not/read/by/this/test")
+
+
+def _rsa_private_pem(*, key_size: int, public_exponent: int = 65537) -> str:
+    key = rsa.generate_private_key(
+        public_exponent=public_exponent,
+        key_size=key_size,
+    )
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("ascii")
+
+
+def _corrupt_cases() -> list[object]:
+    valid = _generate_credential()
+    valid_data = _serialized(valid)
+    return [
+        None,
+        [],
+        "not an object",
+        {},
+        {"private_key_pkcs8_pem": valid.private_key},
+        {"public_key_adb": valid.public_key},
+        {**valid_data, "format": "adb-rsa-4096-v2"},
+        {**valid_data, "private_key_pkcs8_pem": None},
+        {**valid_data, "public_key_adb": None},
+        {**valid_data, "private_key_pkcs8_pem": ""},
+        {**valid_data, "public_key_adb": ""},
+        {**valid_data, "private_key_pkcs8_pem": "x" * 4097},
+        {**valid_data, "public_key_adb": "x" * 1025},
+        {**valid_data, "private_key_pkcs8_pem": "not a PEM key"},
+        {**valid_data, "private_key_pkcs8_pem": "\N{SNOWMAN}"},
+        {
+            **valid_data,
+            "private_key_pkcs8_pem": _rsa_private_pem(key_size=1024),
+        },
+        {
+            **valid_data,
+            "private_key_pkcs8_pem": _rsa_private_pem(key_size=2048, public_exponent=3),
+        },
+        {**valid_data, "public_key_adb": _other_public_key()},
+        {**valid_data, "public_key_adb": valid.public_key.partition(" ")[0]},
+        {**valid_data, "public_key_adb": "%%% ha-paneld@home-assistant"},
+        {**valid_data, "public_key_adb": "YQ== ha-paneld@home-assistant"},
+    ]
+
+
+@pytest.mark.parametrize("data", _corrupt_cases())
+def test_parser_rejects_corrupt_mismatched_or_oversize_data(data: object) -> None:
+    """Malformed, excessive or internally inconsistent durable data fails closed."""
+    with pytest.raises(AdbCredentialError):
+        _parse_stored_credential(data)
+
+
+def test_parser_rejects_additive_unknown_fields_without_version_migration() -> None:
+    """Unversioned schema additions cannot silently change the secret contract."""
+    credential = _generate_credential()
+    stored: dict[str, Any] = {
+        **_serialized(credential),
+        "created_at": "future metadata",
+        "future": {"nested": [1, 2, 3]},
+    }
+
+    with pytest.raises(AdbCredentialError):
+        _parse_stored_credential(stored)
+
+
+def test_parser_rejects_signer_public_key_disagreement() -> None:
+    """The signer adapter must return the same Android public identity."""
+    credential = _generate_credential()
+    signer = MagicMock()
+    signer.GetPublicKey.return_value = _other_public_key()
+
+    with (
+        patch.object(adb_credentials, "PythonRSASigner", return_value=signer),
+        pytest.raises(AdbCredentialError),
+    ):
+        _parse_stored_credential(_serialized(credential))
