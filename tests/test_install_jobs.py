@@ -25,6 +25,7 @@ from custom_components.ha_paneld.install_jobs import (
     InstallJobConflictError,
     InstallJobManager,
     InstallJobNotFoundError,
+    InstallJobReceipt,
     InstallJobRevisionError,
     InstallJobStoreError,
     InstallJobTransitionError,
@@ -39,6 +40,11 @@ SHA = "a" * 64
 CREDENTIAL_ID = "b" * 64
 CURRENT_ENTRY_ID = "01M1J723MDQ69QDQVCRXKYZBJV"
 LEGACY_ENTRY_ID = "0123456789abcdef0123456789abcdef"
+CLEANUP_BARRIER_PHASES = (
+    InstallPhase.STAGING,
+    InstallPhase.INSTALLING,
+    InstallPhase.LAUNCHING,
+)
 _REAL_STORE_PRESENCE = install_jobs._store_presence
 
 
@@ -148,6 +154,102 @@ async def transition_to_staging(
     return await manager.async_transition(
         job_id, receipt.revision, InstallPhase.STAGING
     )
+
+
+async def receipt_at_phase(
+    manager: InstallJobManager, phase: InstallPhase
+) -> InstallJobReceipt:
+    """Build a valid claimed receipt at each durable phase for barrier tests."""
+    receipt, _ = await create(manager)
+    receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+    if phase is InstallPhase.APPROVED:
+        return receipt
+    if phase is InstallPhase.CANCELLED:
+        receipt = await manager.async_request_cancel(receipt.job_id, receipt.revision)
+        return await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.CANCELLED,
+            result_code=InstallResultCode.CANCELLED_BY_USER,
+        )
+    receipt = await manager.async_transition(
+        receipt.job_id, receipt.revision, InstallPhase.AUTHORIZING
+    )
+    if phase is InstallPhase.AUTHORIZING:
+        return receipt
+    if phase is InstallPhase.FAILED:
+        return await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.FAILED,
+            result_code=InstallResultCode.AUTHORIZATION_FAILED,
+        )
+    for next_phase in (
+        InstallPhase.PREFLIGHT,
+        InstallPhase.DOWNLOADING,
+        InstallPhase.ARTIFACT_READY,
+        InstallPhase.REVALIDATING,
+        InstallPhase.STAGING,
+        InstallPhase.INSTALLING,
+        InstallPhase.INSTALLED,
+        InstallPhase.LAUNCHING,
+        InstallPhase.HEALTH_CHECK,
+        InstallPhase.HEALTHY_UNCLAIMED,
+        InstallPhase.CONSUMED,
+    ):
+        if next_phase is InstallPhase.ARTIFACT_READY:
+            receipt = await manager.async_transition(
+                receipt.job_id,
+                receipt.revision,
+                next_phase,
+                actual_apk_bytes=artifact().apk_size,
+            )
+        elif next_phase is InstallPhase.HEALTHY_UNCLAIMED:
+            receipt = await manager.async_transition(
+                receipt.job_id,
+                receipt.revision,
+                next_phase,
+                health_checked_at=Clock()(),
+            )
+        elif next_phase is InstallPhase.CONSUMED:
+            receipt = await manager.async_transition(
+                receipt.job_id,
+                receipt.revision,
+                next_phase,
+                result_code=InstallResultCode.ENTRY_CREATED,
+                consumed_entry_id=CURRENT_ENTRY_ID,
+            )
+        else:
+            receipt = await manager.async_transition(
+                receipt.job_id, receipt.revision, next_phase
+            )
+        if phase is next_phase:
+            return receipt
+        if (
+            phase is InstallPhase.RECOVERY_REQUIRED
+            and next_phase is InstallPhase.STAGING
+        ):
+            return await manager.async_transition(
+                receipt.job_id,
+                receipt.revision,
+                InstallPhase.RECOVERY_REQUIRED,
+                result_code=InstallResultCode.AMBIGUOUS_MUTATION,
+            )
+    raise AssertionError(f"unsupported test phase: {phase}")
+
+
+async def overwrite_stored_cancel_requested(
+    hass: HomeAssistant, job_id: str, cancel_requested: bool
+) -> None:
+    """Change only the persisted cancellation bit for fail-closed tests."""
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    stored_receipt = next(item for item in document["jobs"] if item["job_id"] == job_id)
+    stored_receipt["cancel_requested"] = cancel_requested
+    await store.async_save(document)
 
 
 async def test_manager_constructs_private_atomic_store(hass: HomeAssistant) -> None:
@@ -935,6 +1037,201 @@ async def test_mutation_barrier_uses_fresh_store_and_rejects_cancel(
     with pytest.raises(InstallJobTransitionError):
         await manager.async_verify_mutation_barrier(
             staging.job_id, staging.revision, InstallPhase.STAGING
+        )
+
+
+@pytest.mark.parametrize("phase", list(InstallPhase))
+@pytest.mark.parametrize("cancel_requested", [False, True])
+async def test_cleanup_barrier_allows_only_exact_phase_and_cancel_polarity(
+    hass: HomeAssistant,
+    phase: InstallPhase,
+    cancel_requested: bool,
+) -> None:
+    """Every durable phase and cancellation polarity has an explicit outcome."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, phase)
+    cancellable_phases = {
+        InstallPhase.APPROVED,
+        InstallPhase.AUTHORIZING,
+        InstallPhase.PREFLIGHT,
+        InstallPhase.DOWNLOADING,
+        InstallPhase.ARTIFACT_READY,
+        InstallPhase.REVALIDATING,
+        InstallPhase.STAGING,
+    }
+    if cancel_requested != receipt.cancel_requested:
+        if cancel_requested and phase in cancellable_phases:
+            receipt = await manager.async_request_cancel(
+                receipt.job_id, receipt.revision
+            )
+        else:
+            await overwrite_stored_cancel_requested(
+                hass, receipt.job_id, cancel_requested
+            )
+
+    allowed = (phase is InstallPhase.STAGING and cancel_requested) or (
+        phase in {InstallPhase.INSTALLING, InstallPhase.LAUNCHING}
+        and not cancel_requested
+    )
+    if not allowed:
+        with pytest.raises(InstallJobTransitionError):
+            await manager.async_verify_cleanup_barrier(
+                receipt.job_id, receipt.revision, phase
+            )
+        return
+
+    claims_before = manager._claimed_jobs.copy()
+    verified = await manager.async_verify_cleanup_barrier(
+        receipt.job_id, receipt.revision, phase
+    )
+
+    assert verified == receipt
+    assert await manager.async_get(receipt.job_id) == receipt
+    assert manager._claimed_jobs == claims_before
+
+
+@pytest.mark.parametrize(
+    ("receipt_phase", "requested_phase"),
+    [
+        (receipt_phase, requested_phase)
+        for receipt_phase in CLEANUP_BARRIER_PHASES
+        for requested_phase in CLEANUP_BARRIER_PHASES
+        if receipt_phase is not requested_phase
+    ],
+)
+async def test_cleanup_barrier_rejects_every_other_allowed_phase(
+    hass: HomeAssistant,
+    receipt_phase: InstallPhase,
+    requested_phase: InstallPhase,
+) -> None:
+    """Cleanup authority is bound to one phase, even at equal polarity."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, receipt_phase)
+    if receipt_phase is InstallPhase.STAGING:
+        receipt = await manager.async_request_cancel(receipt.job_id, receipt.revision)
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, requested_phase
+        )
+
+
+async def test_cleanup_barrier_rejects_stale_revision_and_generation(
+    hass: HomeAssistant,
+) -> None:
+    """Cleanup authority is bound to the exact revision and claimed generation."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.INSTALLING)
+
+    with pytest.raises(InstallJobRevisionError):
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision - 1, receipt.phase
+        )
+
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    stored_receipt = document["jobs"][0]
+    stored_receipt["executor_generation"] += 1
+    stored_receipt["attempt"] += 1
+    await store.async_save(document)
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+    assert manager._claimed_jobs == {}
+
+
+async def test_cleanup_barrier_rejects_fresh_manager_without_claim(
+    hass: HomeAssistant,
+) -> None:
+    """A newly constructed manager cannot inherit remote-cleanup authority."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.INSTALLING)
+    restarted = InstallJobManager(hass, now=Clock())
+
+    with pytest.raises(InstallJobTransitionError):
+        await restarted.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+
+
+async def test_cleanup_barrier_rejects_store_drift_between_fresh_reads(
+    hass: HomeAssistant,
+) -> None:
+    """Two individually valid but unequal durable snapshots fail closed."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.INSTALLING)
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    drifted = copy.deepcopy(document)
+    drifted["jobs"][0]["updated_at"] = "2026-09-02T12:00:01+00:00"
+    first_reader = MagicMock()
+    first_reader.async_load = AsyncMock(return_value=document)
+    independent_reader = MagicMock()
+    independent_reader.async_load = AsyncMock(return_value=drifted)
+
+    with (
+        patch.object(
+            install_jobs, "Store", side_effect=[first_reader, independent_reader]
+        ),
+        pytest.raises(InstallJobTransitionError),
+    ):
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+
+
+async def test_cleanup_barrier_rejects_corrupt_independent_store_read(
+    hass: HomeAssistant,
+) -> None:
+    """Independent Store corruption cannot authorize remote cleanup."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.INSTALLING)
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    first_reader = MagicMock()
+    first_reader.async_load = AsyncMock(return_value=document)
+    corrupt_reader = MagicMock()
+    corrupt_reader.async_load = AsyncMock(
+        return_value={"format": "unexpected", "jobs": []}
+    )
+
+    with (
+        patch.object(install_jobs, "Store", side_effect=[first_reader, corrupt_reader]),
+        pytest.raises(InstallJobStoreError),
+    ):
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+
+
+async def test_cancelled_staging_uses_cleanup_not_ordinary_mutation_barrier(
+    hass: HomeAssistant,
+) -> None:
+    """Cancellation cleanup authority never weakens ordinary mutation gating."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.STAGING)
+    receipt = await manager.async_request_cancel(receipt.job_id, receipt.revision)
+
+    assert (
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+        == receipt
+    )
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_verify_mutation_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
         )
 
 

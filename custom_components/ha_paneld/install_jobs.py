@@ -148,6 +148,11 @@ _TERMINAL_PHASES = frozenset(
 _MUTATION_BARRIERS = frozenset(
     {InstallPhase.STAGING, InstallPhase.INSTALLING, InstallPhase.LAUNCHING}
 )
+_CLEANUP_BARRIER_CANCEL_POLARITY: Mapping[InstallPhase, bool] = {
+    InstallPhase.STAGING: True,
+    InstallPhase.INSTALLING: False,
+    InstallPhase.LAUNCHING: False,
+}
 _ARTIFACT_REQUIRED_PHASES = frozenset(
     {
         InstallPhase.ARTIFACT_READY,
@@ -1276,6 +1281,42 @@ class InstallJobManager:
                 receipt != in_memory
                 or receipt.phase != phase
                 or receipt.cancel_requested
+                or self._claimed_jobs.get(job_id) != receipt.executor_generation
+            ):
+                raise InstallJobTransitionError
+            return receipt
+
+    async def async_verify_cleanup_barrier(
+        self,
+        job_id: str,
+        expected_revision: int,
+        phase: InstallPhase,
+    ) -> InstallJobReceipt:
+        """Freshly verify the narrowly allowed remote-cleanup authority."""
+        expected_cancel_requested = _CLEANUP_BARRIER_CANCEL_POLARITY.get(phase)
+        if expected_cancel_requested is None:
+            raise InstallJobTransitionError
+        async with self._lock:
+            in_memory = self._checked_current(
+                await self._async_load_locked(refresh=True), job_id, expected_revision
+            )
+            verifier: Store[dict[str, Any]] = Store(
+                self._hass,
+                _STORE_VERSION,
+                _STORE_KEY,
+                private=True,
+                atomic_writes=True,
+            )
+            try:
+                persisted = await verifier.async_load()
+                fresh = _parse_document(persisted)
+            except (InstallJobStoreError, OSError) as err:
+                raise InstallJobStoreError from err
+            receipt = self._checked_current(fresh, job_id, expected_revision)
+            if (
+                receipt != in_memory
+                or receipt.phase != phase
+                or receipt.cancel_requested is not expected_cancel_requested
                 or self._claimed_jobs.get(job_id) != receipt.executor_generation
             ):
                 raise InstallJobTransitionError
