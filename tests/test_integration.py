@@ -25,6 +25,10 @@ from custom_components.ha_paneld.diagnostics import (
     async_get_config_entry_diagnostics,
     async_get_device_diagnostics,
 )
+from custom_components.ha_paneld.install_artifacts import (
+    ArtifactCustodyError,
+    ArtifactErrorCode,
+)
 from custom_components.ha_paneld.install_executor import InstallExecutor
 from custom_components.ha_paneld.install_jobs import (
     InstallJobRevisionError,
@@ -97,6 +101,24 @@ def _installer_doubles(
         async_transition=AsyncMock(),
     )
     return executor, manager
+
+
+def _assert_healthy_entry_loaded(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Assert the existing entry, device and diagnostic sensor remain available."""
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.coordinator.data.health == HEALTH
+    entities = [
+        item
+        for item in er.async_get(hass).entities.values()
+        if item.config_entry_id == entry.entry_id
+    ]
+    assert len(entities) == 1
+    state = hass.states.get(entities[0].entity_id)
+    assert state is not None
+    assert state.state == "online"
+    assert (
+        len(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)) == 1
+    )
 
 
 async def test_setup_device_diagnostics_unload_reload(hass: HomeAssistant) -> None:
@@ -224,6 +246,49 @@ async def test_setup_survives_install_job_resume_failure(
     assert "Unable to resume durable ha-paneld install jobs" in caplog.text
 
 
+async def test_setup_survives_install_artifact_resume_failure(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Artifact custody failure cannot block an ordinary existing entry."""
+    entry = _entry(hass)
+    executor, manager = _installer_doubles()
+    private_detail = "private-artifact-path"
+    error = ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+    error.args = (private_detail,)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(side_effect=error),
+        ) as resume_mock,
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    _assert_healthy_entry_loaded(hass, entry)
+    resume_mock.assert_awaited_once_with(hass)
+    manager.async_list.assert_awaited_once_with()
+    assert private_detail not in caplog.text
+    assert "Unable to resume durable ha-paneld install jobs" in caplog.text
+
+
 async def test_setup_survives_install_receipt_store_failure(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -265,6 +330,76 @@ async def test_setup_survives_install_receipt_store_failure(
     )
     assert private_detail not in caplog.text
     assert "Unable to reconcile a durable ha-paneld install receipt" in caplog.text
+
+
+async def test_setup_survives_install_artifact_reconciliation_failure(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Artifact cleanup failure cannot block a healthy existing entry."""
+    entry = _entry(hass)
+    private_detail = "private-artifact-path"
+    error = ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+    error.args = (private_detail,)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(side_effect=error),
+        ) as executor_mock,
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(),
+        ) as manager_mock,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    _assert_healthy_entry_loaded(hass, entry)
+    executor_mock.assert_awaited_once_with(hass)
+    manager_mock.assert_not_awaited()
+    assert private_detail not in caplog.text
+    assert "Unable to reconcile a durable ha-paneld install receipt" in caplog.text
+
+
+async def test_artifact_resume_failure_does_not_hide_health_setup_failure(
+    hass: HomeAssistant,
+) -> None:
+    """Installer containment leaves coordinator retry authority unchanged."""
+    entry = _entry(hass)
+    status_mock = AsyncMock(return_value=STATUS)
+
+    with (
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(side_effect=ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            status_mock,
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    status_mock.assert_not_awaited()
 
 
 async def test_setup_consumes_matching_healthy_install_receipt(

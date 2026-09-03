@@ -12,6 +12,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .client import HaPaneldClient, normalize_address
 from .coordinator import HaPaneldDataUpdateCoordinator
+from .install_artifacts import ArtifactCustodyError
 from .install_executor import (
     async_get_install_executor,
     async_resume_loaded_install_jobs,
@@ -42,7 +43,7 @@ async def _async_resume_install_jobs(hass: HomeAssistant) -> None:
     """Best-effort resume after an existing entry has loaded the domain."""
     try:
         await async_resume_loaded_install_jobs(hass)
-    except InstallJobError:
+    except ArtifactCustodyError, InstallJobError:
         _LOGGER.warning("Unable to resume durable ha-paneld install jobs")
 
 
@@ -90,7 +91,7 @@ async def _async_reconcile_install_receipt(
             InstallPhase.RECOVERY_REQUIRED,
             result_code=InstallResultCode.VERIFICATION_REQUIRED,
         )
-    except InstallJobError:
+    except ArtifactCustodyError, InstallJobError:
         _LOGGER.warning("Unable to reconcile a durable ha-paneld install receipt")
     finally:
         if acquired and executor is not None and receipt is not None:
