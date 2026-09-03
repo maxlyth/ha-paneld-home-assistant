@@ -81,6 +81,24 @@ def _target_facts_output(
     return ("\n".join(lines) + "\n").encode()
 
 
+def test_status_marker_has_bounded_decimal_grammar() -> None:
+    """Only the bounded shell-status grammar reaches integer conversion."""
+    prefix = "HAPANELD_PKG_TARGET"
+
+    assert (
+        provisioning._parse_status_marker(
+            f"{prefix}:{_FIRST_NONCE}:999", prefix, _FIRST_NONCE
+        )
+        == 999
+    )
+    assert (
+        provisioning._parse_status_marker(
+            f"{prefix}:{_FIRST_NONCE}:1000", prefix, _FIRST_NONCE
+        )
+        is None
+    )
+
+
 class _FakeAdbDevice:
     def __init__(
         self,
@@ -329,6 +347,25 @@ async def test_malformed_or_excessive_presence_fails_closed(
     monkeypatch: pytest.MonkeyPatch, presence: bytes
 ) -> None:
     """Partial, contradictory, malformed and excessive replies are never candidates."""
+    fake = _FakeAdbDevice([presence])
+    _install_fake(monkeypatch, fake)
+
+    probe = await async_probe_install_target(normalize_address("panel.local"))
+
+    assert probe.state is InstallTargetState.RETAINED_OR_AMBIGUOUS
+    assert len(fake.commands) == 1
+    assert fake.closed is True
+
+
+async def test_excessive_numeric_presence_status_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A digit-only marker cannot escape the stable ambiguous-state result."""
+    marker = "9" * 5000
+    presence = _presence_output().replace(
+        f"HAPANELD_PKG_TARGET:{_FIRST_NONCE}:0".encode(),
+        f"HAPANELD_PKG_TARGET:{_FIRST_NONCE}:{marker}".encode(),
+    )
     fake = _FakeAdbDevice([presence])
     _install_fake(monkeypatch, fake)
 

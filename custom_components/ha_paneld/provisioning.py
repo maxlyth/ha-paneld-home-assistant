@@ -124,7 +124,7 @@ class _TargetFacts:
 
 def _parse_status_marker(line: str, prefix: str, nonce: str) -> int | None:
     """Parse one nonce-bound child exit-status marker."""
-    match = fullmatch(rf"{prefix}:{nonce}:([0-9]+)", line)
+    match = fullmatch(rf"{prefix}:{nonce}:([0-9]{{1,3}})", line)
     if match is None:
         return None
     return int(match.group(1))
