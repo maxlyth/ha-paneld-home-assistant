@@ -1,4 +1,5 @@
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import Literal, overload
 
 from .auth.sign_pythonrsa import PythonRSASigner
 from .transport.tcp_transport_async import TcpTransportAsync
@@ -20,13 +21,21 @@ class AdbDeviceAsync:
         read_timeout_s: float = ...,
         auth_callback: Callable[[AdbDeviceAsync], None] | None = ...,
     ) -> bool: ...
+    @overload
     def streaming_shell(
         self,
         command: str,
         transport_timeout_s: float | None = ...,
         read_timeout_s: float = ...,
-        timeout_s: float | None = ...,
-        decode: bool = ...,
+        decode: Literal[True] = ...,
+    ) -> AsyncIterator[str]: ...
+    @overload
+    def streaming_shell(
+        self,
+        command: str,
+        transport_timeout_s: float | None = ...,
+        read_timeout_s: float = ...,
+        decode: Literal[False] = ...,
     ) -> AsyncIterator[bytes]: ...
     async def push(
         self,
@@ -34,7 +43,7 @@ class AdbDeviceAsync:
         device_path: str,
         st_mode: int = ...,
         mtime: int = ...,
-        progress_callback: Callable[[str, int, int], None] | None = ...,
+        progress_callback: Callable[[str, int, int], Awaitable[object]] | None = ...,
         transport_timeout_s: float | None = ...,
         read_timeout_s: float = ...,
     ) -> None: ...
