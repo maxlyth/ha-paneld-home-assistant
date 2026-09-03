@@ -235,9 +235,15 @@ _FAILURE_CODES_BY_PHASE: Mapping[InstallPhase, frozenset[InstallResultCode]] = {
             InstallResultCode.TRANSPORT_FAILED,
         }
     ),
-    InstallPhase.ARTIFACT_READY: frozenset({InstallResultCode.ARTIFACT_REJECTED}),
+    InstallPhase.ARTIFACT_READY: frozenset(
+        {
+            InstallResultCode.ARTIFACT_REJECTED,
+            InstallResultCode.TRANSPORT_FAILED,
+        }
+    ),
     InstallPhase.REVALIDATING: frozenset(
         {
+            InstallResultCode.ARTIFACT_REJECTED,
             InstallResultCode.PREFLIGHT_REJECTED,
             InstallResultCode.TRANSPORT_FAILED,
         }

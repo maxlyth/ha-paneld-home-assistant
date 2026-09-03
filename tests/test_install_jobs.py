@@ -45,6 +45,52 @@ CLEANUP_BARRIER_PHASES = (
     InstallPhase.INSTALLING,
     InstallPhase.LAUNCHING,
 )
+FAILURE_RESULT_CODES = (
+    InstallResultCode.AUTHORIZATION_FAILED,
+    InstallResultCode.PREFLIGHT_REJECTED,
+    InstallResultCode.ARTIFACT_REJECTED,
+    InstallResultCode.TRANSPORT_FAILED,
+    InstallResultCode.INSTALL_FAILED,
+    InstallResultCode.LAUNCH_FAILED,
+    InstallResultCode.HEALTH_CHECK_FAILED,
+)
+EXPECTED_FAILURE_CODES_BY_PHASE = {
+    InstallPhase.AUTHORIZING: {
+        InstallResultCode.AUTHORIZATION_FAILED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.PREFLIGHT: {
+        InstallResultCode.PREFLIGHT_REJECTED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.DOWNLOADING: {
+        InstallResultCode.ARTIFACT_REJECTED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.ARTIFACT_READY: {
+        InstallResultCode.ARTIFACT_REJECTED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.REVALIDATING: {
+        InstallResultCode.ARTIFACT_REJECTED,
+        InstallResultCode.PREFLIGHT_REJECTED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.STAGING: {
+        InstallResultCode.ARTIFACT_REJECTED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.INSTALLING: {InstallResultCode.INSTALL_FAILED},
+    InstallPhase.INSTALLED: {InstallResultCode.INSTALL_FAILED},
+    InstallPhase.LAUNCHING: {
+        InstallResultCode.LAUNCH_FAILED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+    InstallPhase.HEALTH_CHECK: {
+        InstallResultCode.HEALTH_CHECK_FAILED,
+        InstallResultCode.TRANSPORT_FAILED,
+    },
+}
 _REAL_STORE_PRESENCE = install_jobs._store_presence
 
 
@@ -1109,6 +1155,44 @@ async def test_transition_metadata_and_failure_codes_are_phase_specific(
             InstallPhase.FAILED,
             result_code=InstallResultCode.HEALTH_CHECK_FAILED,
         )
+
+
+@pytest.mark.parametrize(
+    ("source_phase", "result_code"),
+    [
+        (source_phase, result_code)
+        for source_phase in EXPECTED_FAILURE_CODES_BY_PHASE
+        for result_code in FAILURE_RESULT_CODES
+    ],
+)
+async def test_failure_result_taxonomy_is_exact_for_every_source_phase(
+    hass: HomeAssistant,
+    source_phase: InstallPhase,
+    result_code: InstallResultCode,
+) -> None:
+    """Every truthful failure is allowed only from its explicit source phases."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, source_phase)
+
+    if result_code in EXPECTED_FAILURE_CODES_BY_PHASE[source_phase]:
+        failed = await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.FAILED,
+            result_code=result_code,
+        )
+        assert failed.phase is InstallPhase.FAILED
+        assert failed.result_code is result_code
+        return
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.FAILED,
+            result_code=result_code,
+        )
+    assert await manager.async_get(receipt.job_id) == receipt
 
 
 async def test_cancel_is_requested_then_acknowledged_at_safe_phase(
