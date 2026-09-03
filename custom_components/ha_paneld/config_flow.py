@@ -755,12 +755,15 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         if credential.generation_id != receipt.adb_credential_id:
             return await self._async_reject_healthy_receipt(manager, receipt)
 
+        stored_root_mode = receipt.preflight_root_mode
+        if stored_root_mode is None:
+            return await self._async_reject_healthy_receipt(manager, receipt)
         adb_target = _adb_target_from_receipt(receipt)
         try:
             await async_verify_installed_target(
                 adb_target,
                 credential.signer,
-                expected_root_mode=AdbRootMode(receipt.preflight_root_mode),
+                expected_root_mode=AdbRootMode(stored_root_mode),
             )
         except InstallAdbError as err:
             if err.code is InstallAdbErrorCode.TARGET_UNREACHABLE:

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from threading import Lock
-from typing import Any, cast
+from typing import Any, Never, cast
 
 from aiohttp import ClientError, ClientResponse, ClientSession, ClientTimeout
 from homeassistant.core import HomeAssistant
@@ -186,7 +186,7 @@ def _validate_contract(artifact: ReleaseArtifact) -> tuple[int, str, URL]:
     )
 
 
-def _raise_io() -> None:
+def _raise_io() -> Never:
     raise ArtifactCustodyError(ArtifactErrorCode.IO_FAILED) from None
 
 

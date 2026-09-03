@@ -11,6 +11,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 
@@ -201,11 +202,7 @@ class InstallExecutor:
                 eager_start=False,
             )
             self._tasks[job_id] = task
-            task.add_done_callback(
-                lambda completed, selected_job=job_id: self._worker_done(
-                    selected_job, completed
-                )
-            )
+            task.add_done_callback(partial(self._worker_done, job_id))
             return task
 
     async def async_wait(self, job_id: str) -> InstallJobReceipt:
@@ -1042,9 +1039,12 @@ def _staged_from_receipt(receipt: InstallJobReceipt) -> StagedApk:
 
 
 def _root_mode(receipt: InstallJobReceipt) -> AdbRootMode:
+    stored_root_mode = receipt.preflight_root_mode
+    if stored_root_mode is None:
+        raise InstallJobStoreError
     try:
-        return AdbRootMode(receipt.preflight_root_mode)
-    except TypeError, ValueError:
+        return AdbRootMode(stored_root_mode)
+    except ValueError:
         raise InstallJobStoreError from None
 
 
