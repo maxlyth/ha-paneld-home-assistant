@@ -794,7 +794,15 @@ async def test_setup_contains_unexpected_finalizer_release_failure(
     receipt = _receipt()
     executor, manager = _installer_doubles((receipt,))
     private_detail = "private-finalizer-detail"
-    executor.async_release_finalizer.side_effect = RuntimeError(private_detail)
+    release_started = asyncio.Event()
+    allow_release = asyncio.Event()
+
+    async def _release(_job_id: str, _finalizer_id: str) -> None:
+        release_started.set()
+        await allow_release.wait()
+        raise RuntimeError(private_detail)
+
+    executor.async_release_finalizer.side_effect = _release
 
     with (
         caplog.at_level(logging.WARNING),
@@ -819,7 +827,13 @@ async def test_setup_contains_unexpected_finalizer_release_failure(
             AsyncMock(return_value=manager),
         ),
     ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
+        setup_task = hass.async_create_task(
+            hass.config_entries.async_setup(entry.entry_id)
+        )
+        await release_started.wait()
+        assert not setup_task.done()
+        allow_release.set()
+        assert await setup_task
         await hass.async_block_till_done()
 
     _assert_healthy_entry_loaded(hass, entry)
