@@ -26,11 +26,13 @@ from custom_components.ha_paneld.install_artifacts import (
     ArtifactErrorCode,
     async_cleanup_install_artifact,
     async_download_install_artifact,
+    async_reconcile_install_artifacts,
 )
 from custom_components.ha_paneld.release import InstallDescriptor, ReleaseArtifact
 
 _JOB_ID = "0123456789abcdef0123456789abcdef"
 _OTHER_JOB_ID = "fedcba9876543210fedcba9876543210"
+_STALE_JOB_ID = "11111111111111111111111111111111"
 _APK_URL = (
     "https://github.com/maxlyth/ha-paneld/releases/download/"
     "v1.2.3/ha-paneld-v1.2.3-manual-setup-required.apk"
@@ -189,6 +191,20 @@ def _custody_directory(fake_hass: _FakeHass) -> Path:
             install_artifacts._STORAGE_DIRECTORY,
         )
     )
+
+
+def _write_custody_entry(
+    fake_hass: _FakeHass,
+    execution_id: str,
+    suffix: str,
+    body: bytes = _BODY,
+) -> Path:
+    directory = _custody_directory(fake_hass)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    path = directory.joinpath(f"{execution_id}.apk{suffix}")
+    path.write_bytes(body)
+    path.chmod(0o600)
+    return path
 
 
 async def _wait_for_executor_count(fake_hass: _FakeHass, count: int) -> None:
@@ -1057,6 +1073,351 @@ async def test_prepare_directory_close_failure_cleans_fd_and_path_before_error(
     assert await asyncio.to_thread(Path(result.path).read_bytes) == _BODY
 
 
+async def test_reconcile_removes_stale_ready_and_partial_but_preserves_retained(
+    fake_hass: _FakeHass,
+) -> None:
+    retained_ready = _write_custody_entry(fake_hass, _JOB_ID, "")
+    retained_partial = _write_custody_entry(fake_hass, _JOB_ID, ".part")
+    stale_ready = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    stale_partial = _write_custody_entry(fake_hass, _STALE_JOB_ID, ".part")
+
+    await async_reconcile_install_artifacts(fake_hass, {_JOB_ID})
+
+    assert retained_ready.read_bytes() == _BODY
+    assert retained_partial.read_bytes() == _BODY
+    assert stat.S_IMODE(retained_ready.stat().st_mode) == 0o600
+    assert stat.S_IMODE(retained_partial.stat().st_mode) == 0o600
+    assert not stale_ready.exists()
+    assert not stale_partial.exists()
+    assert fake_hass.executor_calls == ["_reconcile_install_artifacts"]
+
+
+async def test_reconcile_missing_custody_directory_is_idempotent(
+    fake_hass: _FakeHass,
+) -> None:
+    await async_reconcile_install_artifacts(fake_hass, set())
+
+    assert not _custody_directory(fake_hass).exists()
+
+
+@pytest.mark.parametrize(
+    "retained_ids",
+    [
+        {_JOB_ID.upper()},
+        {"0" * 31},
+        {"../" + "0" * 29},
+        {_JOB_ID, 7},
+        _JOB_ID,
+        None,
+    ],
+)
+async def test_reconcile_validates_all_retained_ids_before_filesystem_access(
+    fake_hass: _FakeHass,
+    retained_ids: Any,
+) -> None:
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await async_reconcile_install_artifacts(fake_hass, retained_ids)
+
+    assert captured.value.code is ArtifactErrorCode.JOB_ID_INVALID
+    assert fake_hass.executor_calls == []
+    assert not _custody_directory(fake_hass).exists()
+
+
+@pytest.mark.parametrize(
+    ("malicious_name", "malicious_kind"),
+    [
+        ("unrecognized", "file"),
+        (f"{_JOB_ID.upper()}.apk", "file"),
+        (f"{_JOB_ID}.apk.tmp", "file"),
+        (f"{_JOB_ID}.apk", "symlink"),
+        (f"{_JOB_ID}.apk", "directory"),
+        (f"{_JOB_ID}.apk", "fifo"),
+    ],
+)
+async def test_reconcile_rejects_malicious_names_and_types_before_deletion(
+    fake_hass: _FakeHass,
+    tmp_path: Path,
+    malicious_name: str,
+    malicious_kind: str,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    malicious = _custody_directory(fake_hass).joinpath(malicious_name)
+    if malicious_kind == "file":
+        malicious.write_bytes(b"malicious")
+        malicious.chmod(0o600)
+    elif malicious_kind == "symlink":
+        outside = tmp_path.joinpath("outside-artifact")
+        outside.write_bytes(b"preserve")
+        malicious.symlink_to(outside)
+    elif malicious_kind == "directory":
+        malicious.mkdir(mode=0o700)
+    else:
+        os.mkfifo(malicious, mode=0o600)
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await async_reconcile_install_artifacts(fake_hass, set())
+
+    assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+    assert stale.read_bytes() == _BODY
+    if malicious_kind == "symlink":
+        assert outside.read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("unsafe_metadata", ["mode", "hardlink", "oversized"])
+async def test_reconcile_rejects_unsafe_metadata_before_deletion(
+    fake_hass: _FakeHass,
+    tmp_path: Path,
+    unsafe_metadata: str,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    unsafe = _custody_directory(fake_hass).joinpath(f"{_JOB_ID}.apk")
+    if unsafe_metadata == "hardlink":
+        source = tmp_path.joinpath("hardlink-source")
+        source.write_bytes(b"linked")
+        source.chmod(0o600)
+        os.link(source, unsafe)
+    else:
+        unsafe.write_bytes(b"unsafe")
+        unsafe.chmod(0o644 if unsafe_metadata == "mode" else 0o600)
+        if unsafe_metadata == "oversized":
+            os.truncate(unsafe, install_artifacts._MAX_APK_BYTES + 1)
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await async_reconcile_install_artifacts(fake_hass, set())
+
+    assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+    assert stale.read_bytes() == _BODY
+    assert unsafe.exists()
+
+
+async def test_reconcile_rejects_directory_path_rebind_before_deletion(
+    fake_hass: _FakeHass,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    directory = _custody_directory(fake_hass)
+    displaced = directory.with_name(f"{directory.name}.displaced")
+    original_scan = install_artifacts._scan_custody_entries
+
+    def _scan_then_rebind(directory_fd: int) -> Any:
+        entries = original_scan(directory_fd)
+        directory.rename(displaced)
+        directory.mkdir(mode=0o700)
+        replacement = directory.joinpath("replacement")
+        replacement.write_bytes(b"preserve")
+        replacement.chmod(0o600)
+        return entries
+
+    monkeypatch.setattr(
+        install_artifacts,
+        "_scan_custody_entries",
+        _scan_then_rebind,
+    )
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await async_reconcile_install_artifacts(fake_hass, set())
+
+    assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+    assert displaced.joinpath(stale.name).read_bytes() == _BODY
+    assert directory.joinpath("replacement").read_bytes() == b"preserve"
+
+
+async def test_reconcile_rejects_entry_inode_swap_without_unlinking_replacement(
+    fake_hass: _FakeHass,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    displaced = stale.with_suffix(".displaced")
+    original_open = os.open
+    raced = False
+
+    def _open_after_swap(path: Any, *args: Any, **kwargs: Any) -> int:
+        nonlocal raced
+        if path == stale.name and kwargs.get("dir_fd") is not None and not raced:
+            raced = True
+            stale.rename(displaced)
+            stale.write_bytes(b"replacement")
+            stale.chmod(0o600)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _open_after_swap)
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await async_reconcile_install_artifacts(fake_hass, set())
+
+    assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+    assert raced
+    assert stale.read_bytes() == b"replacement"
+    assert displaced.read_bytes() == _BODY
+
+
+async def test_reconcile_fifo_swap_at_open_boundary_fails_without_blocking(
+    fake_hass: _FakeHass,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    displaced = stale.with_suffix(".displaced")
+    original_open = os.open
+    raced = False
+
+    def _open_after_fifo_swap(path: Any, *args: Any, **kwargs: Any) -> int:
+        nonlocal raced
+        if path == stale.name and kwargs.get("dir_fd") is not None and not raced:
+            raced = True
+            stale.rename(displaced)
+            os.mkfifo(stale, mode=0o600)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _open_after_fifo_swap)
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await asyncio.wait_for(
+            async_reconcile_install_artifacts(fake_hass, set()),
+            timeout=1,
+        )
+
+    assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+    assert raced
+    assert stat.S_ISFIFO(stale.lstat().st_mode)
+    assert displaced.read_bytes() == _BODY
+
+
+async def test_reconcile_detects_link_race_at_unlink_boundary(
+    fake_hass: _FakeHass,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    raced_link = tmp_path.joinpath("raced-hardlink")
+    original_unlink = os.unlink
+    raced = False
+
+    def _link_then_unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal raced
+        if path == stale.name and kwargs.get("dir_fd") is not None and not raced:
+            raced = True
+            os.link(stale, raced_link)
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", _link_then_unlink)
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        await async_reconcile_install_artifacts(fake_hass, set())
+
+    assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+    assert raced
+    assert not stale.exists()
+    assert raced_link.read_bytes() == _BODY
+
+
+async def test_reconcile_cancellation_waits_for_started_cleanup_and_propagates(
+    fake_hass: _FakeHass,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    original_reconcile = install_artifacts._reconcile_install_artifacts
+    reconcile_started = threading.Event()
+    release_reconcile = threading.Event()
+
+    def _blocking_reconcile(*args: Any) -> None:
+        reconcile_started.set()
+        release_reconcile.wait(timeout=5)
+        original_reconcile(*args)
+
+    monkeypatch.setattr(
+        install_artifacts,
+        "_reconcile_install_artifacts",
+        _blocking_reconcile,
+    )
+    task = asyncio.create_task(async_reconcile_install_artifacts(fake_hass, set()))
+    assert await asyncio.to_thread(reconcile_started.wait, 5)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release_reconcile.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not stale.exists()
+
+
+async def test_reconcile_queued_executor_cancellation_does_not_hang_or_mutate(
+    tmp_path: Path,
+) -> None:
+    tmp_path.joinpath(".storage").mkdir()
+    executor = ThreadPoolExecutor(max_workers=1)
+    fake_hass = _FakeHass(tmp_path, executor)
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+
+    def _block_executor() -> None:
+        blocker_started.set()
+        release_blocker.wait(timeout=5)
+
+    blocker_future = fake_hass.async_add_executor_job(_block_executor)
+    assert await asyncio.to_thread(blocker_started.wait, 5)
+    task = asyncio.create_task(async_reconcile_install_artifacts(fake_hass, set()))
+    try:
+        await _wait_for_executor_count(fake_hass, 2)
+        queued_future = fake_hass.executor_futures[-1]
+        assert queued_future.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+
+        assert queued_future.cancelled()
+        assert stale.read_bytes() == _BODY
+    finally:
+        release_blocker.set()
+        await blocker_future
+        await asyncio.to_thread(executor.shutdown, True)
+
+
+async def test_reconcile_file_close_error_does_not_reclose_reused_descriptor(
+    fake_hass: _FakeHass,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = _write_custody_entry(fake_hass, _OTHER_JOB_ID, "")
+    sentinel = tmp_path.joinpath("descriptor-sentinel")
+    sentinel.write_bytes(b"sentinel")
+    original_close = install_artifacts._close_file
+    reused_fd: int | None = None
+
+    def _close_file_then_report_error(file_fd: int) -> None:
+        nonlocal reused_fd
+        file_status = os.fstat(file_fd)
+        if stat.S_ISREG(file_status.st_mode) and reused_fd is None:
+            os.close(file_fd)
+            reused_fd = os.open(sentinel, os.O_RDONLY)
+            assert reused_fd == file_fd
+            raise ArtifactCustodyError(ArtifactErrorCode.IO_FAILED)
+        original_close(file_fd)
+
+    monkeypatch.setattr(
+        install_artifacts,
+        "_close_file",
+        _close_file_then_report_error,
+    )
+    try:
+        with pytest.raises(ArtifactCustodyError) as captured:
+            await async_reconcile_install_artifacts(fake_hass, set())
+
+        assert captured.value.code is ArtifactErrorCode.IO_FAILED
+        assert not stale.exists()
+        assert reused_fd is not None
+        assert os.read(reused_fd, len(b"sentinel")) == b"sentinel"
+    finally:
+        monkeypatch.undo()
+        if reused_fd is not None:
+            os.close(reused_fd)
+
+
 async def test_cleanup_removes_only_exact_job_owned_regular_files(
     fake_hass: _FakeHass,
 ) -> None:
@@ -1250,6 +1611,89 @@ def test_directory_identity_change_is_rejected(
         install_artifacts._verify_private_directory(str(directory), create=False)
 
     assert captured.value.code is ArtifactErrorCode.PATH_INVALID
+
+
+def test_directory_fstat_failure_closes_opened_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path.joinpath("private")
+    directory.mkdir(mode=0o700)
+    original_open = os.open
+    original_fstat = os.fstat
+    opened_directory_fd: int | None = None
+
+    def _capture_directory_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        nonlocal opened_directory_fd
+        file_fd = original_open(path, *args, **kwargs)
+        if path == str(directory):
+            opened_directory_fd = file_fd
+        return file_fd
+
+    def _fail_opened_directory_fstat(file_fd: int) -> os.stat_result:
+        if file_fd == opened_directory_fd:
+            raise OSError("private fstat failure")
+        return original_fstat(file_fd)
+
+    monkeypatch.setattr(os, "open", _capture_directory_open)
+    monkeypatch.setattr(os, "fstat", _fail_opened_directory_fstat)
+
+    with pytest.raises(ArtifactCustodyError) as captured:
+        install_artifacts._verify_private_directory(str(directory), create=False)
+
+    assert captured.value.code is ArtifactErrorCode.IO_FAILED
+    assert opened_directory_fd is not None
+    with pytest.raises(OSError):
+        original_fstat(opened_directory_fd)
+
+
+def test_directory_fstat_close_error_does_not_reclose_reused_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path.joinpath("private")
+    directory.mkdir(mode=0o700)
+    sentinel = tmp_path.joinpath("directory-fstat-sentinel")
+    sentinel.write_bytes(b"sentinel")
+    original_open = os.open
+    original_fstat = os.fstat
+    opened_directory_fd: int | None = None
+    reused_fd: int | None = None
+
+    def _capture_directory_open(path: Any, *args: Any, **kwargs: Any) -> int:
+        nonlocal opened_directory_fd
+        file_fd = original_open(path, *args, **kwargs)
+        if path == str(directory):
+            opened_directory_fd = file_fd
+        return file_fd
+
+    def _fail_opened_directory_fstat(file_fd: int) -> os.stat_result:
+        if file_fd == opened_directory_fd:
+            raise OSError("private fstat failure")
+        return original_fstat(file_fd)
+
+    def _close_then_report_error(file_fd: int) -> None:
+        nonlocal reused_fd
+        assert file_fd == opened_directory_fd
+        os.close(file_fd)
+        reused_fd = original_open(sentinel, os.O_RDONLY)
+        assert reused_fd == file_fd
+        raise ArtifactCustodyError(ArtifactErrorCode.IO_FAILED)
+
+    monkeypatch.setattr(os, "open", _capture_directory_open)
+    monkeypatch.setattr(os, "fstat", _fail_opened_directory_fstat)
+    monkeypatch.setattr(install_artifacts, "_close_file", _close_then_report_error)
+    try:
+        with pytest.raises(ArtifactCustodyError) as captured:
+            install_artifacts._verify_private_directory(str(directory), create=False)
+
+        assert captured.value.code is ArtifactErrorCode.IO_FAILED
+        assert reused_fd is not None
+        assert os.read(reused_fd, len(b"sentinel")) == b"sentinel"
+    finally:
+        monkeypatch.undo()
+        if reused_fd is not None:
+            os.close(reused_fd)
 
 
 @pytest.mark.parametrize(

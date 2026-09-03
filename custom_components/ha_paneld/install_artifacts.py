@@ -7,7 +7,7 @@ import hashlib
 import os
 import re
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -24,6 +24,7 @@ from .release import ReleaseArtifact
 
 _MAX_APK_BYTES = 64 * 1024 * 1024
 _JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_ARTIFACT_ENTRY_PATTERN = re.compile(r"([0-9a-f]{32})\.apk(?:\.part)?")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _TRUSTED_DOWNLOAD_HOSTS = frozenset(
     {
@@ -108,6 +109,13 @@ class _WorkerOperation[T]:
     completion: asyncio.Event
     outcome: _WorkerOutcome[T]
     executor_future: asyncio.Future[None]
+
+
+@dataclass(frozen=True, slots=True)
+class _CustodyEntry:
+    name: str
+    execution_id: str
+    identity: tuple[int, int, int, int, int, int]
 
 
 def _artifact_directory(hass: HomeAssistant) -> str:
@@ -209,7 +217,12 @@ def _verify_private_directory(directory: str, *, create: bool) -> int | None:
             directory,
             os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
         )
-        opened_status = os.fstat(directory_fd)
+        try:
+            opened_status = os.fstat(directory_fd)
+        except OSError:
+            with suppress(ArtifactCustodyError):
+                _close_file(directory_fd)
+            _raise_io()
         if (
             not stat.S_ISDIR(opened_status.st_mode)
             or stat.S_IMODE(opened_status.st_mode) != _DIRECTORY_MODE
@@ -242,6 +255,23 @@ def _require_private_file(status: os.stat_result) -> None:
         or status.st_uid != os.geteuid()
     ):
         raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+
+
+def _custody_file_identity(
+    status: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    """Return security-relevant metadata for one bounded private artifact file."""
+    _require_private_file(status)
+    if status.st_nlink != 1 or not 0 <= status.st_size <= _MAX_APK_BYTES:
+        raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_uid,
+        status.st_nlink,
+        status.st_size,
+    )
 
 
 def _hash_open_file(
@@ -493,6 +523,144 @@ def _promote_partial(
                 with suppress(OSError):
                     os.fsync(directory_fd)
         raise
+    finally:
+        _close_file(directory_fd)
+
+
+def _verify_directory_binding(
+    directory: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    """Verify the pathname still names the already-open custody directory."""
+    reopened_fd = _reopen_same_directory(directory, expected_identity)
+    _close_file(reopened_fd)
+
+
+def _scan_custody_entries(directory_fd: int) -> list[_CustodyEntry]:
+    """Validate every directory entry before reconciliation mutates any name."""
+    try:
+        names = os.listdir(directory_fd)
+    except OSError:
+        _raise_io()
+
+    entries: list[_CustodyEntry] = []
+    for name in sorted(names):
+        if not isinstance(name, str):
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+        match = _ARTIFACT_ENTRY_PATTERN.fullmatch(name)
+        if match is None:
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+        status = _entry_status(directory_fd, name)
+        if status is None:
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+        entries.append(
+            _CustodyEntry(
+                name=name,
+                execution_id=match.group(1),
+                identity=_custody_file_identity(status),
+            )
+        )
+    return entries
+
+
+def _unlink_custody_entry(directory_fd: int, entry: _CustodyEntry) -> None:
+    """Unlink one preflighted entry through the inode-bound directory authority."""
+    try:
+        file_fd = os.open(
+            entry.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=directory_fd,
+        )
+    except OSError:
+        _raise_io()
+
+    pending_error: BaseException | None = None
+    unlinked = False
+    try:
+        try:
+            opened_status = os.fstat(file_fd)
+        except OSError:
+            _raise_io()
+        if _custody_file_identity(opened_status) != entry.identity:
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+        path_status = _entry_status(directory_fd, entry.name)
+        if path_status is None or _custody_file_identity(path_status) != entry.identity:
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+        try:
+            os.unlink(entry.name, dir_fd=directory_fd)
+        except OSError:
+            _raise_io()
+        unlinked = True
+        try:
+            unlinked_status = os.fstat(file_fd)
+        except OSError:
+            _raise_io()
+        expected_unlinked_identity = (
+            *entry.identity[:4],
+            0,
+            entry.identity[5],
+        )
+        if (
+            unlinked_status.st_dev,
+            unlinked_status.st_ino,
+            unlinked_status.st_mode,
+            unlinked_status.st_uid,
+            unlinked_status.st_nlink,
+            unlinked_status.st_size,
+        ) != expected_unlinked_identity:
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+        if _entry_status(directory_fd, entry.name) is not None:
+            raise ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+    except BaseException as err:
+        pending_error = err
+
+    if unlinked:
+        try:
+            os.fsync(directory_fd)
+        except OSError:
+            if pending_error is None:
+                pending_error = ArtifactCustodyError(ArtifactErrorCode.IO_FAILED)
+
+    try:
+        _close_file(file_fd)
+    except ArtifactCustodyError as err:
+        if pending_error is None:
+            pending_error = err
+
+    if pending_error is not None:
+        raise pending_error
+
+
+def _reconcile_install_artifacts(
+    directory: str,
+    retained_execution_ids: frozenset[str],
+) -> None:
+    """Remove only validated artifacts not retained by durable executor state."""
+    directory_fd = _verify_private_directory(directory, create=False)
+    if directory_fd is None:
+        return
+    try:
+        try:
+            directory_status = os.fstat(directory_fd)
+        except OSError:
+            _raise_io()
+        directory_identity = (directory_status.st_dev, directory_status.st_ino)
+        entries = _scan_custody_entries(directory_fd)
+
+        # Do not delete through an orphaned directory descriptor if the pathname
+        # was rebound while the complete, non-mutating preflight scan ran.
+        _verify_directory_binding(directory, directory_identity)
+        stale_entries = [
+            entry
+            for entry in entries
+            if entry.execution_id not in retained_execution_ids
+        ]
+        for entry in stale_entries:
+            _unlink_custody_entry(directory_fd, entry)
+
+        # A concurrent pathname rebind cannot redirect any operation above, but
+        # it still makes successful custody reconciliation ambiguous.
+        _verify_directory_binding(directory, directory_identity)
     finally:
         _close_file(directory_fd)
 
@@ -883,6 +1051,29 @@ async def async_download_install_artifact(
         path=ready_path,
         size=expected_size,
         sha256=expected_sha256,
+    )
+
+
+async def async_reconcile_install_artifacts(
+    hass: HomeAssistant,
+    retained_execution_ids: Collection[str],
+) -> None:
+    """Remove local artifacts not retained by durable executor state."""
+    if not isinstance(retained_execution_ids, Collection) or isinstance(
+        retained_execution_ids, (str, bytes)
+    ):
+        raise ArtifactCustodyError(ArtifactErrorCode.JOB_ID_INVALID)
+    try:
+        retained = frozenset(
+            _validate_job_id(execution_id) for execution_id in retained_execution_ids
+        )
+    except TypeError:
+        raise ArtifactCustodyError(ArtifactErrorCode.JOB_ID_INVALID) from None
+    await _async_executor(
+        hass,
+        _reconcile_install_artifacts,
+        _artifact_directory(hass),
+        retained,
     )
 
 
