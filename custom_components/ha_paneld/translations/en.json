@@ -16,7 +16,7 @@
       },
       "install_or_upgrade": {
         "title": "Install ha-paneld",
-        "description": "Before continuing, find the panel's IP address, keep physical access to its screen and enable network ADB on port 5555 using the [model-specific panel access guide](https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware#gaining-adb--root-access). Root access is not required. Enter the hostname or IP address below. Home Assistant first checks for an existing installation, then uses ADB only for a clean first installation whose exact release can be verified.",
+        "description": "Before continuing, find the panel's IP address, keep physical access to its screen and enable network ADB on port 5555 using the [model-specific panel access guide]({panel_access_url}). Root access is not required. Enter the hostname or IP address below. Home Assistant first checks for an existing installation, then uses ADB only for a clean first installation whose exact release can be verified.",
         "data": {
           "address": "Panel hostname or IP address"
         }
@@ -82,12 +82,12 @@
       "preview_only_release": "The authenticated stable release has no signed installation descriptor. No ADB credential was created, no APK was downloaded, and no panel state changed.",
       "install_cancelled": "The installation was cancelled before an APK was installed. No Home Assistant entry was created. To try again, add the ha-paneld integration and enter the same panel address.",
       "install_cancelled_after_staging_cleanup": "The installation was cancelled and the staged APK was removed before installation. No Home Assistant entry was created. To try again, add the ha-paneld integration and enter the same panel address.",
-      "install_authorization_failed": "Home Assistant could not authorize its ADB credential. No APK was installed. Check the approval on the panel, then add the ha-paneld integration and enter the same address to try again.",
+      "install_authorization_failed": "Home Assistant could not safely load or validate its stored ADB credential. No APK was installed. Check Home Assistant's storage and logs, then add the ha-paneld integration and enter the same address to try again.",
       "install_preflight_rejected": "The panel no longer proved to be a clean, compatible installation target. No APK was installed. Correct the panel state described in the integration documentation before starting again with the same address.",
       "install_artifact_rejected": "Home Assistant rejected the release download or staging operation before package installation. No APK was installed. Check Home Assistant's internet access, storage and logs, then start again with the same address.",
-      "install_transport_failed": "Home Assistant lost its connection before package installation began. No APK was installed. Check the panel and network, then start again with the same address.",
+      "install_transport_failed": "Home Assistant could not complete the pre-install connection, download or staging step. No APK was installed. Check the panel, network, Home Assistant internet access and logs, then start again with the same address.",
       "install_package_failed": "Android definitively refused the APK and Home Assistant removed its staged file. No app or Home Assistant entry was created. Check the panel's compatibility and available storage before starting again.",
-      "install_launch_failed": "The APK is installed, but Android could not start it. Do not retry automatic installation. Open ha-paneld on the panel or follow the provisioning safety and recovery guide linked from the integration documentation.",
+      "install_launch_failed": "The APK is installed, but Home Assistant could not complete or verify the launch step. Do not retry automatic installation. Open ha-paneld on the panel or follow the provisioning safety and recovery guide linked from the integration documentation.",
       "install_health_check_failed": "The APK is installed, but ha-paneld did not pass its health check. Do not retry automatic installation. Open ha-paneld on the panel or follow the provisioning safety and recovery guide linked from the integration documentation.",
       "install_ambiguous_mutation": "An ADB staging, installation or launch operation may have changed the panel. Do not retry automatic installation, uninstall or reset the app. Follow the provisioning safety and recovery guide linked from the integration documentation.",
       "install_verification_required": "The panel changed, but Home Assistant could not verify the installed package or clean up its exact staged file. Do not retry automatic installation, uninstall or reset the app. Follow the provisioning safety and recovery guide linked from the integration documentation.",

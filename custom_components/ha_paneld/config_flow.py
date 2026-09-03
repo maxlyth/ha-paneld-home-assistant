@@ -62,6 +62,10 @@ from .release import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_PANEL_ACCESS_GUIDE_URL = (
+    "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
+    "#gaining-adb--root-access"
+)
 _CANCELLED_ABORT_REASONS = {
     InstallResultCode.CANCELLED_BY_USER: "install_cancelled",
     InstallResultCode.CANCELLED_AFTER_STAGING_CLEANUP: (
@@ -143,6 +147,19 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _show_install_address_form(
+        self,
+        user_input: dict[str, Any] | None,
+        errors: dict[str, str],
+    ) -> ConfigFlowResult:
+        """Show the install form with its fixed trusted documentation link."""
+        return self.async_show_form(
+            step_id="install_or_upgrade",
+            data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
+            errors=errors,
+            description_placeholders={"panel_access_url": _PANEL_ACCESS_GUIDE_URL},
+        )
+
     async def async_step_install_or_upgrade(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -191,13 +208,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                         errors["base"] = "unknown"
                         active = None
                     if errors:
-                        return self.async_show_form(
-                            step_id="install_or_upgrade",
-                            data_schema=self.add_suggested_values_to_schema(
-                                _DATA_SCHEMA, user_input
-                            ),
-                            errors=errors,
-                        )
+                        return self._show_install_address_form(user_input, errors)
                     if active is not None:
                         self._pending_job_id = active.job_id
                         if active.phase is InstallPhase.HEALTHY_UNCLAIMED:
@@ -225,8 +236,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                             if state == "adb_unauthorized":
                                 release_result = (
                                     await self._async_resolve_install_release(
-                                        step_id="install_or_upgrade",
-                                        user_input=user_input,
+                                        user_input=user_input
                                     )
                                 )
                                 if release_result is not None:
@@ -244,8 +254,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                                 else:
                                     release_result = (
                                         await self._async_resolve_install_release(
-                                            step_id="install_or_upgrade",
-                                            user_input=user_input,
+                                            user_input=user_input
                                         )
                                     )
                                     if release_result is not None:
@@ -286,11 +295,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                             },
                         )
 
-        return self.async_show_form(
-            step_id="install_or_upgrade",
-            data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
-            errors=errors,
-        )
+        return self._show_install_address_form(user_input, errors)
 
     async def async_step_authorize_adb(
         self, user_input: dict[str, Any] | None = None
@@ -530,7 +535,6 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_resolve_install_release(
         self,
         *,
-        step_id: str,
         user_input: dict[str, Any],
     ) -> ConfigFlowResult | None:
         """Resolve the release before any durable credential may be requested."""
@@ -539,22 +543,12 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 async_get_clientsession(self.hass)
             )
         except ReleaseResolutionError:
-            return self.async_show_form(
-                step_id=step_id,
-                data_schema=self.add_suggested_values_to_schema(
-                    _DATA_SCHEMA, user_input
-                ),
-                errors={"base": "cannot_resolve_release"},
+            return self._show_install_address_form(
+                user_input, {"base": "cannot_resolve_release"}
             )
         except Exception:
             _LOGGER.exception("Unexpected exception while resolving ha-paneld release")
-            return self.async_show_form(
-                step_id=step_id,
-                data_schema=self.add_suggested_values_to_schema(
-                    _DATA_SCHEMA, user_input
-                ),
-                errors={"base": "unknown"},
-            )
+            return self._show_install_address_form(user_input, {"base": "unknown"})
         return None
 
     async def _async_show_install_progress(

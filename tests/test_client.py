@@ -115,10 +115,11 @@ def test_parser_ignores_future_tokens_and_values() -> None:
     """Additive health tokens do not invalidate an otherwise stable response."""
     health = parse_health_response(
         "ha-paneld 1.2.3 panel=test build=1234 cfg=0123abcd "
-        "ha=future_state future=value ha_refused=1\n"
+        "ha=future_state ha_src=future_source future=value ha_refused=1\n"
     )
     assert health.panel_id == "test"
     assert health.ha_state is None
+    assert health.ha_source is None
     assert health.ha_subscription_refused is True
 
 
@@ -198,6 +199,7 @@ def test_parser_rejects_malformed_suffix_tokens(suffix: str) -> None:
         "ha-paneld 1.2.3 panel=Test-Panel build=1234 cfg=0123abcd",
         f"ha-paneld 1.2.3 panel={'a' * 470} build=1234 cfg=0123abcd",
         "ha-paneld 1.2.3 panel=test build=arbitrary cfg=0123abcd",
+        f"ha-paneld 1.2.3 panel=test build=1.2.3-{'a' * 58} cfg=0123abcd",
         "ha-paneld 1.2.3 panel=test build=9223372036854775808 cfg=0123abcd",
     ],
 )
@@ -228,9 +230,9 @@ def test_parser_rejects_control_bearing_lines(body: str) -> None:
     "body",
     [
         "ok",
-        "other 1.0 panel=test build=abc cfg=0123abcd",
-        "ha-paneld 1.0 panel=test build=abc",
-        "ha-paneld 1.0 panel=test build=abc cfg=not-a-hash",
+        "other 1.2.3 panel=test build=1234 cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=test build=1234",
+        "ha-paneld 1.2.3 panel=test build=1234 cfg=not-a-hash",
     ],
 )
 def test_reject_invalid_health(body: str) -> None:

@@ -267,6 +267,12 @@ async def test_install_rejects_invalid_address_before_network_calls(
 
     assert result["step_id"] == "install_or_upgrade"
     assert result["errors"] == {"base": "invalid_install_address"}
+    assert result["description_placeholders"] == {
+        "panel_access_url": (
+            "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
+            "#gaining-adb--root-access"
+        )
+    }
     health_mock.assert_not_awaited()
     probe_mock.assert_not_awaited()
 

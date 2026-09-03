@@ -11,6 +11,7 @@ import struct
 import threading
 from hashlib import sha1, sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -868,6 +869,37 @@ def test_durable_reader_rejects_hardlinked_store_file(tmp_path: Path) -> None:
     os.link(store_path, tmp_path / "credential-hardlink")
 
     with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
+
+
+def test_durable_reader_rejects_link_count_drift_during_read(
+    tmp_path: Path,
+) -> None:
+    """A new alias invalidates the opened credential even without other drift."""
+    store_path = tmp_path / "ha_paneld.adb_key"
+    credential = _generate_credential()
+    _write_store(store_path, credential)
+    actual = os.stat(store_path)
+
+    def metadata(link_count: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+            st_mode=actual.st_mode,
+            st_uid=actual.st_uid,
+            st_nlink=link_count,
+            st_size=actual.st_size,
+            st_mtime_ns=actual.st_mtime_ns,
+            st_ctime_ns=actual.st_ctime_ns,
+        )
+
+    before = metadata(1)
+    linked = metadata(2)
+    with (
+        patch.object(adb_credentials.os, "fstat", side_effect=[before, linked, linked]),
+        patch.object(adb_credentials.os, "lstat", side_effect=[linked, linked]),
+        pytest.raises(AdbCredentialError),
+    ):
         adb_credentials._read_durable_credential(str(store_path))
 
 

@@ -109,6 +109,8 @@ def test_install_flow_copy_covers_first_time_handoffs() -> None:
 
     assert "network ADB on port 5555" in install
     assert "Root access is not required" in install
+    assert "[model-specific panel access guide]({panel_access_url})" in install
+    assert "https://" not in install
     assert "Leave this dialog open to finish automatically" in progress
     assert "Settings → Devices & services → Add integration" in progress
     assert "enter the same address" in progress
@@ -129,5 +131,11 @@ def test_install_flow_copy_covers_first_time_handoffs() -> None:
         "install_verification_required",
     }
     assert mapped_reasons <= abort.keys()
+    assert "stored ADB credential" in abort["install_authorization_failed"]
+    assert "approval on the panel" not in abort["install_authorization_failed"]
+    assert "connection, download or staging step" in abort["install_transport_failed"]
+    assert (
+        "could not complete or verify the launch step" in abort["install_launch_failed"]
+    )
     assert "Do not retry automatic installation" in abort["install_launch_failed"]
     assert "Do not retry automatic installation" in abort["install_ambiguous_mutation"]
