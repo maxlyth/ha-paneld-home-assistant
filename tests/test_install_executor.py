@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from custom_components.ha_paneld.client import (
     PanelAddress,
     PanelHealth,
 )
+from custom_components.ha_paneld.const import DOMAIN
 from custom_components.ha_paneld.install_adb import (
     AdbInstallTarget,
     AdbPreflight,
@@ -64,10 +66,13 @@ APK_SHA256 = "a" * 64
 CREDENTIAL_ID = "b" * 64
 OTHER_CREDENTIAL_ID = "c" * 64
 _REAL_STORE_PRESENCE = install_jobs._store_presence
+_REAL_PARSE_STORE_DOCUMENT = install_jobs._parse_store_document
 
 
 @pytest.fixture(autouse=True)
-def emulate_home_assistant_store_file() -> Generator[None]:
+def emulate_home_assistant_store_file(
+    hass_storage: dict[str, Any],
+) -> Generator[None]:
     """Model the Store file hidden by HA's in-memory test storage manager."""
     observed_paths: set[str] = set()
 
@@ -80,7 +85,18 @@ def emulate_home_assistant_store_file() -> Generator[None]:
         observed_paths.add(path)
         return False, False
 
-    with patch.object(install_jobs, "_store_presence", side_effect=_presence):
+    def _durable_reader(_path: str) -> dict[str, InstallJobReceipt]:
+        document = hass_storage.get(f"{DOMAIN}.install_jobs")
+        if document is None:
+            raise install_jobs.InstallJobStoreError
+        return _REAL_PARSE_STORE_DOCUMENT(
+            json.dumps(document, separators=(",", ":")).encode("utf-8")
+        )
+
+    with (
+        patch.object(install_jobs, "_store_presence", side_effect=_presence),
+        patch.object(install_jobs, "_read_durable_jobs", side_effect=_durable_reader),
+    ):
         yield
 
 
@@ -177,6 +193,41 @@ async def seed_phase(
     raise AssertionError
 
 
+async def seed_attempt_ceiling(
+    hass: HomeAssistant, phase: InstallPhase
+) -> tuple[InstallJobReceipt, InstallJobManager]:
+    """Persist a safe receipt at the real durable claim-attempt ceiling."""
+    manager = InstallJobManager(hass)
+    receipt = await create_job(manager)
+    receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+    receipt = await manager.async_transition(
+        receipt.job_id, receipt.revision, InstallPhase.AUTHORIZING
+    )
+    for _ in range(31):
+        manager = InstallJobManager(hass)
+        receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+    assert receipt.attempt == receipt.executor_generation == 32
+    for next_phase in (
+        InstallPhase.PREFLIGHT,
+        InstallPhase.DOWNLOADING,
+        InstallPhase.ARTIFACT_READY,
+    ):
+        transition_fields: dict[str, object] = {}
+        if next_phase is InstallPhase.DOWNLOADING:
+            transition_fields["preflight_root_mode"] = AdbRootMode.ROOTLESS.value
+        if next_phase is InstallPhase.ARTIFACT_READY:
+            transition_fields["actual_apk_bytes"] = artifact().apk_size
+        receipt = await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            next_phase,
+            **transition_fields,
+        )
+        if next_phase is phase:
+            return receipt, InstallJobManager(hass)
+    raise AssertionError
+
+
 @dataclass
 class Harness:
     """Deterministic stand-ins with a complete side-effect call log."""
@@ -245,6 +296,9 @@ class Harness:
         self.download_error: ArtifactCustodyError | None = None
         self.download_mutation: str | None = None
         self.local_cleanup_error: ArtifactCustodyError | None = None
+        self.local_cleanup_error_at: int | None = None
+        self.local_cleanup_entered: asyncio.Event | None = None
+        self.local_cleanup_release: asyncio.Event | None = None
         self.stage_error: Exception | None = None
         self.stage_mismatch = False
         self.install_error: Exception | None = None
@@ -434,7 +488,14 @@ class Harness:
     async def async_cleanup_local(self, _hass: HomeAssistant, job_id: str) -> None:
         self.events.append("local_cleanup")
         self.local_cleanup_job_ids.append(job_id)
-        if self.local_cleanup_error is not None:
+        if self.local_cleanup_entered is not None:
+            self.local_cleanup_entered.set()
+        if self.local_cleanup_release is not None:
+            await self.local_cleanup_release.wait()
+        if self.local_cleanup_error is not None and (
+            self.local_cleanup_error_at is None
+            or len(self.local_cleanup_job_ids) == self.local_cleanup_error_at
+        ):
             raise self.local_cleanup_error
 
     async def async_stage(
@@ -563,6 +624,9 @@ async def test_happy_path_stops_unclaimed_and_binds_every_operation(
     execution_digest.update(bytes.fromhex(receipt.job_id))
     execution_digest.update(bytes.fromhex(receipt.plan_sha256))
     expected_execution_id = execution_digest.hexdigest()[:32]
+    expected_staging_slot_id = sha256(
+        b"ha-paneld-device-local-staging-slot-v1\0"
+    ).hexdigest()[:32]
     expected_pinned = PinnedPanelTarget(
         original=PanelAddress(host="panel-one.local", port=8888),
         pinned=PanelAddress(host="192.168.250.23", port=8888),
@@ -601,8 +665,10 @@ async def test_happy_path_stops_unclaimed_and_binds_every_operation(
         descriptor=expected_descriptor,
     )
     expected_staged = StagedApk(
-        job_id=expected_execution_id,
-        remote_path=(f"/data/local/tmp/ha-paneld-install-{expected_execution_id}.apk"),
+        job_id=expected_staging_slot_id,
+        remote_path=(
+            f"/data/local/tmp/ha-paneld-install-{expected_staging_slot_id}.apk"
+        ),
         apk_size=12_345,
         apk_sha256=APK_SHA256,
     )
@@ -668,7 +734,7 @@ async def test_happy_path_stops_unclaimed_and_binds_every_operation(
             expected_adb_target,
             harness.credentials[3].signer,
             expected_descriptor,
-            expected_execution_id,
+            expected_staging_slot_id,
             Path(f"/private/{expected_execution_id}.apk"),
             AdbRootMode.ROOTLESS,
         )
@@ -678,7 +744,7 @@ async def test_happy_path_stops_unclaimed_and_binds_every_operation(
             expected_adb_target,
             harness.credentials[4].signer,
             expected_descriptor,
-            expected_execution_id,
+            expected_staging_slot_id,
             AdbRootMode.ROOTLESS,
         )
     ]
@@ -898,7 +964,10 @@ async def test_unexpected_post_actuator_fault_cannot_replay_in_same_process(
     assert harness.events.count(event) == 1
 
     restarted = InstallJobManager(hass)
-    quarantined = await restarted.async_claim(receipt.job_id, persisted.revision)
+    cleanup_count = harness.events.count("local_cleanup")
+    quarantined = await InstallExecutor(hass, restarted).async_wait(receipt.job_id)
+    assert harness.events.count("local_cleanup") == cleanup_count + 1
+    assert harness.events.count(event) == 1
     assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
     assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
 
@@ -971,6 +1040,7 @@ async def test_new_process_quarantines_every_ambiguous_phase_without_adb(
 
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.VERIFICATION_REQUIRED
+    assert harness.events == ["local_cleanup"]
     assert "stage" not in harness.events
     assert "install" not in harness.events
     assert "launch" not in harness.events
@@ -999,8 +1069,174 @@ async def test_worker_cancellation_leaves_durable_phase_for_new_process_claim(
     assert await executor.async_ensure_job(receipt.job_id) is None
 
     restarted = InstallJobManager(hass)
-    quarantined = await restarted.async_claim(receipt.job_id, persisted.revision)
+    quarantined = await InstallExecutor(hass, restarted).async_wait(receipt.job_id)
+    assert harness.events.count("local_cleanup") == 1
+    assert harness.events.count("stage") == 1
     assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+
+
+async def test_restart_removes_real_local_ready_before_ambiguous_quarantine(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash-held APK is deleted on disk before the receipt becomes terminal."""
+    receipt, restarted = await seed_phase(hass, InstallPhase.INSTALLING)
+    execution_id = install_executor._execution_id(receipt)
+    ready = Path(
+        hass.config.path(
+            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+        )
+    )
+    await hass.async_add_executor_job(seed_crash_partial, ready)
+    real_cleanup = install_executor.async_cleanup_install_artifact
+    harness = Harness(monkeypatch)
+    monkeypatch.setattr(
+        install_executor, "async_cleanup_install_artifact", real_cleanup
+    )
+
+    quarantined = await InstallExecutor(hass, restarted).async_wait(receipt.job_id)
+
+    assert not await hass.async_add_executor_job(ready.exists)
+    assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+    assert "stage" not in harness.events
+    assert "install" not in harness.events
+    assert not any(event.startswith("remote_cleanup:") for event in harness.events)
+
+
+@pytest.mark.parametrize(
+    ("phase", "suffix"),
+    [
+        (InstallPhase.DOWNLOADING, ".apk.part"),
+        (InstallPhase.ARTIFACT_READY, ".apk"),
+    ],
+)
+async def test_exhausted_safe_claim_cleans_real_custody_before_quarantine(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: InstallPhase,
+    suffix: str,
+) -> None:
+    """Attempt exhaustion cannot terminalize while reproducible bytes remain."""
+    receipt, _ = await seed_attempt_ceiling(hass, phase)
+    execution_id = install_executor._execution_id(receipt)
+    custody = Path(
+        hass.config.path(
+            ".storage", "ha_paneld.install_artifacts", f"{execution_id}{suffix}"
+        )
+    )
+    await hass.async_add_executor_job(seed_crash_partial, custody)
+    real_cleanup = install_executor.async_cleanup_install_artifact
+    harness = Harness(monkeypatch)
+    monkeypatch.setattr(
+        install_executor, "async_cleanup_install_artifact", real_cleanup
+    )
+
+    executor = await async_get_install_executor(hass)
+    quarantined = await executor.async_wait(receipt.job_id)
+
+    assert not await hass.async_add_executor_job(custody.exists)
+    assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+    assert quarantined.attempt == receipt.attempt
+    assert harness.events == []
+
+
+async def test_exhausted_claim_cleanup_failure_stays_active_and_cannot_replay(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failed exact cleanup preserves durable truth and stops this process."""
+    receipt, _ = await seed_attempt_ceiling(hass, InstallPhase.ARTIFACT_READY)
+    execution_id = install_executor._execution_id(receipt)
+    custody = Path(
+        hass.config.path(
+            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+        )
+    )
+    await hass.async_add_executor_job(seed_crash_partial, custody)
+    harness = Harness(monkeypatch)
+    harness.local_cleanup_error = ArtifactCustodyError(ArtifactErrorCode.IO_FAILED)
+    executor = await async_get_install_executor(hass)
+
+    paused = await executor.async_wait(receipt.job_id)
+
+    assert await hass.async_add_executor_job(custody.exists)
+    assert paused == receipt
+    assert harness.events == ["local_cleanup"]
+    assert await executor.async_ensure_job(receipt.job_id) is None
+
+
+async def test_exhausted_claim_cleanup_cancellation_stays_active_and_cannot_replay(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HA shutdown during cleanup neither terminalizes nor restarts the worker."""
+    receipt, _ = await seed_attempt_ceiling(hass, InstallPhase.ARTIFACT_READY)
+    execution_id = install_executor._execution_id(receipt)
+    custody = Path(
+        hass.config.path(
+            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+        )
+    )
+    await hass.async_add_executor_job(seed_crash_partial, custody)
+    harness = Harness(monkeypatch)
+    harness.local_cleanup_entered = asyncio.Event()
+    harness.local_cleanup_release = asyncio.Event()
+    executor = await async_get_install_executor(hass)
+    worker = await executor.async_ensure_job(receipt.job_id)
+    assert worker is not None
+    await harness.local_cleanup_entered.wait()
+
+    worker.cancel()
+    harness.local_cleanup_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+    assert await hass.async_add_executor_job(custody.exists)
+    assert await InstallJobManager(hass).async_get(receipt.job_id) == receipt
+    assert harness.events == ["local_cleanup"]
+    assert await executor.async_ensure_job(receipt.job_id) is None
+
+
+async def test_exhausted_claim_revision_drift_requires_fresh_cleanup_confirmation(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed receipt revision invalidates the first cleanup confirmation."""
+    receipt, restarted = await seed_attempt_ceiling(hass, InstallPhase.ARTIFACT_READY)
+    execution_id = install_executor._execution_id(receipt)
+    custody = Path(
+        hass.config.path(
+            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+        )
+    )
+    await hass.async_add_executor_job(seed_crash_partial, custody)
+    real_cleanup = install_executor.async_cleanup_install_artifact
+    harness = Harness(monkeypatch)
+    cleanup_revisions: list[int] = []
+
+    async def cleanup_then_drift(selected_hass: HomeAssistant, job_id: str) -> None:
+        current = await restarted.async_get(receipt.job_id)
+        cleanup_revisions.append(current.revision)
+        await real_cleanup(selected_hass, job_id)
+        if len(cleanup_revisions) == 1:
+            await restarted.async_request_cancel(current.job_id, current.revision)
+
+    monkeypatch.setattr(
+        install_executor,
+        "async_get_install_job_manager",
+        AsyncMock(return_value=restarted),
+    )
+    monkeypatch.setattr(
+        install_executor, "async_cleanup_install_artifact", cleanup_then_drift
+    )
+
+    executor = await async_get_install_executor(hass)
+    quarantined = await executor.async_wait(receipt.job_id)
+
+    assert cleanup_revisions == [receipt.revision, receipt.revision + 1]
+    assert not await hass.async_add_executor_job(custody.exists)
+    assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+    assert quarantined.cancel_requested
+    assert harness.events == []
 
 
 @pytest.mark.parametrize("failure", ["missing", "generation"])
@@ -1571,7 +1807,7 @@ async def test_definite_install_refusal_cleans_exact_stage_then_fails(
 
     completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
     frozen = install_executor._frozen_execution(receipt)
-    staged = install_executor._staged(frozen.execution_id, receipt.artifact)
+    staged = install_executor._staged(receipt.artifact)
 
     assert harness.events.count("remote_cleanup:install_refused") == 1
     assert harness.remote_cleanup_arguments == [
@@ -1617,6 +1853,7 @@ async def test_incomplete_remote_cleanup_quarantines_instead_of_launching(
     completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
 
     assert "launch" not in harness.events
+    assert harness.events.count("local_cleanup") == 2
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is result
 
@@ -1642,6 +1879,7 @@ async def test_ambiguous_stage_is_quarantined_without_remote_cleanup(
     completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
 
     assert "install" not in harness.events
+    assert harness.events.count("local_cleanup") == 1
     assert not any(event.startswith("remote_cleanup:") for event in harness.events)
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.AMBIGUOUS_MUTATION
@@ -1664,7 +1902,42 @@ async def test_definite_pre_push_stage_refusal_cleans_local_and_fails(
     assert completed.result_code is InstallResultCode.ARTIFACT_REJECTED
 
 
-async def test_mismatched_staged_receipt_is_quarantined_without_cleanup(
+async def test_repeated_jobs_share_one_non_overwriting_device_local_stage_slot(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ambiguous stage can leave at most one path and blocks its replacement."""
+    manager = InstallJobManager(hass)
+    first_receipt = await create_job(manager)
+    harness = Harness(monkeypatch)
+    harness.stage_error = InstallAdbError(InstallAdbErrorCode.STAGE_AMBIGUOUS)
+
+    first = await InstallExecutor(hass, manager).async_wait(first_receipt.job_id)
+    second_receipt = await create_job(manager)
+    harness.stage_error = InstallAdbError(InstallAdbErrorCode.STAGING_PATH_OCCUPIED)
+    second = await InstallExecutor(hass, manager).async_wait(second_receipt.job_id)
+
+    assert first_receipt.job_id != second_receipt.job_id
+    assert install_executor._execution_id(
+        first_receipt
+    ) != install_executor._execution_id(second_receipt)
+    assert [arguments[3] for arguments in harness.stage_arguments] == [
+        install_executor._REMOTE_STAGING_SLOT_ID,
+        install_executor._REMOTE_STAGING_SLOT_ID,
+    ]
+    assert all(
+        arguments[3] != install_executor._execution_id(receipt)
+        for arguments, receipt in zip(
+            harness.stage_arguments, (first_receipt, second_receipt), strict=True
+        )
+    )
+    assert not any(event.startswith("remote_cleanup:") for event in harness.events)
+    assert first.phase is InstallPhase.RECOVERY_REQUIRED
+    assert first.result_code is InstallResultCode.AMBIGUOUS_MUTATION
+    assert second.phase is InstallPhase.FAILED
+    assert second.result_code is InstallResultCode.ARTIFACT_REJECTED
+
+
+async def test_mismatched_staged_receipt_purges_local_but_never_guesses_remote(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unexpected stage result cannot authorize install or guessed cleanup."""
@@ -1677,16 +1950,16 @@ async def test_mismatched_staged_receipt_is_quarantined_without_cleanup(
 
     assert harness.events.count("stage") == 1
     assert "install" not in harness.events
-    assert "local_cleanup" not in harness.events
+    assert harness.events.count("local_cleanup") == 1
     assert not any(event.startswith("remote_cleanup:") for event in harness.events)
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.AMBIGUOUS_MUTATION
 
 
-async def test_ambiguous_install_is_quarantined_without_cleanup_or_launch(
+async def test_ambiguous_install_purges_local_but_retains_remote_stage(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unknown package-manager outcome retains all evidence for recovery."""
+    """Unknown package outcome retains the bounded remote stage, not local bytes."""
     manager = InstallJobManager(hass)
     receipt = await create_job(manager)
     harness = Harness(monkeypatch)
@@ -1694,19 +1967,81 @@ async def test_ambiguous_install_is_quarantined_without_cleanup_or_launch(
 
     completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
 
+    assert harness.stage_arguments[0][3] == install_executor._REMOTE_STAGING_SLOT_ID
+    assert harness.install_arguments[0][3] == install_executor._REMOTE_STAGING_SLOT_ID
     assert not any(event.startswith("remote_cleanup:") for event in harness.events)
+    assert harness.events.count("local_cleanup") == 1
     assert "launch" not in harness.events
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.AMBIGUOUS_MUTATION
 
 
+async def test_failed_recovery_cleanup_preserves_phase_and_cannot_replay(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local cleanup must succeed before quarantine, without retrying installation."""
+    manager = InstallJobManager(hass)
+    receipt = await create_job(manager)
+    harness = Harness(monkeypatch)
+    harness.install_error = InstallAdbError(InstallAdbErrorCode.INSTALL_AMBIGUOUS)
+    harness.local_cleanup_error = ArtifactCustodyError(ArtifactErrorCode.IO_FAILED)
+    executor = InstallExecutor(hass, manager)
+
+    paused = await executor.async_wait(receipt.job_id)
+
+    assert paused.phase is InstallPhase.INSTALLING
+    assert paused.result_code is None
+    assert harness.events.count("install") == 1
+    assert harness.events.count("local_cleanup") == 1
+    assert await executor.async_ensure_job(receipt.job_id) is None
+
+    harness.local_cleanup_error = None
+    restarted = InstallJobManager(hass)
+    quarantined = await InstallExecutor(hass, restarted).async_wait(receipt.job_id)
+
+    assert harness.events.count("install") == 1
+    assert harness.events.count("local_cleanup") == 2
+    assert not any(event.startswith("remote_cleanup:") for event in harness.events)
+    assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+
+
+async def test_worker_cancellation_during_recovery_cleanup_preserves_truth(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shutdown during cleanup cannot invent quarantine or replay installation."""
+    manager = InstallJobManager(hass)
+    receipt = await create_job(manager)
+    harness = Harness(monkeypatch)
+    harness.install_error = InstallAdbError(InstallAdbErrorCode.INSTALL_AMBIGUOUS)
+    harness.local_cleanup_entered = asyncio.Event()
+    harness.local_cleanup_release = asyncio.Event()
+    executor = InstallExecutor(hass, manager)
+    worker = await executor.async_ensure_job(receipt.job_id)
+    assert worker is not None
+    await harness.local_cleanup_entered.wait()
+
+    worker.cancel()
+    harness.local_cleanup_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+    persisted = await manager.async_get(receipt.job_id)
+    assert persisted.phase is InstallPhase.INSTALLING
+    assert persisted.result_code is None
+    assert harness.events.count("install") == 1
+    assert harness.events.count("local_cleanup") == 1
+    assert not any(event.startswith("remote_cleanup:") for event in harness.events)
+    assert await executor.async_ensure_job(receipt.job_id) is None
+
+
 @pytest.mark.parametrize("failure", ["credential", "adb"])
-async def test_install_pre_mutation_failure_preserves_staged_evidence(
+async def test_install_pre_mutation_failure_retains_only_bounded_remote_stage(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
-    """No terminal result discards residue once a verified stage exists."""
+    """Recovery removes local custody but never guesses at remote disposition."""
     manager = InstallJobManager(hass)
     receipt = await create_job(manager)
     harness = Harness(monkeypatch)
@@ -1719,7 +2054,7 @@ async def test_install_pre_mutation_failure_preserves_staged_evidence(
 
     assert harness.events.count("stage") == 1
     assert not any(event.startswith("remote_cleanup:") for event in harness.events)
-    assert "local_cleanup" not in harness.events
+    assert harness.events.count("local_cleanup") == 1
     assert "launch" not in harness.events
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.VERIFICATION_REQUIRED
@@ -1738,6 +2073,7 @@ async def test_ambiguous_launch_is_quarantined_after_exact_cleanup(
 
     assert harness.events.count("remote_cleanup:install_succeeded") == 1
     assert harness.events.count("launch") == 1
+    assert harness.events.count("local_cleanup") == 2
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.AMBIGUOUS_MUTATION
 
@@ -1767,10 +2103,12 @@ async def test_local_custody_cleanup_failure_after_install_requires_recovery(
     receipt = await create_job(manager)
     harness = Harness(monkeypatch)
     harness.local_cleanup_error = ArtifactCustodyError(ArtifactErrorCode.IO_FAILED)
+    harness.local_cleanup_error_at = 1
 
     completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
 
     assert "launch" not in harness.events
+    assert harness.events.count("local_cleanup") == 2
     assert completed.phase is InstallPhase.RECOVERY_REQUIRED
     assert completed.result_code is InstallResultCode.VERIFICATION_REQUIRED
 
@@ -1843,10 +2181,40 @@ async def test_durable_cancel_after_stage_uses_cleanup_barrier_then_cancels(
 
     assert harness.events.count("stage") == 1
     assert harness.events.count("remote_cleanup:cancelled") == 1
+    assert harness.stage_arguments[0][3] == install_executor._REMOTE_STAGING_SLOT_ID
+    assert harness.remote_cleanup_arguments[0][2] == install_executor._staged(
+        receipt.artifact
+    )
+    assert harness.events.count("local_cleanup") == 1
     assert "install" not in harness.events
     assert cleanup_barrier.await_count == 1
     assert completed.phase is InstallPhase.CANCELLED
     assert completed.result_code is InstallResultCode.CANCELLED_AFTER_STAGING_CLEANUP
+
+
+async def test_ambiguous_cancel_cleanup_quarantines_and_purges_local_only(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uncertain exact rm preserves recovery truth without leaking local bytes."""
+    manager = InstallJobManager(hass)
+    receipt = await create_job(manager)
+    harness = Harness(monkeypatch)
+
+    async def request_cancel_after_push() -> None:
+        current = await manager.async_get(receipt.job_id)
+        await manager.async_request_cancel(current.job_id, current.revision)
+
+    harness.stage_callback = request_cancel_after_push
+    harness.cleanup_error = InstallAdbError(InstallAdbErrorCode.CLEANUP_AMBIGUOUS)
+
+    completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
+
+    assert harness.events.count("stage") == 1
+    assert harness.events.count("remote_cleanup:cancelled") == 1
+    assert harness.events.count("local_cleanup") == 1
+    assert "install" not in harness.events
+    assert completed.phase is InstallPhase.RECOVERY_REQUIRED
+    assert completed.result_code is InstallResultCode.AMBIGUOUS_MUTATION
 
 
 async def test_cancelled_downloading_receipt_cleans_possible_partial_first(
@@ -1896,6 +2264,7 @@ async def test_resume_hook_is_explicit_and_getter_is_process_wide(
     receipt = await create_job(manager)
     harness = Harness(monkeypatch)
     manager_getter = AsyncMock()
+    reconcile = AsyncMock()
 
     async def delayed_manager(_hass: HomeAssistant) -> InstallJobManager:
         await asyncio.sleep(0)
@@ -1907,12 +2276,18 @@ async def test_resume_hook_is_explicit_and_getter_is_process_wide(
         "async_get_install_job_manager",
         manager_getter,
     )
+    monkeypatch.setattr(
+        install_executor, "async_reconcile_install_artifacts", reconcile
+    )
 
     first, second = await asyncio.gather(
         async_get_install_executor(hass), async_get_install_executor(hass)
     )
     assert first is second
     assert manager_getter.await_count == 1
+    reconcile.assert_awaited_once_with(
+        hass, frozenset({install_executor._execution_id(receipt)})
+    )
     assert not first._tasks
 
     resumed = await first.async_resume_loaded_jobs()
@@ -1921,6 +2296,174 @@ async def test_resume_hook_is_explicit_and_getter_is_process_wide(
     assert worker is not None
     await worker
     assert harness.events.count("stage") == 1
+
+
+async def test_concurrent_loaded_entry_resume_does_not_clean_active_staging_worker(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated entry setup cannot unlink a singleton worker's live artifact."""
+    manager = InstallJobManager(hass)
+    receipt = await create_job(manager)
+    harness = Harness(monkeypatch)
+    harness.stage_entered = asyncio.Event()
+    harness.stage_release = asyncio.Event()
+    executor = await async_get_install_executor(hass)
+    worker = await executor.async_ensure_job(receipt.job_id)
+    assert worker is not None
+    await harness.stage_entered.wait()
+
+    resumed = await asyncio.gather(
+        install_executor.async_resume_loaded_install_jobs(hass),
+        install_executor.async_resume_loaded_install_jobs(hass),
+    )
+
+    assert resumed == [(), ()]
+    assert harness.events.count("stage") == 1
+    assert harness.events.count("local_cleanup") == 0
+    assert await executor.async_ensure_job(receipt.job_id) is worker
+
+    harness.stage_release.set()
+    await worker
+    completed = await manager.async_get(receipt.job_id)
+    assert harness.events.count("stage") == 1
+    assert harness.events.count("install") == 1
+    assert harness.events.count("local_cleanup") == 1
+    assert completed.phase is InstallPhase.HEALTHY_UNCLAIMED
+
+
+async def test_concurrent_loaded_entry_resume_quarantines_restart_only_once(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent loaded entries idempotently reconcile one crashed mutation."""
+    receipt, restarted = await seed_phase(hass, InstallPhase.INSTALLING)
+    harness = Harness(monkeypatch)
+    monkeypatch.setattr(
+        install_executor,
+        "async_get_install_job_manager",
+        AsyncMock(return_value=restarted),
+    )
+
+    resumed = await asyncio.gather(
+        install_executor.async_resume_loaded_install_jobs(hass),
+        install_executor.async_resume_loaded_install_jobs(hass),
+    )
+    quarantined = await restarted.async_get(receipt.job_id)
+
+    assert resumed == [(), ()]
+    assert harness.events == ["local_cleanup"]
+    assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
+    assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+
+
+async def test_failed_artifact_reconciliation_aborts_singleton_publication(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unsafe orphan state cannot be hidden behind a partially published owner."""
+    manager = InstallJobManager(hass)
+    await create_job(manager)
+    monkeypatch.setattr(
+        install_executor,
+        "async_get_install_job_manager",
+        AsyncMock(return_value=manager),
+    )
+    reconcile = AsyncMock(
+        side_effect=ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)
+    )
+    monkeypatch.setattr(
+        install_executor, "async_reconcile_install_artifacts", reconcile
+    )
+
+    with pytest.raises(ArtifactCustodyError) as raised:
+        await async_get_install_executor(hass)
+
+    assert raised.value.code is ArtifactErrorCode.PATH_INVALID
+    assert install_executor._EXECUTOR_DATA_KEY not in hass.data
+    reconcile.side_effect = None
+    executor = await async_get_install_executor(hass)
+    assert isinstance(executor, InstallExecutor)
+    assert reconcile.await_count == 2
+
+
+async def test_cancelled_artifact_reconciliation_aborts_singleton_publication(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HA shutdown cannot publish an owner before its one-time GC completes."""
+    manager = InstallJobManager(hass)
+    await create_job(manager)
+    monkeypatch.setattr(
+        install_executor,
+        "async_get_install_job_manager",
+        AsyncMock(return_value=manager),
+    )
+    reconcile = AsyncMock(side_effect=asyncio.CancelledError)
+    monkeypatch.setattr(
+        install_executor, "async_reconcile_install_artifacts", reconcile
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_get_install_executor(hass)
+
+    assert install_executor._EXECUTOR_DATA_KEY not in hass.data
+
+
+async def test_artifact_reconciliation_retains_healthy_unclaimed_custody_id(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GC policy is receipt-generic and cannot silently invent a phase exception."""
+    receipt, manager = await seed_phase(hass, InstallPhase.HEALTH_CHECK)
+    receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.HEALTHY_UNCLAIMED,
+        health_checked_at=datetime.now(UTC).isoformat(timespec="seconds"),
+    )
+    monkeypatch.setattr(
+        install_executor,
+        "async_get_install_job_manager",
+        AsyncMock(return_value=manager),
+    )
+    reconcile = AsyncMock()
+    monkeypatch.setattr(
+        install_executor, "async_reconcile_install_artifacts", reconcile
+    )
+
+    await async_get_install_executor(hass)
+
+    reconcile.assert_awaited_once_with(
+        hass, frozenset({install_executor._execution_id(receipt)})
+    )
+
+
+async def test_artifact_reconciliation_does_not_retain_terminal_custody_id(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Terminal receipt retention cannot turn into local APK retention."""
+    manager = InstallJobManager(hass)
+    receipt = await create_job(manager)
+    receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+    receipt = await manager.async_transition(
+        receipt.job_id, receipt.revision, InstallPhase.AUTHORIZING
+    )
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.FAILED,
+        result_code=InstallResultCode.AUTHORIZATION_FAILED,
+    )
+    monkeypatch.setattr(
+        install_executor,
+        "async_get_install_job_manager",
+        AsyncMock(return_value=manager),
+    )
+    reconcile = AsyncMock()
+    monkeypatch.setattr(
+        install_executor, "async_reconcile_install_artifacts", reconcile
+    )
+
+    await async_get_install_executor(hass)
+
+    reconcile.assert_awaited_once_with(hass, frozenset())
 
 
 @pytest.mark.parametrize(
@@ -1942,6 +2485,7 @@ async def test_resume_hook_quarantines_but_does_not_resume_ambiguous_phase(
     assert resumed == ()
     assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
     assert quarantined.result_code is InstallResultCode.VERIFICATION_REQUIRED
+    assert harness.events == ["local_cleanup"]
     assert "stage" not in harness.events
     assert "install" not in harness.events
     assert "launch" not in harness.events

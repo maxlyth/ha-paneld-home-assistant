@@ -51,12 +51,14 @@ from .install_artifacts import (
     ArtifactErrorCode,
     async_cleanup_install_artifact,
     async_download_install_artifact,
+    async_reconcile_install_artifacts,
 )
 from .install_artifacts import (
     InstallArtifact as CustodiedArtifact,
 )
 from .install_jobs import (
     InstallArtifact,
+    InstallJobCleanupRequiredError,
     InstallJobManager,
     InstallJobReceipt,
     InstallJobRevisionError,
@@ -77,6 +79,12 @@ from .release import InstallDescriptor, ReleaseArtifact
 _EXECUTOR_DATA_KEY = f"{DOMAIN}.install_executor"
 _EXECUTOR_LOCK_DATA_KEY = f"{DOMAIN}.install_executor_lock"
 _EXECUTION_ID_DOMAIN = b"ha-paneld-install-execution-v1\0"
+# The path is device-local, so one fixed slot bounds ambiguous remote residue
+# without creating a cross-panel collision. Stage proves the slot absent in the
+# same ADB connection before writing; a later job refuses rather than overwrites.
+_REMOTE_STAGING_SLOT_ID = sha256(
+    b"ha-paneld-device-local-staging-slot-v1\0"
+).hexdigest()[:32]
 _RELEASE_DOWNLOAD_ROOT = "https://github.com/maxlyth/ha-paneld/releases/download"
 _REMOTE_STAGING_PREFIX = "/data/local/tmp/ha-paneld-install-"
 _HEALTH_ATTEMPTS = 12
@@ -168,6 +176,7 @@ class InstallExecutor:
         self._hass = hass
         self._manager = manager
         self._lock = asyncio.Lock()
+        self._resume_lock = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._finalizers: dict[str, str] = {}
         # A cancelled worker may have been interrupted inside a mutation phase.
@@ -213,25 +222,37 @@ class InstallExecutor:
         entries Home Assistant does not import the custom integration, so a
         later config flow must call :meth:`async_ensure_job` to resume the job.
         """
-        resumed: list[str] = []
-        for receipt in await self._manager.async_list():
-            if receipt.is_terminal or receipt.phase is InstallPhase.HEALTHY_UNCLAIMED:
-                continue
-            if receipt.phase in _RESTART_AMBIGUOUS_PHASES:
-                try:
-                    await self._manager.async_claim(receipt.job_id, receipt.revision)
-                except InstallJobRevisionError:
-                    current = await self._manager.async_get(receipt.job_id)
-                    if current.phase in _RESTART_AMBIGUOUS_PHASES:
-                        await self._manager.async_claim(
-                            current.job_id, current.revision
-                        )
-                continue
-            if receipt.phase not in _SAFE_RESUME_PHASES:
-                continue
-            if await self.async_ensure_job(receipt.job_id) is not None:
-                resumed.append(receipt.job_id)
-        return tuple(resumed)
+        async with self._resume_lock:
+            resumed: list[str] = []
+            for receipt in await self._manager.async_list():
+                if (
+                    receipt.is_terminal
+                    or receipt.phase is InstallPhase.HEALTHY_UNCLAIMED
+                ):
+                    continue
+                if receipt.phase in _RESTART_AMBIGUOUS_PHASES:
+                    try:
+                        await self._async_claim(receipt)
+                    except _PauseJob:
+                        continue
+                    except InstallJobRevisionError:
+                        current = await self._manager.async_get(receipt.job_id)
+                        if (
+                            not current.is_terminal
+                            and current.phase in _RESTART_AMBIGUOUS_PHASES
+                        ):
+                            try:
+                                await self._async_claim(current)
+                            except _PauseJob, InstallJobRevisionError:
+                                continue
+                    # An active same-manager worker retains its claim. It must
+                    # never be duplicated or have its live artifact cleaned.
+                    continue
+                if receipt.phase not in _SAFE_RESUME_PHASES:
+                    continue
+                if await self.async_ensure_job(receipt.job_id) is not None:
+                    resumed.append(receipt.job_id)
+            return tuple(resumed)
 
     async def async_acquire_finalizer(self, job_id: str, flow_id: str) -> bool:
         """Grant one flow the exclusive HEALTHY_UNCLAIMED finalization lease."""
@@ -271,10 +292,10 @@ class InstallExecutor:
         try:
             receipt = await self._manager.async_get(job_id)
             try:
-                receipt = await self._manager.async_claim(job_id, receipt.revision)
+                receipt = await self._async_claim(receipt)
             except InstallJobRevisionError:
                 receipt = await self._manager.async_get(job_id)
-                receipt = await self._manager.async_claim(job_id, receipt.revision)
+                receipt = await self._async_claim(receipt)
             while (
                 not receipt.is_terminal
                 and receipt.phase is not InstallPhase.HEALTHY_UNCLAIMED
@@ -433,13 +454,11 @@ class InstallExecutor:
                             execution.adb_target,
                             credential.signer,
                             execution.descriptor,
-                            execution.execution_id,
+                            _REMOTE_STAGING_SLOT_ID,
                             Path(local_artifact.path),
                             expected_root_mode=_root_mode(receipt),
                         )
-                        _require_staged(
-                            staged, execution.execution_id, receipt.artifact
-                        )
+                        _require_staged(staged, receipt.artifact)
                     except _CancellationObserved as err:
                         receipt = err.receipt
                     except AdbCredentialError, InstallNetworkError:
@@ -473,7 +492,7 @@ class InstallExecutor:
                             execution.adb_target,
                             credential.signer,
                             execution.descriptor,
-                            execution.execution_id,
+                            _REMOTE_STAGING_SLOT_ID,
                             expected_root_mode=_root_mode(receipt),
                         )
                     except AdbCredentialError, InstallNetworkError:
@@ -499,7 +518,7 @@ class InstallExecutor:
                         else:
                             receipt = await self._async_recovery(receipt)
                 elif phase is InstallPhase.INSTALLED:
-                    staged = _staged_from_receipt(receipt, execution.execution_id)
+                    staged = _staged_from_receipt(receipt)
                     try:
                         await self._async_cleanup_local(execution.execution_id)
                     except ArtifactCustodyError:
@@ -550,6 +569,25 @@ class InstallExecutor:
             # occur immediately after an external mutation, so never replay
             # this worker in the same process or invent a definite outcome.
             self._nonrestartable_workers.add(job_id)
+
+    async def _async_claim(
+        self,
+        receipt: InstallJobReceipt,
+    ) -> InstallJobReceipt:
+        """Claim once, cleaning exact local custody before terminalization."""
+        try:
+            return await self._manager.async_claim(receipt.job_id, receipt.revision)
+        except InstallJobCleanupRequiredError:
+            current = await self._manager.async_get(receipt.job_id)
+            try:
+                await self._async_cleanup_local(_execution_id(current))
+            except ArtifactCustodyError:
+                raise _PauseJob(nonrestartable=True) from None
+            return await self._manager.async_claim(
+                current.job_id,
+                current.revision,
+                cleanup_confirmed_revision=current.revision,
+            )
 
     async def _async_preflight(
         self, receipt: InstallJobReceipt, execution: _FrozenExecution
@@ -868,6 +906,19 @@ class InstallExecutor:
         current = await self._manager.async_get(receipt.job_id)
         if current.is_terminal:
             return current
+        try:
+            # These bytes are reproducible from the frozen signed digest and
+            # are not evidence of the panel-side mutation outcome. Cleanup is
+            # restricted to this receipt's derived private custody ID.
+            await self._async_cleanup_local(_execution_id(current))
+        except ArtifactCustodyError:
+            # The mutation truth remains in its current durable phase.  A new
+            # process will remove local custody before it claims an ambiguous
+            # phase, so a cleanup failure can never enable same-process replay.
+            raise _PauseJob(nonrestartable=True) from None
+        current = await self._manager.async_get(receipt.job_id)
+        if current.is_terminal:
+            return current
         return await self._manager.async_transition(
             current.job_id,
             current.revision,
@@ -969,27 +1020,25 @@ def _require_local_artifact(
         raise ArtifactCustodyError(ArtifactErrorCode.READY_INVALID)
 
 
-def _require_staged(
-    staged: StagedApk, execution_id: str, artifact: InstallArtifact
-) -> None:
-    expected = _staged(execution_id, artifact)
+def _require_staged(staged: StagedApk, artifact: InstallArtifact) -> None:
+    expected = _staged(artifact)
     if staged != expected:
         raise InstallAdbError(InstallAdbErrorCode.STAGE_VERIFICATION_FAILED)
 
 
-def _staged(execution_id: str, artifact: InstallArtifact) -> StagedApk:
+def _staged(artifact: InstallArtifact) -> StagedApk:
     return StagedApk(
-        job_id=execution_id,
-        remote_path=f"{_REMOTE_STAGING_PREFIX}{execution_id}.apk",
+        job_id=_REMOTE_STAGING_SLOT_ID,
+        remote_path=f"{_REMOTE_STAGING_PREFIX}{_REMOTE_STAGING_SLOT_ID}.apk",
         apk_size=artifact.apk_size,
         apk_sha256=artifact.apk_sha256,
     )
 
 
-def _staged_from_receipt(receipt: InstallJobReceipt, execution_id: str) -> StagedApk:
+def _staged_from_receipt(receipt: InstallJobReceipt) -> StagedApk:
     if receipt.phase is not InstallPhase.INSTALLED:
         raise InstallJobTransitionError
-    return _staged(execution_id, receipt.artifact)
+    return _staged(receipt.artifact)
 
 
 def _root_mode(receipt: InstallJobReceipt) -> AdbRootMode:
@@ -1039,7 +1088,17 @@ async def async_get_install_executor(hass: HomeAssistant) -> InstallExecutor:
     async with lock:
         executor = hass.data.get(_EXECUTOR_DATA_KEY)
         if executor is None:
-            executor = InstallExecutor(hass, await async_get_install_job_manager(hass))
+            manager = await async_get_install_job_manager(hass)
+            receipts = await manager.async_list()
+            await async_reconcile_install_artifacts(
+                hass,
+                frozenset(
+                    _execution_id(receipt)
+                    for receipt in receipts
+                    if not receipt.is_terminal
+                ),
+            )
+            executor = InstallExecutor(hass, manager)
             hass.data[_EXECUTOR_DATA_KEY] = executor
         if not isinstance(executor, InstallExecutor):
             raise InstallJobStoreError

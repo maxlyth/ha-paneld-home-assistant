@@ -96,6 +96,10 @@ class InstallJobRevisionError(InstallJobError):
     """The receipt revision did not match the caller's expected revision."""
 
 
+class InstallJobCleanupRequiredError(InstallJobError):
+    """Local custody must be cleaned before this claim can become terminal."""
+
+
 class InstallJobTransitionError(InstallJobError):
     """A requested receipt transition or field update is invalid."""
 
@@ -1233,34 +1237,50 @@ class InstallJobManager:
             return self._jobs[job_id]  # type: ignore[index]
 
     async def async_claim(
-        self, job_id: str, expected_revision: int
+        self,
+        job_id: str,
+        expected_revision: int,
+        *,
+        cleanup_confirmed_revision: int | None = None,
     ) -> InstallJobReceipt:
         """Durably claim safe work for this manager generation.
 
         A new manager has no in-memory claims. Encountering a phase from which
         an earlier process may already have mutated the panel therefore records
-        recovery-required instead of replaying the operation.
+        recovery-required instead of replaying the operation. A claim which
+        would become terminal requires proof that receipt-local artifact
+        custody was cleaned against the exact current durable revision.
         """
         async with self._lock:
             jobs = (await self._async_load_locked(refresh=True)).copy()
             current = self._checked_current(jobs, job_id, expected_revision)
             if current.is_terminal or current.phase == InstallPhase.HEALTHY_UNCLAIMED:
                 raise InstallJobTransitionError
+            if cleanup_confirmed_revision is not None and (
+                isinstance(cleanup_confirmed_revision, bool)
+                or not isinstance(cleanup_confirmed_revision, int)
+                or cleanup_confirmed_revision != current.revision
+            ):
+                raise InstallJobRevisionError
             if self._claimed_jobs.get(job_id) == current.executor_generation:
                 return current
-            if (
+            exhausted = (
                 current.executor_generation >= _MAX_EXECUTOR_GENERATION
                 or current.attempt >= _MAX_ATTEMPTS
-            ):
-                exhausted = replace(
+            )
+            terminalizing = exhausted or current.phase in _RESTART_AMBIGUOUS_PHASES
+            if terminalizing and cleanup_confirmed_revision is None:
+                raise InstallJobCleanupRequiredError
+            if exhausted:
+                exhausted_receipt = replace(
                     current,
                     revision=current.revision + 1,
                     updated_at=_timestamp(self._now()),
                     phase=InstallPhase.RECOVERY_REQUIRED,
                     result_code=InstallResultCode.VERIFICATION_REQUIRED,
                 )
-                jobs[job_id] = exhausted
-                self._prune(jobs, exhausted.updated_at)
+                jobs[job_id] = exhausted_receipt
+                self._prune(jobs, exhausted_receipt.updated_at)
                 await self._async_save_locked(jobs)
                 return self._jobs[job_id]  # type: ignore[index]
             phase = current.phase

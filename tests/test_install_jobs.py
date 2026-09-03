@@ -22,6 +22,7 @@ from custom_components.ha_paneld.const import DOMAIN
 from custom_components.ha_paneld.install_jobs import (
     InstallArtifact,
     InstallJobCapacityError,
+    InstallJobCleanupRequiredError,
     InstallJobConflictError,
     InstallJobManager,
     InstallJobNotFoundError,
@@ -647,7 +648,14 @@ async def test_restart_reclaims_pre_mutation_but_quarantines_ambiguous_phase(
     )
     risky = await transition_to_staging(restarted, risky.job_id)
     after_crash = InstallJobManager(hass, now=clock)
-    quarantined = await after_crash.async_claim(risky.job_id, risky.revision)
+    with pytest.raises(InstallJobCleanupRequiredError):
+        await after_crash.async_claim(risky.job_id, risky.revision)
+    assert await after_crash.async_get(risky.job_id) == risky
+    quarantined = await after_crash.async_claim(
+        risky.job_id,
+        risky.revision,
+        cleanup_confirmed_revision=risky.revision,
+    )
     assert quarantined.phase == InstallPhase.RECOVERY_REQUIRED
     assert quarantined.result_code == InstallResultCode.VERIFICATION_REQUIRED
     assert quarantined.is_terminal
@@ -677,8 +685,13 @@ async def test_restart_quarantines_every_ambiguous_mutation_phase(
                 receipt.job_id, receipt.revision, next_phase
             )
 
-    quarantined = await InstallJobManager(hass, now=Clock()).async_claim(
-        receipt.job_id, receipt.revision
+    restarted = InstallJobManager(hass, now=Clock())
+    with pytest.raises(InstallJobCleanupRequiredError):
+        await restarted.async_claim(receipt.job_id, receipt.revision)
+    quarantined = await restarted.async_claim(
+        receipt.job_id,
+        receipt.revision,
+        cleanup_confirmed_revision=receipt.revision,
     )
 
     assert quarantined.phase is InstallPhase.RECOVERY_REQUIRED
@@ -750,11 +763,43 @@ async def test_restart_at_attempt_ceiling_becomes_recovery_required(
             )
 
     restarted = InstallJobManager(hass, now=clock)
-    exhausted = await restarted.async_claim(receipt.job_id, receipt.revision)
+    with pytest.raises(InstallJobCleanupRequiredError):
+        await restarted.async_claim(receipt.job_id, receipt.revision)
+    assert await restarted.async_get(receipt.job_id) == receipt
+    with pytest.raises(InstallJobRevisionError):
+        await restarted.async_claim(
+            receipt.job_id,
+            receipt.revision,
+            cleanup_confirmed_revision=receipt.revision - 1,
+        )
+    assert await restarted.async_get(receipt.job_id) == receipt
+    exhausted = await restarted.async_claim(
+        receipt.job_id,
+        receipt.revision,
+        cleanup_confirmed_revision=receipt.revision,
+    )
     assert exhausted.phase == InstallPhase.RECOVERY_REQUIRED
     assert exhausted.result_code == InstallResultCode.VERIFICATION_REQUIRED
     assert exhausted.attempt == exhausted.executor_generation == 32
     assert exhausted.revision == receipt.revision + 1
+
+
+@pytest.mark.parametrize("cleanup_confirmation", [True, -1, 1.5, "1"])
+async def test_safe_claim_rejects_invalid_cleanup_confirmation(
+    hass: HomeAssistant, cleanup_confirmation: object
+) -> None:
+    """A supplied cleanup proof is never ignored when no cleanup is needed."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+
+    with pytest.raises(InstallJobRevisionError):
+        await manager.async_claim(
+            receipt.job_id,
+            receipt.revision,
+            cleanup_confirmed_revision=cleanup_confirmation,  # type: ignore[arg-type]
+        )
+
+    assert await manager.async_get(receipt.job_id) == receipt
 
 
 async def test_restart_quarantine_prunes_full_terminal_history_before_save(
@@ -790,8 +835,13 @@ async def test_restart_quarantine_prunes_full_terminal_history_before_save(
     active = await transition_to_staging(manager, active.job_id)
     clock.advance()
 
-    recovered = await InstallJobManager(hass, now=clock).async_claim(
-        active.job_id, active.revision
+    restarted = InstallJobManager(hass, now=clock)
+    with pytest.raises(InstallJobCleanupRequiredError):
+        await restarted.async_claim(active.job_id, active.revision)
+    recovered = await restarted.async_claim(
+        active.job_id,
+        active.revision,
+        cleanup_confirmed_revision=active.revision,
     )
     receipts = await InstallJobManager(hass, now=clock).async_list()
 
