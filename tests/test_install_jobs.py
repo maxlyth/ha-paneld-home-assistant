@@ -2595,6 +2595,12 @@ def test_store_file_must_be_small_regular_and_owner_only(tmp_path: Path) -> None
     store_path.chmod(0o600)
     assert _REAL_STORE_PRESENCE(str(store_path)) == (True, False)
 
+    hardlink_path = tmp_path / "install-jobs-hardlink"
+    os.link(store_path, hardlink_path)
+    with pytest.raises(InstallJobStoreError):
+        _REAL_STORE_PRESENCE(str(store_path))
+    hardlink_path.unlink()
+
     with (
         patch.object(install_jobs.os, "geteuid", return_value=os.geteuid() + 1),
         pytest.raises(InstallJobStoreError),
@@ -2627,6 +2633,16 @@ def test_durable_job_reader_repeatedly_binds_one_private_store_inode(
 
     for _ in range(3):
         assert _REAL_DURABLE_JOBS_READER(str(store_path)) == {receipt.job_id: receipt}
+
+
+def test_durable_job_reader_rejects_hardlinked_store_file(tmp_path: Path) -> None:
+    """An alias cannot retain usable receipt authority after Store replacement."""
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    write_durable_store(store_path)
+    os.link(store_path, tmp_path / "install-jobs-hardlink")
+
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
 
 
 @pytest.mark.parametrize(

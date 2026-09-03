@@ -863,6 +863,7 @@ def _store_presence(path_text: str) -> tuple[bool, bool]:
                 not stat.S_ISREG(metadata.st_mode)
                 or stat.S_IMODE(metadata.st_mode) != 0o600
                 or metadata.st_uid != os.geteuid()
+                or metadata.st_nlink != 1
                 or metadata.st_size > _MAX_STORE_BYTES
             ):
                 raise InstallJobStoreError
@@ -890,6 +891,7 @@ def _metadata_identity(metadata: os.stat_result) -> tuple[int, ...]:
         metadata.st_ino,
         metadata.st_mode,
         metadata.st_uid,
+        metadata.st_nlink,
         metadata.st_size,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
@@ -941,6 +943,7 @@ def _read_durable_jobs(path_text: str) -> dict[str, InstallJobReceipt]:
             not stat.S_ISREG(before.st_mode)
             or stat.S_IMODE(before.st_mode) != 0o600
             or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
             or not 1 <= before.st_size <= _MAX_STORE_BYTES
         ):
             raise InstallJobStoreError

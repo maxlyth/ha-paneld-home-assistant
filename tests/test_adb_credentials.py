@@ -839,6 +839,11 @@ def test_store_privacy_check_requires_regular_owner_only_file(tmp_path: Path) ->
     credential_path.chmod(0o600)
     assert adb_credentials._store_is_private(str(credential_path))
 
+    hardlink_path = tmp_path / "credential-hardlink"
+    os.link(credential_path, hardlink_path)
+    assert not adb_credentials._store_is_private(str(credential_path))
+    hardlink_path.unlink()
+
     credential_path.chmod(0o640)
     assert not adb_credentials._store_is_private(str(credential_path))
 
@@ -854,6 +859,16 @@ def test_durable_reader_binds_exact_private_store_file(tmp_path: Path) -> None:
     _write_store(store_path, credential)
 
     assert adb_credentials._read_durable_credential(str(store_path)) == credential
+
+
+def test_durable_reader_rejects_hardlinked_store_file(tmp_path: Path) -> None:
+    """An alias cannot retain usable ADB key authority after Store replacement."""
+    store_path = tmp_path / "ha_paneld.adb_key"
+    _write_store(store_path, _generate_credential())
+    os.link(store_path, tmp_path / "credential-hardlink")
+
+    with pytest.raises(AdbCredentialError):
+        adb_credentials._read_durable_credential(str(store_path))
 
 
 @pytest.mark.parametrize(

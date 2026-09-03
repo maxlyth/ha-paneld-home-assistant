@@ -191,6 +191,7 @@ def _store_is_private(path_text: str) -> bool:
             stat.S_ISREG(metadata.st_mode)
             and (metadata.st_mode & 0o777) == 0o600
             and metadata.st_uid == os.geteuid()
+            and metadata.st_nlink == 1
         )
     except OSError as err:
         raise AdbCredentialError from err
@@ -211,6 +212,7 @@ def _metadata_identity(metadata: os.stat_result) -> tuple[int, ...]:
         metadata.st_ino,
         metadata.st_mode,
         metadata.st_uid,
+        metadata.st_nlink,
         metadata.st_size,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
@@ -299,6 +301,7 @@ def _read_durable_credential(path_text: str) -> _StoredCredential:
             not stat.S_ISREG(before.st_mode)
             or stat.S_IMODE(before.st_mode) != 0o600
             or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
             or not 1 <= before.st_size <= _MAX_STORE_BYTES
         ):
             raise AdbCredentialError
