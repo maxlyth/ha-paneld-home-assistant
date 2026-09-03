@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
 
-from .adb_credentials import AdbCredentialError, async_get_adb_signer
+from .adb_credentials import (
+    AdbCredentialError,
+    async_get_adb_credential,
+    async_get_adb_signer,
+    async_get_durable_adb_credential,
+)
 from .client import (
     CannotConnectError,
     HaPaneldClient,
@@ -22,6 +28,23 @@ from .client import (
     normalize_address,
 )
 from .const import DEFAULT_PORT, DOMAIN
+from .install_adb import (
+    AdbInstallTarget,
+    AdbRootMode,
+    InstallAdbError,
+    InstallAdbErrorCode,
+    async_verify_installed_target,
+)
+from .install_executor import InstallExecutor, async_get_install_executor
+from .install_jobs import (
+    InstallJobConflictError,
+    InstallJobError,
+    InstallJobManager,
+    InstallJobReceipt,
+    InstallPhase,
+    InstallResultCode,
+    async_get_install_job_manager,
+)
 from .install_network import (
     InstallNetworkError,
     InstallNetworkErrorCode,
@@ -29,6 +52,7 @@ from .install_network import (
     async_pin_install_target,
     async_revalidate_install_target,
 )
+from .install_plan import InstallPlanError, build_install_plan
 from .provisioning import InstallTargetProbe, async_probe_install_target
 from .release import (
     ReleaseArtifact,
@@ -53,6 +77,14 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _pending_probe: InstallTargetProbe | None = None
     _pending_release: ReleaseArtifact | None = None
     _pending_install_target: PinnedPanelTarget | None = None
+    _pending_job_id: str | None = None
+    _progress_waiter: asyncio.Task[InstallJobReceipt] | None = None
+    _install_executor: InstallExecutor | None = None
+    _finalizer_job_id: str | None = None
+    _finalization_owner_task: asyncio.Task[Any] | None = None
+    _release_after_finalization = False
+    _finalizer_release_scheduled = False
+    _flow_removed = False
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -102,6 +134,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             self._pending_probe = None
             self._pending_release = None
             self._pending_install_target = None
+            self._pending_job_id = None
             try:
                 address = normalize_address(user_input[CONF_ADDRESS])
                 if address.port != DEFAULT_PORT:
@@ -122,6 +155,34 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     self._pending_address = address
                     self._pending_install_target = target
+                    try:
+                        manager = await async_get_install_job_manager(self.hass)
+                        active = await manager.async_find_active(
+                            address.stored_value, target.pinned.stored_value
+                        )
+                    except InstallJobError:
+                        errors["base"] = "install_receipt_error"
+                        active = None
+                    except Exception:
+                        _LOGGER.exception(
+                            "Unexpected exception while loading an install receipt"
+                        )
+                        errors["base"] = "unknown"
+                        active = None
+                    if errors:
+                        return self.async_show_form(
+                            step_id="install_or_upgrade",
+                            data_schema=self.add_suggested_values_to_schema(
+                                _DATA_SCHEMA, user_input
+                            ),
+                            errors=errors,
+                        )
+                    if active is not None:
+                        self._pending_job_id = active.job_id
+                        if active.phase is InstallPhase.HEALTHY_UNCLAIMED:
+                            return await self.async_step_install_result()
+                        return await self._async_show_install_progress(active)
+
                     client = HaPaneldClient(
                         async_get_clientsession(self.hass), target.pinned
                     )
@@ -141,27 +202,39 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                         else:
                             state = probe.state.value
                             if state == "adb_unauthorized":
-                                return self._show_authorize_adb()
+                                release_result = (
+                                    await self._async_resolve_install_release(
+                                        step_id="install_or_upgrade",
+                                        user_input=user_input,
+                                    )
+                                )
+                                if release_result is not None:
+                                    return release_result
+                                if self._pending_release is None:
+                                    errors["base"] = "unknown"
+                                elif self._pending_release.descriptor is None:
+                                    return self._show_release_preview_only()
+                                else:
+                                    return self._show_authorize_adb()
                             if state == "install_candidate":
                                 placeholders = _install_candidate_placeholders(probe)
                                 if placeholders is None:
                                     errors["base"] = "retained_or_ambiguous"
                                 else:
-                                    try:
-                                        release = await async_resolve_stable_release(
-                                            async_get_clientsession(self.hass)
+                                    release_result = (
+                                        await self._async_resolve_install_release(
+                                            step_id="install_or_upgrade",
+                                            user_input=user_input,
                                         )
-                                    except ReleaseResolutionError:
-                                        errors["base"] = "cannot_resolve_release"
-                                    except Exception:
-                                        _LOGGER.exception(
-                                            "Unexpected exception while resolving "
-                                            "ha-paneld release"
-                                        )
+                                    )
+                                    if release_result is not None:
+                                        return release_result
+                                    self._pending_probe = probe
+                                    if self._pending_release is None:
                                         errors["base"] = "unknown"
+                                    elif self._pending_release.descriptor is None:
+                                        return self._show_release_preview_only()
                                     else:
-                                        self._pending_probe = probe
-                                        self._pending_release = release
                                         return self._show_install_candidate_preview()
                             else:
                                 errors["base"] = {
@@ -202,7 +275,12 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Wait for explicit approval of Home Assistant's ADB key on the panel."""
-        if self._pending_address is None or self._pending_install_target is None:
+        if (
+            self._pending_address is None
+            or self._pending_install_target is None
+            or self._pending_release is None
+            or self._pending_release.descriptor is None
+        ):
             return self.async_abort(reason="unknown")
         if user_input is None:
             return self._show_authorize_adb()
@@ -228,19 +306,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             placeholders = _install_candidate_placeholders(probe)
             if placeholders is None:
                 return self.async_abort(reason="unknown")
-            try:
-                release = await async_resolve_stable_release(
-                    async_get_clientsession(self.hass)
-                )
-            except ReleaseResolutionError:
-                return self._show_authorize_adb({"base": "cannot_resolve_release"})
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected exception while resolving ha-paneld release"
-                )
-                return self._show_authorize_adb({"base": "unknown"})
             self._pending_probe = probe
-            self._pending_release = release
             return self._show_install_candidate_preview()
 
         return self._show_authorize_adb(
@@ -314,7 +380,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_confirm_install_candidate(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Review an install candidate without mutating it in this prototype."""
+        """Re-prove and durably authorize one exact clean installation."""
         if (
             self._pending_address is None
             or self._pending_probe is None
@@ -322,11 +388,78 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             or self._pending_install_target is None
         ):
             return self.async_abort(reason="unknown")
-        if user_input is not None:
-            return self.async_abort(reason="prototype_ready")
-        return self._show_install_candidate_preview()
+        if self._pending_release.descriptor is None:
+            return self._show_release_preview_only()
+        if user_input is None:
+            return self._show_install_candidate_preview()
 
-    def _show_install_candidate_preview(self) -> ConfigFlowResult:
+        # Entry identity is the normalized endpoint. This guard deliberately runs
+        # before DNS, credentials, ADB, release, or durable job work.
+        self._async_abort_entries_match(
+            {CONF_ADDRESS: self._pending_address.stored_value}
+        )
+        try:
+            target = await async_revalidate_install_target(
+                self.hass, self._pending_install_target
+            )
+            created_credential = await async_get_adb_credential(self.hass)
+            credential = await async_get_durable_adb_credential(self.hass)
+            if credential.generation_id != created_credential.generation_id:
+                raise AdbCredentialError
+            probe = await async_probe_install_target(target.pinned, credential.signer)
+        except InstallNetworkError as err:
+            return self._show_install_candidate_preview(
+                {"base": _install_network_error(err)}
+            )
+        except AdbCredentialError:
+            return self._show_install_candidate_preview(
+                {"base": "adb_credential_error"}
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected exception while confirming installation")
+            return self._show_install_candidate_preview({"base": "unknown"})
+
+        if not _same_install_candidate(self._pending_probe, probe):
+            return self._show_install_candidate_preview(
+                {"base": "install_candidate_changed"}
+            )
+
+        try:
+            plan = build_install_plan(
+                target,
+                probe,
+                self._pending_release,
+                credential.generation_id,
+            )
+            manager = await async_get_install_job_manager(self.hass)
+            receipt, _created = await manager.async_create_or_join(
+                plan.target,
+                plan.artifact,
+                plan.plan_sha256,
+                plan.adb_credential_id,
+            )
+        except InstallJobConflictError:
+            return self._show_install_candidate_preview(
+                {"base": "install_job_conflict"}
+            )
+        except InstallPlanError:
+            return self._show_install_candidate_preview(
+                {"base": "install_plan_rejected"}
+            )
+        except InstallJobError:
+            return self._show_install_candidate_preview(
+                {"base": "install_receipt_error"}
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected exception while creating an install job")
+            return self._show_install_candidate_preview({"base": "unknown"})
+
+        self._pending_job_id = receipt.job_id
+        return await self._async_show_install_progress(receipt)
+
+    def _show_install_candidate_preview(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
         """Render the complete retained target and authenticated release plan."""
         assert self._pending_address is not None
         assert self._pending_probe is not None
@@ -345,6 +478,429 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="confirm_install_candidate",
             data_schema=vol.Schema({}),
             description_placeholders=placeholders,
+            errors=errors,
+        )
+
+    async def async_step_release_preview_only(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Explain why an authenticated legacy release cannot be installed."""
+        if self._pending_address is None or self._pending_release is None:
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            return self.async_abort(reason="preview_only_release")
+        return self._show_release_preview_only()
+
+    def _show_release_preview_only(self) -> ConfigFlowResult:
+        """Present an authenticated release that lacks the signed install contract."""
+        assert self._pending_address is not None
+        assert self._pending_release is not None
+        return self.async_show_form(
+            step_id="release_preview_only",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "address": self._pending_address.stored_value,
+                "version": self._pending_release.version,
+                "tag": self._pending_release.tag,
+                "sha256": self._pending_release.sha256,
+            },
+        )
+
+    async def _async_resolve_install_release(
+        self,
+        *,
+        step_id: str,
+        user_input: dict[str, Any],
+    ) -> ConfigFlowResult | None:
+        """Resolve the release before any durable credential may be requested."""
+        try:
+            self._pending_release = await async_resolve_stable_release(
+                async_get_clientsession(self.hass)
+            )
+        except ReleaseResolutionError:
+            return self.async_show_form(
+                step_id=step_id,
+                data_schema=self.add_suggested_values_to_schema(
+                    _DATA_SCHEMA, user_input
+                ),
+                errors={"base": "cannot_resolve_release"},
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected exception while resolving ha-paneld release")
+            return self.async_show_form(
+                step_id=step_id,
+                data_schema=self.add_suggested_values_to_schema(
+                    _DATA_SCHEMA, user_input
+                ),
+                errors={"base": "unknown"},
+            )
+        return None
+
+    async def _async_show_install_progress(
+        self, receipt: InstallJobReceipt
+    ) -> ConfigFlowResult:
+        """Attach a flow-owned waiter without transferring worker ownership."""
+        self._pending_job_id = receipt.job_id
+        try:
+            executor = await async_get_install_executor(self.hass)
+            self._install_executor = executor
+            worker = await executor.async_ensure_job(receipt.job_id)
+        except InstallJobError:
+            return self.async_abort(reason="install_receipt_error")
+        except Exception:
+            _LOGGER.exception("Unexpected exception while starting installation")
+            return self.async_abort(reason="install_failed")
+
+        if worker is None:
+            try:
+                manager = await async_get_install_job_manager(self.hass)
+                refreshed = await manager.async_get(receipt.job_id)
+            except InstallJobError:
+                return self.async_abort(reason="install_receipt_error")
+            except Exception:
+                _LOGGER.exception("Unexpected exception while refreshing install job")
+                return self.async_abort(reason="install_failed")
+            if (
+                refreshed.phase is InstallPhase.HEALTHY_UNCLAIMED
+                or refreshed.is_terminal
+            ):
+                return await self.async_step_install_result()
+            # The executor deliberately refuses to replay a worker cancelled in
+            # this process. Registering an immediately completed waiter here would
+            # create an unbounded progress callback loop.
+            return self.async_abort(reason="install_worker_stopped")
+
+        self._progress_waiter = self.hass.async_create_task(
+            executor.async_wait(receipt.job_id),
+            f"wait for ha-paneld install {receipt.job_id}",
+        )
+        return self.async_show_progress(
+            step_id="install_progress",
+            progress_action="installing",
+            description_placeholders={"address": receipt.target.address},
+            progress_task=self._progress_waiter,
+        )
+
+    async def async_step_install_progress(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Complete only the flow waiter; the detached worker remains process-owned."""
+        if self._pending_job_id is None:
+            return self.async_show_progress_done(next_step_id="install_result")
+        waiter = self._progress_waiter
+        if waiter is not None and not waiter.done():
+            return self.async_show_progress(
+                step_id="install_progress",
+                progress_action="installing",
+                description_placeholders={
+                    "address": (
+                        self._pending_address.stored_value
+                        if self._pending_address is not None
+                        else ""
+                    )
+                },
+                progress_task=waiter,
+            )
+        if waiter is not None:
+            try:
+                waiter.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _LOGGER.exception("Install progress waiter failed")
+            self._progress_waiter = None
+        return self.async_show_progress_done(next_step_id="install_result")
+
+    async def async_step_install_result(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Display a terminal result or finalize one healthy install exactly once."""
+        if self._pending_job_id is None:
+            return self.async_abort(reason="unknown")
+        try:
+            manager = await async_get_install_job_manager(self.hass)
+            receipt = await manager.async_get(self._pending_job_id)
+        except InstallJobError:
+            return self.async_abort(reason="install_receipt_error")
+        except Exception:
+            _LOGGER.exception("Unexpected exception while loading install result")
+            return self.async_abort(reason="install_failed")
+
+        if receipt.phase is InstallPhase.CANCELLED:
+            return self.async_abort(reason="install_cancelled")
+        if receipt.phase is InstallPhase.FAILED:
+            return self.async_abort(reason="install_failed")
+        if receipt.phase is InstallPhase.RECOVERY_REQUIRED:
+            return self.async_abort(reason="install_recovery_required")
+        if receipt.phase is InstallPhase.CONSUMED:
+            return self.async_abort(reason="already_configured")
+        if receipt.phase is not InstallPhase.HEALTHY_UNCLAIMED:
+            return await self._async_show_install_progress(receipt)
+        return await self._async_finalize_healthy_install(manager, receipt)
+
+    async def _async_finalize_healthy_install(
+        self, manager: InstallJobManager, receipt: InstallJobReceipt
+    ) -> ConfigFlowResult:
+        """Serialize finalization attempts made through this individual flow."""
+        if self._flow_removed:
+            return self.async_abort(reason="install_worker_stopped")
+        if self._finalization_owner_task is not None:
+            return self._show_install_result_retry(receipt, "install_finalization_busy")
+
+        # Reserve this flow before the first await. Removal can then defer a safe
+        # release even while executor lookup or lease acquisition is in flight.
+        owner = asyncio.current_task()
+        if owner is None:
+            return self.async_abort(reason="install_failed")
+        self._finalizer_job_id = receipt.job_id
+        self._finalization_owner_task = owner
+        try:
+            return await self._async_finalize_healthy_install_locked(manager, receipt)
+        except asyncio.CancelledError:
+            self._schedule_finalizer_release()
+            raise
+
+    async def _async_finalize_healthy_install_locked(
+        self, manager: InstallJobManager, receipt: InstallJobReceipt
+    ) -> ConfigFlowResult:
+        """Re-prove one healthy receipt under the process-wide finalizer lease."""
+        executor = self._install_executor
+        if executor is None:
+            try:
+                executor = await async_get_install_executor(self.hass)
+            except Exception:
+                _LOGGER.exception("Unable to load install finalizer")
+                await self._async_release_finalizer()
+                return self._show_install_result_retry(
+                    receipt, "install_finalization_retry"
+                )
+            self._install_executor = executor
+        try:
+            acquired = await executor.async_acquire_finalizer(
+                receipt.job_id, self.flow_id
+            )
+        except asyncio.CancelledError:
+            self._schedule_finalizer_release()
+            raise
+        except InstallJobError:
+            await self._async_release_finalizer()
+            return self.async_abort(reason="install_receipt_error")
+        except Exception:
+            _LOGGER.exception("Unexpected exception while acquiring install finalizer")
+            await self._async_release_finalizer()
+            return self._show_install_result_retry(
+                receipt, "install_finalization_retry"
+            )
+        if not acquired:
+            await self._async_release_finalizer()
+            return self._show_install_result_retry(receipt, "install_finalization_busy")
+        if self._flow_removed:
+            await self._async_release_finalizer()
+            return self.async_abort(reason="install_worker_stopped")
+
+        if self._address_is_configured(receipt.target.address):
+            await self._async_release_finalizer()
+            return self.async_abort(reason="already_configured")
+
+        try:
+            pinned = _pinned_from_receipt(receipt)
+            await async_revalidate_install_target(self.hass, pinned)
+        except InstallNetworkError as err:
+            if err.code in {
+                InstallNetworkErrorCode.RESOLUTION_FAILED,
+                InstallNetworkErrorCode.RESOLUTION_TIMEOUT,
+            }:
+                await self._async_release_finalizer()
+                return self._show_install_result_retry(
+                    receipt, "install_finalization_retry"
+                )
+            return await self._async_reject_healthy_receipt(manager, receipt)
+        except Exception:
+            _LOGGER.exception("Unexpected exception while revalidating final target")
+            await self._async_release_finalizer()
+            return self._show_install_result_retry(
+                receipt, "install_finalization_retry"
+            )
+
+        try:
+            credential = await async_get_durable_adb_credential(self.hass)
+        except AdbCredentialError:
+            return await self._async_reject_healthy_receipt(manager, receipt)
+        except Exception:
+            _LOGGER.exception("Unexpected exception while loading final ADB identity")
+            return await self._async_reject_healthy_receipt(manager, receipt)
+        if credential.generation_id != receipt.adb_credential_id:
+            return await self._async_reject_healthy_receipt(manager, receipt)
+
+        adb_target = _adb_target_from_receipt(receipt)
+        try:
+            await async_verify_installed_target(
+                adb_target,
+                credential.signer,
+                expected_root_mode=AdbRootMode(receipt.preflight_root_mode),
+            )
+        except InstallAdbError as err:
+            if err.code is InstallAdbErrorCode.TARGET_UNREACHABLE:
+                await self._async_release_finalizer()
+                return self._show_install_result_retry(
+                    receipt, "install_finalization_retry"
+                )
+            return await self._async_reject_healthy_receipt(manager, receipt)
+        except Exception:
+            _LOGGER.exception("Unexpected exception while verifying final ADB target")
+            await self._async_release_finalizer()
+            return self._show_install_result_retry(
+                receipt, "install_finalization_retry"
+            )
+
+        try:
+            health = await HaPaneldClient(
+                async_get_clientsession(self.hass), adb_target.address
+            ).async_get_health()
+        except CannotConnectError:
+            await self._async_release_finalizer()
+            return self._show_install_result_retry(
+                receipt, "install_finalization_retry"
+            )
+        except InvalidResponseError:
+            return await self._async_reject_healthy_receipt(manager, receipt)
+        except Exception:
+            _LOGGER.exception("Unexpected exception while validating final health")
+            await self._async_release_finalizer()
+            return self._show_install_result_retry(
+                receipt, "install_finalization_retry"
+            )
+
+        if health.version != receipt.artifact.version_name:
+            return await self._async_reject_healthy_receipt(manager, receipt)
+        if self._flow_removed:
+            await self._async_release_finalizer()
+            return self.async_abort(reason="install_worker_stopped")
+        if self._address_is_configured(receipt.target.address):
+            await self._async_release_finalizer()
+            return self.async_abort(reason="already_configured")
+
+        # Keep the lease through ConfigEntries' actual add. async_on_create_entry
+        # consumes the receipt using HA's generated entry ID and always releases it.
+        return self.async_create_entry(
+            title=health.panel_id,
+            data={CONF_ADDRESS: receipt.target.address},
+        )
+
+    async def _async_reject_healthy_receipt(
+        self, manager: InstallJobManager, receipt: InstallJobReceipt
+    ) -> ConfigFlowResult:
+        """Make final verification drift durable before refusing entry creation."""
+        try:
+            await manager.async_transition(
+                receipt.job_id,
+                receipt.revision,
+                InstallPhase.RECOVERY_REQUIRED,
+                result_code=InstallResultCode.VERIFICATION_REQUIRED,
+            )
+        except InstallJobError:
+            await self._async_release_finalizer()
+            return self.async_abort(reason="install_receipt_error")
+        except Exception:
+            _LOGGER.exception("Unexpected exception while rejecting install receipt")
+            await self._async_release_finalizer()
+            return self.async_abort(reason="install_receipt_error")
+        await self._async_release_finalizer()
+        return self.async_abort(reason="install_recovery_required")
+
+    def _show_install_result_retry(
+        self, receipt: InstallJobReceipt, error: str
+    ) -> ConfigFlowResult:
+        """Keep a healthy receipt retryable without exposing target internals."""
+        return self.async_show_form(
+            step_id="install_result",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "address": receipt.target.address,
+                "version": receipt.artifact.version_name,
+            },
+            errors={"base": error},
+        )
+
+    async def async_on_create_entry(self, result: ConfigFlowResult) -> ConfigFlowResult:
+        """Consume the healthy receipt with HA's actual config-entry identity."""
+        job_id = self._finalizer_job_id
+        if job_id is not None:
+            try:
+                entry = result["result"]
+                if not isinstance(entry, ConfigEntry):
+                    raise TypeError
+                manager = await async_get_install_job_manager(self.hass)
+                receipt = await manager.async_get(job_id)
+                await manager.async_transition(
+                    job_id,
+                    receipt.revision,
+                    InstallPhase.CONSUMED,
+                    result_code=InstallResultCode.ENTRY_CREATED,
+                    consumed_entry_id=entry.entry_id,
+                )
+            except Exception:
+                # The entry already exists. Receipt persistence must never make HA
+                # remove it or report a failed setup after that point.
+                _LOGGER.exception("Unable to consume completed install receipt")
+            finally:
+                try:
+                    await self._async_release_finalizer()
+                except Exception:
+                    _LOGGER.exception("Unable to release completed install finalizer")
+        return await super().async_on_create_entry(result)
+
+    def async_remove(self) -> None:
+        """Detach this UI flow without cancelling the process-owned worker."""
+        self._flow_removed = True
+        if self._progress_waiter is not None and not self._progress_waiter.done():
+            self._progress_waiter.cancel()
+        self._progress_waiter = None
+        if self._finalizer_job_id is not None and self._install_executor is not None:
+            owner = self._finalization_owner_task
+            if owner is not None and not owner.done():
+                # Releasing while read-only final verification is still in flight
+                # would allow a second flow to run concurrently. Defer release until
+                # the owning configure task has exited.
+                if not self._release_after_finalization:
+                    self._release_after_finalization = True
+                    owner.add_done_callback(self._finalization_done)
+            else:
+                self._schedule_finalizer_release()
+        super().async_remove()
+
+    def _finalization_done(self, _task: asyncio.Task[Any]) -> None:
+        """Release a removed flow's lease only after its finalizer has exited."""
+        if self._release_after_finalization:
+            self._schedule_finalizer_release()
+
+    def _schedule_finalizer_release(self) -> None:
+        """Schedule non-blocking finalizer release from a synchronous callback."""
+        job_id = self._finalizer_job_id
+        if job_id is None or self._finalizer_release_scheduled:
+            return
+        self._finalizer_release_scheduled = True
+        self.hass.async_create_task(
+            self._async_release_finalizer(),
+            f"release ha-paneld install finalizer {job_id}",
+        )
+
+    async def _async_release_finalizer(self) -> None:
+        """Release this flow's lease and clear only local finalization state."""
+        job_id = self._finalizer_job_id
+        executor = self._install_executor
+        self._finalizer_job_id = None
+        self._finalization_owner_task = None
+        self._release_after_finalization = False
+        self._finalizer_release_scheduled = False
+        if job_id is not None and executor is not None:
+            await executor.async_release_finalizer(job_id, self.flow_id)
+
+    def _address_is_configured(self, address: str) -> bool:
+        """Check the existing endpoint identity without contacting the panel."""
+        return any(
+            entry.data.get(CONF_ADDRESS) == address
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
         )
 
     def _async_create_panel_entry(
@@ -377,6 +933,39 @@ def _install_candidate_placeholders(
         "abi": probe.primary_abi,
         "sdk": str(probe.android_sdk),
     }
+
+
+def _same_install_candidate(
+    expected: InstallTargetProbe, observed: InstallTargetProbe
+) -> bool:
+    """Require the complete read-only target identity to remain exact."""
+    return (
+        observed.state.value == "install_candidate"
+        and _install_candidate_placeholders(observed) is not None
+        and observed.serial == expected.serial
+        and observed.model == expected.model
+        and observed.primary_abi == expected.primary_abi
+        and observed.android_sdk == expected.android_sdk
+    )
+
+
+def _pinned_from_receipt(receipt: InstallJobReceipt) -> PinnedPanelTarget:
+    """Reconstruct the already-validated LAN pin from a durable receipt."""
+    return PinnedPanelTarget(
+        original=normalize_address(receipt.target.address),
+        pinned=normalize_address(receipt.target.pinned_address),
+    )
+
+
+def _adb_target_from_receipt(receipt: InstallJobReceipt) -> AdbInstallTarget:
+    """Reconstruct exact final ADB identity without retaining flow preview state."""
+    return AdbInstallTarget(
+        address=normalize_address(receipt.target.pinned_address),
+        serial=receipt.target.adb_serial,
+        model=receipt.target.model,
+        primary_abi=receipt.target.primary_abi,
+        android_sdk=receipt.target.android_sdk,
+    )
 
 
 def _install_network_error(error: InstallNetworkError) -> str:
