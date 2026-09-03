@@ -829,7 +829,8 @@ def _store_presence(path_text: str) -> tuple[bool, bool]:
             metadata = path.lstat()
             if (
                 not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_mode & 0o777 != 0o600
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_uid != os.geteuid()
                 or metadata.st_size > _MAX_STORE_BYTES
             ):
                 raise InstallJobStoreError
@@ -840,6 +841,104 @@ def _store_presence(path_text: str) -> tuple[bool, bool]:
     except OSError as err:
         raise InstallJobStoreError from err
     return exists, corrupt
+
+
+def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise InstallJobStoreError
+        document[key] = value
+    return document
+
+
+def _metadata_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _parse_store_document(body: bytes) -> dict[str, InstallJobReceipt]:
+    try:
+        document = json.loads(
+            body.decode("utf-8"), object_pairs_hook=_object_without_duplicates
+        )
+    except InstallJobStoreError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, TypeError) as err:
+        raise InstallJobStoreError from err
+    if not isinstance(document, dict) or document.keys() != {
+        "version",
+        "minor_version",
+        "key",
+        "data",
+    }:
+        raise InstallJobStoreError
+    if (
+        type(document["version"]) is not int
+        or document["version"] != _STORE_VERSION
+        or type(document["minor_version"]) is not int
+        or document["minor_version"] != 1
+        or document["key"] != _STORE_KEY
+    ):
+        raise InstallJobStoreError
+    return _parse_document(document["data"])
+
+
+def _read_durable_jobs(path_text: str) -> dict[str, InstallJobReceipt]:
+    """Read one exact private Store inode for external mutation authority."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        file_fd = os.open(path_text, flags)
+    except OSError as err:
+        raise InstallJobStoreError from err
+    try:
+        before = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_uid != os.geteuid()
+            or not 1 <= before.st_size <= _MAX_STORE_BYTES
+        ):
+            raise InstallJobStoreError
+        body = bytearray()
+        while chunk := os.read(file_fd, min(4096, _MAX_STORE_BYTES + 1 - len(body))):
+            body.extend(chunk)
+            if len(body) > _MAX_STORE_BYTES:
+                raise InstallJobStoreError
+        after = os.fstat(file_fd)
+        path_after = os.lstat(path_text)
+        if (
+            _metadata_identity(before) != _metadata_identity(after)
+            or _metadata_identity(after) != _metadata_identity(path_after)
+            or len(body) != before.st_size
+        ):
+            raise InstallJobStoreError
+        jobs = _parse_store_document(bytes(body))
+        final = os.fstat(file_fd)
+        final_path = os.lstat(path_text)
+        if _metadata_identity(after) != _metadata_identity(final) or _metadata_identity(
+            final
+        ) != _metadata_identity(final_path):
+            raise InstallJobStoreError
+        return jobs
+    except InstallJobStoreError:
+        raise
+    except OSError as err:
+        raise InstallJobStoreError from err
+    finally:
+        os.close(file_fd)
 
 
 class InstallJobManager:
@@ -896,20 +995,20 @@ class InstallJobManager:
             existed, corrupt = await self._hass.async_add_executor_job(
                 _store_presence, self._store.path
             )
-            reader: Store[dict[str, Any]] = Store(
-                self._hass,
-                _STORE_VERSION,
-                _STORE_KEY,
-                private=True,
-                atomic_writes=True,
-            )
-            stored = await reader.async_load()
-            if stored is None:
-                if existed or corrupt:
-                    raise InstallJobStoreError
-                self._jobs = {}
+            if corrupt:
+                raise InstallJobStoreError
+            if not existed:
+                loaded: dict[str, InstallJobReceipt] = {}
             else:
-                self._jobs = _parse_document(stored)
+                loaded = await self._hass.async_add_executor_job(
+                    _read_durable_jobs, self._store.path
+                )
+            if self._jobs is not None and any(
+                loaded.get(job_id) != self._jobs.get(job_id)
+                for job_id in self._claimed_jobs
+            ):
+                raise InstallJobStoreError
+            self._jobs = loaded
         except asyncio.CancelledError:
             self._invalidate_cache()
             raise
@@ -928,18 +1027,10 @@ class InstallJobManager:
             )
             if not existed:
                 raise InstallJobStoreError
-            verifier: Store[dict[str, Any]] = Store(
-                self._hass,
-                _STORE_VERSION,
-                _STORE_KEY,
-                private=True,
-                atomic_writes=True,
+            verified = await self._hass.async_add_executor_job(
+                _read_durable_jobs, self._store.path
             )
-            persisted = await verifier.async_load()
-            if persisted != document:
-                raise InstallJobStoreError
-            verified = _parse_document(persisted)
-            if verified != jobs:
+            if verified != jobs or _serialize_document(verified) != document:
                 raise InstallJobStoreError
         except asyncio.CancelledError:
             self._invalidate_cache()
@@ -949,6 +1040,33 @@ class InstallJobManager:
             raise InstallJobStoreError from err
         self._jobs = verified
         self._reconcile_claims()
+
+    async def _async_load_durable_locked(self) -> dict[str, InstallJobReceipt]:
+        """Load two equal, independently verified mutation-authority snapshots."""
+        snapshots: list[dict[str, InstallJobReceipt]] = []
+        try:
+            for _ in range(2):
+                existed, corrupt = await self._hass.async_add_executor_job(
+                    _store_presence, self._store.path
+                )
+                if not existed or corrupt:
+                    raise InstallJobStoreError
+                snapshots.append(
+                    await self._hass.async_add_executor_job(
+                        _read_durable_jobs, self._store.path
+                    )
+                )
+            if snapshots[0] != snapshots[1]:
+                raise InstallJobStoreError
+        except asyncio.CancelledError:
+            self._invalidate_cache()
+            raise
+        except Exception as err:
+            self._invalidate_cache()
+            raise InstallJobStoreError from err
+        self._jobs = snapshots[1]
+        self._reconcile_claims()
+        return self._jobs
 
     def _prune(self, jobs: dict[str, InstallJobReceipt], now: str) -> None:
         cutoff = datetime.fromisoformat(now) - _TERMINAL_RETENTION
@@ -1336,27 +1454,18 @@ class InstallJobManager:
             raise InstallJobTransitionError
         async with self._lock:
             in_memory = self._checked_current(
-                await self._async_load_locked(refresh=True), job_id, expected_revision
+                await self._async_load_locked(), job_id, expected_revision
             )
-            verifier: Store[dict[str, Any]] = Store(
-                self._hass,
-                _STORE_VERSION,
-                _STORE_KEY,
-                private=True,
-                atomic_writes=True,
+            receipt = self._checked_current(
+                await self._async_load_durable_locked(), job_id, expected_revision
             )
-            try:
-                persisted = await verifier.async_load()
-                fresh = _parse_document(persisted)
-            except (InstallJobStoreError, OSError) as err:
-                raise InstallJobStoreError from err
-            receipt = self._checked_current(fresh, job_id, expected_revision)
             if (
                 receipt != in_memory
                 or receipt.phase != phase
                 or receipt.cancel_requested
                 or self._claimed_jobs.get(job_id) != receipt.executor_generation
             ):
+                self._invalidate_cache()
                 raise InstallJobTransitionError
             return receipt
 
@@ -1372,27 +1481,18 @@ class InstallJobManager:
             raise InstallJobTransitionError
         async with self._lock:
             in_memory = self._checked_current(
-                await self._async_load_locked(refresh=True), job_id, expected_revision
+                await self._async_load_locked(), job_id, expected_revision
             )
-            verifier: Store[dict[str, Any]] = Store(
-                self._hass,
-                _STORE_VERSION,
-                _STORE_KEY,
-                private=True,
-                atomic_writes=True,
+            receipt = self._checked_current(
+                await self._async_load_durable_locked(), job_id, expected_revision
             )
-            try:
-                persisted = await verifier.async_load()
-                fresh = _parse_document(persisted)
-            except (InstallJobStoreError, OSError) as err:
-                raise InstallJobStoreError from err
-            receipt = self._checked_current(fresh, job_id, expected_revision)
             if (
                 receipt != in_memory
                 or receipt.phase != phase
                 or receipt.cancel_requested is not expected_cancel_requested
                 or self._claimed_jobs.get(job_id) != receipt.executor_generation
             ):
+                self._invalidate_cache()
                 raise InstallJobTransitionError
             return receipt
 

@@ -92,10 +92,14 @@ EXPECTED_FAILURE_CODES_BY_PHASE = {
     },
 }
 _REAL_STORE_PRESENCE = install_jobs._store_presence
+_REAL_DURABLE_JOBS_READER = install_jobs._read_durable_jobs
+_REAL_PARSE_STORE_DOCUMENT = install_jobs._parse_store_document
 
 
 @pytest.fixture(autouse=True)
-def emulate_home_assistant_store_file() -> Generator[None]:
+def emulate_home_assistant_store_file(
+    hass_storage: dict[str, Any],
+) -> Generator[None]:
     """Model the Store file hidden by HA's in-memory test storage manager."""
     observed_paths: set[str] = set()
 
@@ -108,7 +112,18 @@ def emulate_home_assistant_store_file() -> Generator[None]:
         observed_paths.add(path)
         return False, False
 
-    with patch.object(install_jobs, "_store_presence", side_effect=_presence):
+    def _durable_reader(_path: str) -> dict[str, InstallJobReceipt]:
+        document = hass_storage.get(f"{DOMAIN}.install_jobs")
+        if document is None:
+            raise InstallJobStoreError
+        return _REAL_PARSE_STORE_DOCUMENT(
+            json.dumps(document, separators=(",", ":")).encode("utf-8")
+        )
+
+    with (
+        patch.object(install_jobs, "_store_presence", side_effect=_presence),
+        patch.object(install_jobs, "_read_durable_jobs", side_effect=_durable_reader),
+    ):
         yield
 
 
@@ -158,6 +173,47 @@ def artifact(*, apk_size: int = 12_345) -> InstallArtifact:
         database_compatibility="hapaneld-db:v1:ha-paneld.db:1:14",
         launch_component="io.github.maxlyth.hapaneld/.MainActivity",
     )
+
+
+def durable_receipt() -> InstallJobReceipt:
+    """Return one valid initial receipt for direct Store-reader tests."""
+    selected_target = target()
+    selected_artifact = artifact()
+    return InstallJobReceipt(
+        job_id="1" * 32,
+        revision=0,
+        executor_generation=0,
+        created_at=Clock()(),
+        updated_at=Clock()(),
+        phase=InstallPhase.APPROVED,
+        cancel_requested=False,
+        attempt=0,
+        target=selected_target,
+        artifact=selected_artifact,
+        plan_sha256=install_plan_sha256(
+            selected_target, selected_artifact, CREDENTIAL_ID
+        ),
+        adb_credential_id=CREDENTIAL_ID,
+    )
+
+
+def durable_store_document(
+    receipt: InstallJobReceipt | None = None,
+) -> dict[str, Any]:
+    """Wrap one receipt exactly as Home Assistant Store persists it."""
+    selected = receipt or durable_receipt()
+    return {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"{DOMAIN}.install_jobs",
+        "data": install_jobs._serialize_document({selected.job_id: selected}),
+    }
+
+
+def write_durable_store(path: Path, document: dict[str, Any] | None = None) -> None:
+    """Write one private Home Assistant Store wrapper for direct-reader tests."""
+    path.write_text(json.dumps(document or durable_store_document()), encoding="utf-8")
+    path.chmod(0o600)
 
 
 async def create(
@@ -1453,20 +1509,18 @@ async def test_cleanup_barrier_rejects_store_drift_between_fresh_reads(
     assert document is not None
     drifted = copy.deepcopy(document)
     drifted["jobs"][0]["updated_at"] = "2026-09-02T12:00:01+00:00"
-    first_reader = MagicMock()
-    first_reader.async_load = AsyncMock(return_value=document)
-    independent_reader = MagicMock()
-    independent_reader.async_load = AsyncMock(return_value=drifted)
+    first = install_jobs._parse_document(document)
+    second = install_jobs._parse_document(drifted)
 
     with (
-        patch.object(
-            install_jobs, "Store", side_effect=[first_reader, independent_reader]
-        ),
-        pytest.raises(InstallJobTransitionError),
+        patch.object(install_jobs, "_read_durable_jobs", side_effect=[first, second]),
+        pytest.raises(InstallJobStoreError),
     ):
         await manager.async_verify_cleanup_barrier(
             receipt.job_id, receipt.revision, receipt.phase
         )
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
 
 
 async def test_cleanup_barrier_rejects_valid_root_posture_drift_between_reads(
@@ -1482,20 +1536,18 @@ async def test_cleanup_barrier_rejects_valid_root_posture_drift_between_reads(
     assert document is not None
     drifted = copy.deepcopy(document)
     drifted["jobs"][0]["preflight_root_mode"] = "rootless"
-    first_reader = MagicMock()
-    first_reader.async_load = AsyncMock(return_value=document)
-    independent_reader = MagicMock()
-    independent_reader.async_load = AsyncMock(return_value=drifted)
+    first = install_jobs._parse_document(document)
+    second = install_jobs._parse_document(drifted)
 
     with (
-        patch.object(
-            install_jobs, "Store", side_effect=[first_reader, independent_reader]
-        ),
-        pytest.raises(InstallJobTransitionError),
+        patch.object(install_jobs, "_read_durable_jobs", side_effect=[first, second]),
+        pytest.raises(InstallJobStoreError),
     ):
         await manager.async_verify_cleanup_barrier(
             receipt.job_id, receipt.revision, receipt.phase
         )
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
 
 
 async def test_cleanup_barrier_rejects_corrupt_independent_store_read(
@@ -1509,20 +1561,21 @@ async def test_cleanup_barrier_rejects_corrupt_independent_store_read(
     )
     document = await store.async_load()
     assert document is not None
-    first_reader = MagicMock()
-    first_reader.async_load = AsyncMock(return_value=document)
-    corrupt_reader = MagicMock()
-    corrupt_reader.async_load = AsyncMock(
-        return_value={"format": "unexpected", "jobs": []}
-    )
+    first = install_jobs._parse_document(document)
 
     with (
-        patch.object(install_jobs, "Store", side_effect=[first_reader, corrupt_reader]),
+        patch.object(
+            install_jobs,
+            "_read_durable_jobs",
+            side_effect=[first, InstallJobStoreError()],
+        ),
         pytest.raises(InstallJobStoreError),
     ):
         await manager.async_verify_cleanup_barrier(
             receipt.job_id, receipt.revision, receipt.phase
         )
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
 
 
 async def test_cancelled_staging_uses_cleanup_not_ordinary_mutation_barrier(
@@ -1591,21 +1644,151 @@ async def test_every_mutation_phase_has_a_positive_durable_barrier(
     assert verified == receipt
 
 
-async def test_swallowed_store_write_failure_fails_closed(hass: HomeAssistant) -> None:
-    """A save is never accepted without a byte-equivalent fresh Store load."""
-    writer = MagicMock()
-    writer.path = "/not/read/by/this/test"
-    writer.async_load = AsyncMock(return_value=None)
-    writer.async_save = AsyncMock(return_value=None)
-    verifier = MagicMock()
-    verifier.async_load = AsyncMock(return_value=None)
+async def test_mutation_barrier_requires_two_equal_durable_reads(
+    hass: HomeAssistant,
+) -> None:
+    """One successful direct read is insufficient external-mutation authority."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await transition_to_staging(manager, receipt.job_id)
+    jobs = {receipt.job_id: receipt}
+
+    with patch.object(install_jobs, "_read_durable_jobs", return_value=jobs) as reader:
+        verified = await manager.async_verify_mutation_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+
+    assert verified == receipt
+    assert reader.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "barrier_name",
+    ["async_verify_mutation_barrier", "async_verify_cleanup_barrier"],
+)
+async def test_barriers_reject_stable_drift_from_claimed_memory(
+    hass: HomeAssistant, barrier_name: str
+) -> None:
+    """The executor's pre-barrier get cannot adopt stable claimed-job drift."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.INSTALLING)
+    drifted = replace(receipt, preflight_root_mode="rootless")
+
+    with patch.object(
+        install_jobs,
+        "_read_durable_jobs",
+        return_value={receipt.job_id: drifted},
+    ) as reader:
+        with pytest.raises(InstallJobStoreError):
+            await manager.async_get(receipt.job_id)
+        with pytest.raises(InstallJobTransitionError):
+            await getattr(manager, barrier_name)(
+                receipt.job_id, receipt.revision, receipt.phase
+            )
+
+    assert reader.call_count == 4
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
+
+
+async def test_existing_store_load_uses_secure_reader_only(
+    hass: HomeAssistant,
+) -> None:
+    """An existing Store is loaded from exact fd-bound bytes, never async_load."""
+    receipt = durable_receipt()
+    store = MagicMock()
+    store.path = "/secure/install_jobs"
+    store.async_load = AsyncMock(side_effect=AssertionError("unsafe Store read"))
 
     with (
-        patch.object(install_jobs, "Store", side_effect=[writer, verifier]),
+        patch.object(install_jobs, "Store", return_value=store),
+        patch.object(install_jobs, "_store_presence", return_value=(True, False)),
+        patch.object(
+            install_jobs,
+            "_read_durable_jobs",
+            return_value={receipt.job_id: receipt},
+        ) as reader,
+    ):
+        loaded = await InstallJobManager(hass, now=Clock()).async_list()
+
+    assert loaded == (receipt,)
+    assert reader.call_count == 1
+    store.async_load.assert_not_awaited()
+
+
+async def test_absent_store_loads_empty_without_a_path_read(
+    hass: HomeAssistant,
+) -> None:
+    """A genuinely absent non-corrupt Store retains new-install semantics."""
+    store = MagicMock()
+    store.path = "/secure/install_jobs"
+    store.async_load = AsyncMock(side_effect=AssertionError("unsafe Store read"))
+
+    with (
+        patch.object(install_jobs, "Store", return_value=store),
         patch.object(install_jobs, "_store_presence", return_value=(False, False)),
+        patch.object(install_jobs, "_read_durable_jobs") as reader,
+    ):
+        loaded = await InstallJobManager(hass, now=Clock()).async_list()
+
+    assert loaded == ()
+    reader.assert_not_called()
+    store.async_load.assert_not_awaited()
+
+
+async def test_post_save_verification_uses_secure_reader_only(
+    hass: HomeAssistant,
+) -> None:
+    """Store remains the writer while exact fd-bound bytes verify its result."""
+    persisted: dict[str, InstallJobReceipt] = {}
+    writer = MagicMock()
+    writer.path = "/secure/install_jobs"
+    writer.async_load = AsyncMock(side_effect=AssertionError("unsafe Store read"))
+
+    async def save(document: dict[str, Any]) -> None:
+        persisted.update(install_jobs._parse_document(document))
+
+    writer.async_save = AsyncMock(side_effect=save)
+
+    with (
+        patch.object(install_jobs, "Store", return_value=writer),
+        patch.object(
+            install_jobs,
+            "_store_presence",
+            side_effect=[(False, False), (True, False)],
+        ),
+        patch.object(
+            install_jobs, "_read_durable_jobs", side_effect=lambda _path: persisted
+        ) as reader,
+    ):
+        receipt, created = await create(InstallJobManager(hass, now=Clock()))
+
+    assert created
+    assert persisted == {receipt.job_id: receipt}
+    assert reader.call_count == 1
+    writer.async_save.assert_awaited_once()
+    writer.async_load.assert_not_awaited()
+
+
+async def test_swallowed_store_write_failure_fails_closed(hass: HomeAssistant) -> None:
+    """A save is never accepted without a matching secure fd-bound read."""
+    writer = MagicMock()
+    writer.path = "/not/read/by/this/test"
+    writer.async_save = AsyncMock(return_value=None)
+
+    with (
+        patch.object(install_jobs, "Store", return_value=writer),
+        patch.object(
+            install_jobs,
+            "_store_presence",
+            side_effect=[(False, False), (True, False)],
+        ),
+        patch.object(install_jobs, "_read_durable_jobs", return_value={}) as reader,
         pytest.raises(InstallJobStoreError),
     ):
         await create(InstallJobManager(hass, now=Clock()))
+
+    assert reader.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -1936,6 +2119,12 @@ def test_store_file_must_be_small_regular_and_owner_only(tmp_path: Path) -> None
     store_path.chmod(0o600)
     assert _REAL_STORE_PRESENCE(str(store_path)) == (True, False)
 
+    with (
+        patch.object(install_jobs.os, "geteuid", return_value=os.geteuid() + 1),
+        pytest.raises(InstallJobStoreError),
+    ):
+        _REAL_STORE_PRESENCE(str(store_path))
+
     store_path.chmod(0o644)
     with pytest.raises(InstallJobStoreError):
         _REAL_STORE_PRESENCE(str(store_path))
@@ -1950,3 +2139,211 @@ def test_store_file_must_be_small_regular_and_owner_only(tmp_path: Path) -> None
     store_path.chmod(0o600)
     with pytest.raises(InstallJobStoreError):
         _REAL_STORE_PRESENCE(str(store_path))
+
+
+def test_durable_job_reader_repeatedly_binds_one_private_store_inode(
+    tmp_path: Path,
+) -> None:
+    """Repeated reads return only the exact validated Store receipt bytes."""
+    receipt = durable_receipt()
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    write_durable_store(store_path, durable_store_document(receipt))
+
+    for _ in range(3):
+        assert _REAL_DURABLE_JOBS_READER(str(store_path)) == {receipt.job_id: receipt}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda document: document.update(extra=True),
+        lambda document: document.update(version=True),
+        lambda document: document.update(version=2),
+        lambda document: document.update(minor_version=False),
+        lambda document: document.update(minor_version=2),
+        lambda document: document.update(key="other"),
+        lambda document: document.update(data={}),
+    ],
+)
+def test_durable_job_reader_rejects_invalid_store_wrapper(
+    tmp_path: Path, mutation
+) -> None:
+    """Direct reads preserve Home Assistant Store identity and version checks."""
+    document = durable_store_document()
+    mutation(document)
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    write_durable_store(store_path, document)
+
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+
+@pytest.mark.parametrize("duplicate_field", ["version", "job_id"])
+def test_durable_job_reader_rejects_duplicate_json_keys(
+    tmp_path: Path, duplicate_field: str
+) -> None:
+    """Duplicate wrapper and nested receipt keys cannot override trusted bytes."""
+    body = json.dumps(durable_store_document(), separators=(",", ":"))
+    if duplicate_field == "version":
+        body = body.replace('"version":1', '"version":1,"version":1', 1)
+    else:
+        body = body.replace(
+            '"job_id":"11111111111111111111111111111111"',
+            (
+                '"job_id":"11111111111111111111111111111111",'
+                '"job_id":"11111111111111111111111111111111"'
+            ),
+            1,
+        )
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path.write_text(body, encoding="utf-8")
+    store_path.chmod(0o600)
+
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+
+def test_durable_job_reader_rejects_path_replacement_during_read(
+    tmp_path: Path,
+) -> None:
+    """An atomic same-content replacement cannot authorize a stale inode."""
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    replacement_path = tmp_path / "replacement"
+    write_durable_store(store_path)
+    write_durable_store(replacement_path)
+    real_read = os.read
+    replaced = False
+
+    def replace_after_read(file_fd: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = real_read(file_fd, size)
+        if chunk and not replaced:
+            replaced = True
+            os.replace(replacement_path, store_path)
+        return chunk
+
+    with (
+        patch.object(install_jobs.os, "read", side_effect=replace_after_read),
+        pytest.raises(InstallJobStoreError),
+    ):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+    assert replaced
+
+
+def test_durable_job_reader_rejects_same_inode_overwrite_during_read(
+    tmp_path: Path,
+) -> None:
+    """A same-size overwrite cannot authorize bytes from unstable metadata."""
+    document = durable_store_document()
+    original_body = json.dumps(document).encode("utf-8")
+    replacement = copy.deepcopy(document)
+    replacement["minor_version"] = 2
+    replacement_body = json.dumps(replacement).encode("utf-8")
+    assert len(original_body) == len(replacement_body)
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path.write_bytes(original_body)
+    store_path.chmod(0o600)
+    real_read = os.read
+    overwritten = False
+
+    def overwrite_after_read(file_fd: int, size: int) -> bytes:
+        nonlocal overwritten
+        chunk = real_read(file_fd, size)
+        if chunk and not overwritten:
+            overwritten = True
+            overwrite_fd = os.open(store_path, os.O_WRONLY | os.O_TRUNC)
+            try:
+                os.write(overwrite_fd, replacement_body)
+                os.fsync(overwrite_fd)
+            finally:
+                os.close(overwrite_fd)
+        return chunk
+
+    with (
+        patch.object(install_jobs.os, "read", side_effect=overwrite_after_read),
+        pytest.raises(InstallJobStoreError),
+    ):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+    assert overwritten
+
+
+def test_durable_job_reader_rejects_metadata_drift_after_parse(
+    tmp_path: Path,
+) -> None:
+    """The descriptor and path metadata must remain stable through parsing."""
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    write_durable_store(store_path)
+    parsed = False
+
+    def parse_then_change_mode(body: bytes) -> dict[str, InstallJobReceipt]:
+        nonlocal parsed
+        jobs = _REAL_PARSE_STORE_DOCUMENT(body)
+        parsed = True
+        store_path.chmod(0o400)
+        return jobs
+
+    with (
+        patch.object(
+            install_jobs,
+            "_parse_store_document",
+            side_effect=parse_then_change_mode,
+        ),
+        pytest.raises(InstallJobStoreError),
+    ):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+    assert parsed
+
+
+def test_durable_job_reader_rejects_foreign_or_nonregular_files(
+    tmp_path: Path,
+) -> None:
+    """Only a current-UID regular file can supply mutation authority."""
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    write_durable_store(store_path)
+    with (
+        patch.object(install_jobs.os, "geteuid", return_value=os.geteuid() + 1),
+        pytest.raises(InstallJobStoreError),
+    ):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+    store_path.unlink()
+    os.mkfifo(store_path, mode=0o600)
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o400, 0o640])
+def test_durable_job_reader_rejects_nonprivate_or_missing_file(
+    tmp_path: Path, mode: int
+) -> None:
+    """Mutation authority requires one present owner-readable 0600 file."""
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    write_durable_store(store_path)
+    store_path.chmod(mode)
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+    store_path.unlink()
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+
+def test_durable_job_reader_rejects_symlink_and_excessive_file(
+    tmp_path: Path,
+) -> None:
+    """Links and unbounded JSON cannot become receipt mutation authority."""
+    target_path = tmp_path / "target"
+    write_durable_store(target_path)
+    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path.symlink_to(target_path)
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
+
+    store_path.unlink()
+    store_path.write_bytes(b" " * (128 * 1024 + 1))
+    store_path.chmod(0o600)
+    with pytest.raises(InstallJobStoreError):
+        _REAL_DURABLE_JOBS_READER(str(store_path))
