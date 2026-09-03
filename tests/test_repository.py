@@ -1,7 +1,10 @@
 """Repository and distribution contract tests."""
 
+import ast
 import json
 from pathlib import Path
+
+from custom_components.ha_paneld.client import parse_health_response
 
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "ha_paneld"
@@ -54,6 +57,24 @@ def test_runtime_translations_are_complete() -> None:
 
     assert english == strings
     assert "[%key:" not in json.dumps(english)
+
+
+def test_runtime_harness_health_fixture_uses_production_grammar() -> None:
+    """Keep the real-Core fixture admissible by the shipping health parser."""
+    source = (ROOT / "tests" / "runtime" / "core_negative_harness.py").read_text(
+        encoding="utf-8"
+    )
+    health_bodies = [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, bytes)
+        and node.value.startswith(b"ha-paneld ")
+    ]
+
+    assert len(health_bodies) == 1
+    health = parse_health_response(health_bodies[0].decode("ascii"))
+    assert health.panel_id == "runtime_negative"
 
 
 def test_readme_leads_with_complete_hacs_installation() -> None:

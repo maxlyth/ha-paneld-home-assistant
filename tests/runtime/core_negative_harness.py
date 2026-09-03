@@ -142,7 +142,7 @@ class _PanelServer(AbstractContextManager["_PanelServer"]):
                 if self.path == "/api/v1/health":
                     mode = "health"
                     body = (
-                        b"ha-paneld 0.1.0 panel=runtime-negative build=100 "
+                        b"ha-paneld 0.1.0 panel=runtime_negative build=100 "
                         b"cfg=1a2b3c4d ha=normal ha_src=mqtt\n"
                     )
                 elif self.path == "/api/v1/status":
