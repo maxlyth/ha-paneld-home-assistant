@@ -9,6 +9,7 @@ import os
 import stat
 import struct
 from binascii import Error as BinasciiError
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -18,7 +19,7 @@ from adb_shell.auth.keygen import keygen
 from adb_shell.auth.sign_pythonrsa import PythonRSASigner
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
@@ -243,6 +244,43 @@ def _parse_store_document(body: bytes) -> _StoredCredential:
     return _parse_stored_credential(document["data"])
 
 
+def _serialize_credential(credential: _StoredCredential) -> dict[str, str]:
+    """Return the exact Store payload for one validated credential."""
+    return {
+        "format": _FORMAT,
+        "private_key_pkcs8_pem": credential.private_key,
+        "public_key_adb": credential.public_key,
+    }
+
+
+def _validated_credential_for_save(
+    credential: _StoredCredential,
+) -> dict[str, str]:
+    """Strictly round-trip the full candidate before Store may write it."""
+    document = _serialize_credential(credential)
+    wrapped = {
+        "version": _STORE_VERSION,
+        "minor_version": 1,
+        "key": _STORE_KEY,
+        "data": document,
+    }
+    try:
+        body = json.dumps(
+            wrapped,
+            ensure_ascii=True,
+            allow_nan=False,
+            indent=2,
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as err:
+        raise AdbCredentialError from err
+    if not 1 <= len(body) <= _MAX_STORE_BYTES:
+        raise AdbCredentialError
+    verified = _parse_store_document(body)
+    if verified != credential or _serialize_credential(verified) != document:
+        raise AdbCredentialError
+    return document
+
+
 def _read_durable_credential(path_text: str) -> _StoredCredential:
     """Read and validate one exact no-follow Store file descriptor."""
     flags = (
@@ -316,43 +354,17 @@ class AdbCredentialManager:
                     existed, corrupt = await self._hass.async_add_executor_job(
                         _store_presence, self._store.path
                     )
-                    stored = await self._store.async_load()
-                    if stored is None:
-                        if existed or corrupt:
-                            raise AdbCredentialError
+                    if corrupt:
+                        raise AdbCredentialError
+                    if not existed:
                         credential = await self._hass.async_add_executor_job(
                             _generate_credential
                         )
-                        serialized = {
-                            "format": _FORMAT,
-                            "private_key_pkcs8_pem": credential.private_key,
-                            "public_key_adb": credential.public_key,
-                        }
-                        await self._store.async_save(serialized)
-                        # Store logs and absorbs write failures. Reopen and validate
-                        # the durable bytes before this identity is offered to ADB.
-                        verifier: Store[dict[str, str]] = Store(
-                            self._hass,
-                            _STORE_VERSION,
-                            _STORE_KEY,
-                            private=True,
-                            atomic_writes=True,
-                        )
-                        persisted = await verifier.async_load()
-                        if (
-                            persisted != serialized
-                            or not await self._hass.async_add_executor_job(
-                                _store_is_private, self._store.path
-                            )
-                        ):
-                            raise AdbCredentialError
-                        self._credential = _parse_stored_credential(persisted)
+                        self._credential = await self._async_persist_locked(credential)
                     else:
-                        if not await self._hass.async_add_executor_job(
-                            _store_is_private, self._store.path
-                        ):
-                            raise AdbCredentialError
-                        self._credential = _parse_stored_credential(stored)
+                        self._credential = await self._hass.async_add_executor_job(
+                            _read_durable_credential, self._store.path
+                        )
 
                 return AdbCredential(
                     signer=PythonRSASigner(
@@ -363,10 +375,113 @@ class AdbCredentialManager:
                         self._credential.public_key
                     ),
                 )
+            except asyncio.CancelledError:
+                self._credential = None
+                raise
             except AdbCredentialError:
+                self._credential = None
                 raise
             except Exception as err:
+                self._credential = None
                 raise AdbCredentialError from err
+
+    async def _async_persist_locked(
+        self, credential: _StoredCredential
+    ) -> _StoredCredential:
+        """Persist and verify one identity without detaching a Store writer."""
+        document = _validated_credential_for_save(credential)
+        cancellation: asyncio.CancelledError | None = None
+        _save_result, failure, cancellation = await self._async_drain_operation(
+            lambda: self._async_store_save(document),
+            name=f"{DOMAIN}-adb-credential-store-save",
+            cancellation=cancellation,
+        )
+        presence, presence_error, cancellation = await self._async_drain_operation(
+            lambda: self._hass.async_add_executor_job(
+                _store_presence, self._store.path
+            ),
+            name=f"{DOMAIN}-adb-credential-store-presence",
+            cancellation=cancellation,
+        )
+        if failure is None:
+            failure = presence_error
+
+        verified: _StoredCredential | None = None
+        if presence_error is None:
+            existed, corrupt = presence
+            if not existed or corrupt:
+                if failure is None:
+                    failure = AdbCredentialError()
+            else:
+                (
+                    verified_result,
+                    read_error,
+                    cancellation,
+                ) = await self._async_drain_operation(
+                    lambda: self._hass.async_add_executor_job(
+                        _read_durable_credential, self._store.path
+                    ),
+                    name=f"{DOMAIN}-adb-credential-store-readback",
+                    cancellation=cancellation,
+                )
+                if failure is None:
+                    failure = read_error
+                if read_error is None:
+                    verified = verified_result
+                    if verified != credential and failure is None:
+                        failure = AdbCredentialError()
+
+        if cancellation is not None:
+            if failure is not None:
+                raise cancellation from failure
+            raise cancellation
+        if failure is not None:
+            if isinstance(failure, asyncio.CancelledError):
+                raise AdbCredentialError from failure
+            raise failure
+        if verified is None:
+            raise AdbCredentialError
+        return verified
+
+    async def _async_store_save(self, document: dict[str, str]) -> None:
+        """Enter Store's immediate-write path without an intervening yield."""
+        if self._hass.state in {CoreState.stopping, CoreState.final_write}:
+            raise AdbCredentialError
+        await self._store.async_save(document)
+
+    async def _async_drain_operation(
+        self,
+        operation_factory: Callable[[], Awaitable[Any]],
+        *,
+        name: str,
+        cancellation: asyncio.CancelledError | None,
+    ) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
+        """Drain one authority operation despite repeated caller cancellation."""
+        operation_task = self._hass.async_create_task(
+            self._async_operation_outcome(operation_factory),
+            name,
+            eager_start=False,
+        )
+        while not operation_task.done():
+            try:
+                await asyncio.shield(operation_task)
+            except asyncio.CancelledError as err:
+                if cancellation is None:
+                    cancellation = err
+        result, error = operation_task.result()
+        return result, error, cancellation
+
+    @staticmethod
+    async def _async_operation_outcome(
+        operation_factory: Callable[[], Awaitable[Any]],
+    ) -> tuple[Any, BaseException | None]:
+        """Capture an operation result so cancelled shield wrappers stay quiet."""
+        try:
+            return await operation_factory(), None
+        except asyncio.CancelledError as err:
+            return None, err
+        except Exception as err:
+            return None, err
 
     async def async_get_signer(self) -> PythonRSASigner:
         """Return the shared signer for existing ADB consumers."""
@@ -392,9 +507,14 @@ class AdbCredentialManager:
                     ),
                     generation_id=_credential_generation_id(credential.public_key),
                 )
+            except asyncio.CancelledError:
+                self._credential = None
+                raise
             except AdbCredentialError:
+                self._credential = None
                 raise
             except Exception as err:
+                self._credential = None
                 raise AdbCredentialError from err
 
 
