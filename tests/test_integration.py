@@ -16,7 +16,11 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ha_paneld import _async_resume_install_jobs, async_reload_entry
+from custom_components.ha_paneld import (
+    _async_reconcile_install_receipt,
+    _async_resume_install_jobs,
+    async_reload_entry,
+)
 from custom_components.ha_paneld.client import (
     CannotConnectError,
     InvalidResponseError,
@@ -854,6 +858,68 @@ async def test_setup_propagates_cancelled_finalizer_release(
         ),
     ):
         assert not await hass.config_entries.async_setup(entry.entry_id)
+
+
+async def test_setup_reconciliation_drains_finalizer_release_before_cancellation(
+    hass: HomeAssistant,
+) -> None:
+    """Cancellation cannot strand setup's process-wide finalizer lease."""
+    entry = _entry(hass)
+    receipt = _receipt()
+    executor, manager = _installer_doubles((receipt,))
+    owner: str | None = None
+    release_started = asyncio.Event()
+    allow_release = asyncio.Event()
+
+    async def _acquire(_job_id: str, finalizer_id: str) -> bool:
+        nonlocal owner
+        owner = finalizer_id
+        return True
+
+    async def _release(_job_id: str, finalizer_id: str) -> None:
+        nonlocal owner
+        release_started.set()
+        await allow_release.wait()
+        if owner == finalizer_id:
+            owner = None
+
+    executor.async_acquire_finalizer.side_effect = _acquire
+    executor.async_release_finalizer.side_effect = _release
+
+    with (
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        task = hass.async_create_task(
+            _async_reconcile_install_receipt(
+                hass,
+                entry,
+                receipt.target.address,
+                receipt.artifact.version_name,
+            )
+        )
+        await release_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        allow_release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert owner is None
+    executor.async_release_finalizer.assert_awaited_once_with(
+        receipt.job_id, f"setup_{entry.entry_id}"
+    )
 
 
 @pytest.mark.parametrize(

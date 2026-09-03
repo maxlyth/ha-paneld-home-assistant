@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -13,6 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .client import HaPaneldClient, normalize_address
 from .coordinator import HaPaneldDataUpdateCoordinator
 from .install_executor import (
+    InstallExecutor,
     async_get_install_executor,
     async_resume_loaded_install_jobs,
 )
@@ -43,6 +45,33 @@ async def _async_resume_install_jobs(hass: HomeAssistant) -> None:
         await async_resume_loaded_install_jobs(hass)
     except Exception:
         _LOGGER.warning("Unable to resume durable ha-paneld install jobs")
+
+
+async def _async_release_install_finalizer(
+    hass: HomeAssistant,
+    executor: InstallExecutor,
+    job_id: str,
+    finalizer_id: str,
+) -> None:
+    """Drain finalizer release before propagating caller cancellation."""
+    release_task = hass.async_create_task(
+        executor.async_release_finalizer(job_id, finalizer_id),
+        f"release ha-paneld setup finalizer {job_id}",
+    )
+    cancelled = False
+    while not release_task.done():
+        try:
+            await asyncio.shield(release_task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            break
+    try:
+        release_task.result()
+    except Exception:
+        _LOGGER.warning("Unable to release a durable ha-paneld install finalizer")
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def _async_reconcile_install_receipt(
@@ -93,12 +122,9 @@ async def _async_reconcile_install_receipt(
         _LOGGER.warning("Unable to reconcile a durable ha-paneld install receipt")
     finally:
         if acquired and executor is not None and receipt is not None:
-            try:
-                await executor.async_release_finalizer(receipt.job_id, finalizer_id)
-            except Exception:
-                _LOGGER.warning(
-                    "Unable to release a durable ha-paneld install finalizer"
-                )
+            await _async_release_install_finalizer(
+                hass, executor, receipt.job_id, finalizer_id
+            )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HaPaneldConfigEntry) -> bool:
