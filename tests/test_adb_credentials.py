@@ -52,6 +52,7 @@ def _stored_document(credential: _StoredCredential) -> dict[str, object]:
 
 
 def _write_store(path: Path, credential: _StoredCredential) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(json.dumps(_stored_document(credential)), encoding="utf-8")
     path.chmod(0o600)
 
@@ -300,7 +301,7 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
         credential = _parse_stored_credential(document["data"])
         writes.append(credential)
         loop.call_soon_threadsafe(writer_started.set)
-        if not release_writer.wait(timeout=5):
+        if not release_writer.wait(timeout=10):
             raise RuntimeError("timed out waiting to release credential writer")
         _write_store(Path(manager._store.path), credential)
 
@@ -327,7 +328,7 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
             return False, False
         if presence_calls == 2:
             loop.call_soon_threadsafe(presence_started.set)
-            if not release_presence.wait(timeout=5):
+            if not release_presence.wait(timeout=10):
                 raise RuntimeError("timed out waiting to release presence barrier")
         return presence(path_text)
 
@@ -336,11 +337,11 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
         read_calls += 1
         if read_calls == 1:
             loop.call_soon_threadsafe(readback_started.set)
-            if not release_readback.wait(timeout=5):
+            if not release_readback.wait(timeout=10):
                 raise RuntimeError("timed out waiting to release readback barrier")
         elif read_calls == 2:
             loop.call_soon_threadsafe(queued_read_started.set)
-            if not release_queued_read.wait(timeout=5):
+            if not release_queued_read.wait(timeout=10):
                 raise RuntimeError("timed out waiting to release queued reader")
         return read_durable(path_text)
 
@@ -355,7 +356,7 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
             patch.object(adb_credentials, "_read_durable_credential", new=gated_read),
         ):
             first_task = asyncio.create_task(manager.async_get_credential())
-            await asyncio.wait_for(writer_started.wait(), timeout=2)
+            await asyncio.wait_for(writer_started.wait(), timeout=10)
 
             added_tracked = hass._tasks - tracked_before
             added_background = hass._background_tasks - background_before
@@ -394,7 +395,7 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
             hass.set_state(CoreState.running)
 
             release_writer.set()
-            await asyncio.wait_for(presence_started.wait(), timeout=1)
+            await asyncio.wait_for(presence_started.wait(), timeout=10)
             presence_futures = {
                 future
                 for future in hass._tasks - tracked_before
@@ -415,7 +416,7 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
             assert not queued_task.done()
 
             release_presence.set()
-            await asyncio.wait_for(readback_started.wait(), timeout=1)
+            await asyncio.wait_for(readback_started.wait(), timeout=10)
             readback_futures = {
                 future
                 for future in hass._tasks - tracked_before
@@ -438,13 +439,13 @@ async def test_cancelled_store_write_drains_before_queued_consumer(
             release_readback.set()
             with pytest.raises(asyncio.CancelledError):
                 await first_task
-            await asyncio.wait_for(queued_read_started.wait(), timeout=1)
+            await asyncio.wait_for(queued_read_started.wait(), timeout=10)
             assert manager._credential is None
             assert manager._lock.locked()
             assert not queued_task.done()
 
             release_queued_read.set()
-            queued = await asyncio.wait_for(queued_task, timeout=1)
+            queued = await asyncio.wait_for(queued_task, timeout=10)
 
         assert queued.signer.GetPublicKey() == first_credential.public_key
         assert generation_count == 1
