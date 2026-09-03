@@ -427,10 +427,9 @@ def main() -> int:
     passed = False
     try:
         _validate_candidate(repository, arguments.expected_sha)
-        _require(arguments.hass.is_file(), "hass executable does not exist")
-        version = _run(
-            [str(arguments.hass), "--version"], cwd=repository
-        ).stdout.strip()
+        hass = arguments.hass.resolve()
+        _require(hass.is_file(), "hass executable does not exist")
+        version = _run([str(hass), "--version"], cwd=repository).stdout.strip()
         _require(
             version == arguments.expected_home_assistant_version,
             "Home Assistant "
@@ -453,7 +452,7 @@ def main() -> int:
             ambiguous_address = f"{local_address}:{ambiguous_port}"
             with _AdbSentinel(local_address) as adb:
                 _run_core(
-                    arguments.hass,
+                    hass,
                     config,
                     control,
                     "seed",
@@ -463,7 +462,7 @@ def main() -> int:
                 )
                 mode_path.write_text("malformed\n", encoding="ascii")
                 _run_core(
-                    arguments.hass,
+                    hass,
                     config,
                     control,
                     "verify",
