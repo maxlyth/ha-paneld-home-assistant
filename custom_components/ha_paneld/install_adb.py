@@ -99,6 +99,7 @@ class InstallAdbErrorCode(StrEnum):
     TARGET_UNREACHABLE = "target_unreachable"
     AUTHORIZATION_REQUIRED = "authorization_required"
     TARGET_CHANGED = "target_changed"
+    ROOT_MODE_CHANGED = "root_mode_changed"
     TARGET_RESPONSE_INVALID = "target_response_invalid"
     TARGET_INCOMPATIBLE = "target_incompatible"
     TARGET_NOT_CLEAN = "target_not_clean"
@@ -353,10 +354,6 @@ def _framed_value_commands(prefix: str, nonce: str) -> list[str]:
     return commands
 
 
-def _identity_command(nonce: str) -> str:
-    return "; ".join(_framed_value_commands("IDENTITY", nonce))
-
-
 def _preflight_command(nonce: str) -> str:
     commands = _framed_value_commands("PREFLIGHT", nonce)
     sections = (
@@ -365,10 +362,7 @@ def _preflight_command(nonce: str) -> str:
         ("DEBUGGABLE", "getprop ro.debuggable"),
         (
             "SU",
-            "if command -v su >/dev/null 2>&1; then echo present; "
-            "else hapaneld_su_status=$?; "
-            'if [ "$hapaneld_su_status" -eq 1 ]; then echo absent; '
-            "else echo abnormal; fi; fi",
+            _su_observation_command(),
         ),
         ("PACKAGE", f"pm path {_PACKAGE_ID}"),
         ("RETAINED", f"pm list packages -u {_PACKAGE_ID}"),
@@ -403,6 +397,35 @@ def _preflight_command(nonce: str) -> str:
             )
         )
     commands.append(f"echo HAPANELD_PREFLIGHT_END:{nonce}")
+    return "; ".join(commands)
+
+
+def _su_observation_command() -> str:
+    return (
+        "if command -v su >/dev/null 2>&1; then echo present; "
+        "else hapaneld_su_status=$?; "
+        'if [ "$hapaneld_su_status" -eq 1 ]; then echo absent; '
+        "else echo abnormal; fi; fi"
+    )
+
+
+def _identity_root_command(nonce: str) -> str:
+    commands = _framed_value_commands("POSTURE", nonce)
+    commands.pop()
+    for name, command in (
+        ("UID", "id -u"),
+        ("SECURE", "getprop ro.secure"),
+        ("DEBUGGABLE", "getprop ro.debuggable"),
+        ("SU", _su_observation_command()),
+    ):
+        commands.extend(
+            (
+                f"echo HAPANELD_POSTURE_{name}_BEGIN:{nonce}",
+                command,
+                f"echo HAPANELD_POSTURE_{name}_END:{nonce}:$?",
+            )
+        )
+    commands.append(f"echo HAPANELD_POSTURE_END:{nonce}")
     return "; ".join(commands)
 
 
@@ -584,6 +607,48 @@ def _require_same_target(observed: _ObservedTarget, expected: AdbInstallTarget) 
         raise InstallAdbError(InstallAdbErrorCode.TARGET_CHANGED)
 
 
+def _parse_root_mode(
+    sections: dict[str, tuple[list[str], int]],
+) -> AdbRootMode:
+    uid_lines, uid_status = sections["UID"]
+    secure_lines, secure_status = sections["SECURE"]
+    debuggable_lines, debuggable_status = sections["DEBUGGABLE"]
+    su_lines, su_status = sections["SU"]
+    if (
+        uid_status != 0
+        or len(uid_lines) != 1
+        or secure_status != 0
+        or secure_lines not in (["0"], ["1"])
+        or debuggable_status != 0
+        or debuggable_lines not in (["0"], ["1"])
+        or su_status != 0
+        or su_lines not in (["absent"], ["present"], ["abnormal"])
+    ):
+        raise _MalformedAdbResponse
+    if su_lines == ["abnormal"]:
+        raise _MalformedAdbResponse
+    if uid_lines == ["0"]:
+        return AdbRootMode.ROOT_ADBD
+    if (
+        uid_lines == ["2000"]
+        and secure_lines == ["1"]
+        and debuggable_lines == ["0"]
+        and su_lines == ["absent"]
+    ):
+        return AdbRootMode.ROOTLESS
+    raise InstallAdbError(InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS)
+
+
+def _require_expected_root_mode(observed: AdbRootMode, expected: AdbRootMode) -> None:
+    if observed is not expected:
+        raise InstallAdbError(InstallAdbErrorCode.ROOT_MODE_CHANGED)
+
+
+def _validate_expected_root_mode(expected: AdbRootMode) -> None:
+    if not isinstance(expected, AdbRootMode):
+        raise InstallAdbError(InstallAdbErrorCode.INVALID_REQUEST)
+
+
 def _parse_preflight(
     body: bytes,
     nonce: str,
@@ -633,25 +698,6 @@ def _parse_preflight(
             raise InstallAdbError(InstallAdbErrorCode.TARGET_NOT_CLEAN)
         raise _MalformedAdbResponse
 
-    uid_lines, uid_status = sections["UID"]
-    secure_lines, secure_status = sections["SECURE"]
-    debuggable_lines, debuggable_status = sections["DEBUGGABLE"]
-    su_lines, su_status = sections["SU"]
-    if (
-        uid_status != 0
-        or len(uid_lines) != 1
-        or secure_status != 0
-        or len(secure_lines) != 1
-        or debuggable_status != 0
-        or len(debuggable_lines) != 1
-        or su_status != 0
-        or su_lines not in (["absent"], ["present"], ["abnormal"])
-    ):
-        raise _MalformedAdbResponse
-
-    if su_lines == ["abnormal"]:
-        raise _MalformedAdbResponse
-
     bases_readable = True
     for name in base_names:
         lines, status_code = sections[name]
@@ -669,18 +715,8 @@ def _parse_preflight(
     if residue_present:
         raise InstallAdbError(InstallAdbErrorCode.TARGET_NOT_CLEAN)
 
-    if uid_lines == ["0"]:
-        if not bases_readable:
-            raise InstallAdbError(InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS)
-        root_mode = AdbRootMode.ROOT_ADBD
-    elif (
-        uid_lines == ["2000"]
-        and secure_lines == ["1"]
-        and debuggable_lines == ["0"]
-        and su_lines == ["absent"]
-    ):
-        root_mode = AdbRootMode.ROOTLESS
-    else:
+    root_mode = _parse_root_mode(sections)
+    if root_mode is AdbRootMode.ROOT_ADBD and not bases_readable:
         raise InstallAdbError(InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS)
 
     if (
@@ -712,6 +748,27 @@ def _sections_as_frame(
         lines.append(f"HAPANELD_{prefix}_{name}_END:{nonce}:{status_code}")
     lines.append(f"HAPANELD_{prefix}_END:{nonce}")
     return ("\n".join(lines) + "\n").encode()
+
+
+def _parse_identity_root(
+    body: bytes,
+    nonce: str,
+    target: AdbInstallTarget,
+) -> AdbRootMode:
+    property_names = tuple(name for name, _property in _property_sections())
+    root_names = ("UID", "SECURE", "DEBUGGABLE", "SU")
+    sections = _parse_sections(
+        body,
+        prefix="POSTURE",
+        nonce=nonce,
+        names=property_names + root_names,
+    )
+    identity_body = _sections_as_frame(
+        sections, prefix="POSTURE", nonce=nonce, names=property_names
+    )
+    observed = _parse_identity(identity_body, nonce, "POSTURE")
+    _require_same_target(observed, target)
+    return _parse_root_mode(sections)
 
 
 def _parse_single_section(
@@ -971,18 +1028,22 @@ async def _async_preflight_on_device(
     return _parse_preflight(body, nonce, target, descriptor)
 
 
-async def _async_require_identity(
-    device: AdbDeviceAsync, target: AdbInstallTarget
+async def _async_require_identity_root(
+    device: AdbDeviceAsync,
+    target: AdbInstallTarget,
+    expected_root_mode: AdbRootMode,
 ) -> None:
     nonce = token_hex(16)
-    observed = _parse_identity(
+    observed_root_mode = _parse_identity_root(
         await _async_shell(
-            device, _identity_command(nonce), read_timeout=_READ_TIMEOUT_SECONDS
+            device,
+            _identity_root_command(nonce),
+            read_timeout=_READ_TIMEOUT_SECONDS,
         ),
         nonce,
-        "IDENTITY",
+        target,
     )
-    _require_same_target(observed, target)
+    _require_expected_root_mode(observed_root_mode, expected_root_mode)
 
 
 def _validate_filesync_maxdata(device: AdbDeviceAsync) -> None:
@@ -1097,16 +1158,19 @@ async def async_preflight_install(
 async def async_verify_installed_target(
     target: AdbInstallTarget,
     signer: PythonRSASigner,
+    *,
+    expected_root_mode: AdbRootMode,
 ) -> None:
     """Re-prove the exact target and installed package without mutation."""
     if not isinstance(target, AdbInstallTarget):
         raise InstallAdbError(InstallAdbErrorCode.INVALID_REQUEST)
     _validate_target(target)
+    _validate_expected_root_mode(expected_root_mode)
     device: AdbDeviceAsync | None = None
     try:
         async with asyncio.timeout(_PREFLIGHT_TIMEOUT_SECONDS):
             device = await _async_connect(target, signer)
-            await _async_require_identity(device, target)
+            await _async_require_identity_root(device, target, expected_root_mode)
             nonce = token_hex(16)
             _parse_package_present(
                 await _async_shell(
@@ -1147,9 +1211,12 @@ async def async_stage_apk(
     descriptor: InstallDescriptor,
     job_id: str,
     local_apk: Path,
+    *,
+    expected_root_mode: AdbRootMode,
 ) -> StagedApk:
     """Revalidate, push and authenticate one exact job-owned APK."""
     _validate_request(target, descriptor)
+    _validate_expected_root_mode(expected_root_mode)
     remote_path = _remote_path(job_id)
     if not isinstance(local_apk, Path):
         raise InstallAdbError(InstallAdbErrorCode.INVALID_REQUEST)
@@ -1160,7 +1227,8 @@ async def async_stage_apk(
         async with asyncio.timeout(_STAGE_TIMEOUT_SECONDS):
             file_descriptor = await _async_open_verified_apk(local_apk, descriptor)
             device = await _async_connect(target, signer)
-            await _async_preflight_on_device(device, target, descriptor)
+            preflight = await _async_preflight_on_device(device, target, descriptor)
+            _require_expected_root_mode(preflight.root_mode, expected_root_mode)
             nonce = token_hex(16)
             occupied = _parse_path_state(
                 await _async_shell(
@@ -1218,16 +1286,20 @@ async def async_install_staged_apk(
     signer: PythonRSASigner,
     descriptor: InstallDescriptor,
     job_id: str,
+    *,
+    expected_root_mode: AdbRootMode,
 ) -> InstallOutcome:
     """Revalidate and run exactly one non-replacing package installation."""
     _validate_request(target, descriptor)
+    _validate_expected_root_mode(expected_root_mode)
     remote_path = _remote_path(job_id)
     device: AdbDeviceAsync | None = None
     mutation_started = False
     try:
         async with asyncio.timeout(_INSTALL_TIMEOUT_SECONDS):
             device = await _async_connect(target, signer)
-            await _async_preflight_on_device(device, target, descriptor)
+            preflight = await _async_preflight_on_device(device, target, descriptor)
+            _require_expected_root_mode(preflight.root_mode, expected_root_mode)
             await _async_verify_remote_artifact(device, remote_path, descriptor)
             nonce = token_hex(16)
             mutation_started = True
@@ -1260,15 +1332,18 @@ async def async_launch_installed_app(
     target: AdbInstallTarget,
     signer: PythonRSASigner,
     descriptor: InstallDescriptor,
+    *,
+    expected_root_mode: AdbRootMode,
 ) -> LaunchOutcome:
     """Launch the descriptor's one fixed package component exactly once."""
     _validate_request(target, descriptor)
+    _validate_expected_root_mode(expected_root_mode)
     device: AdbDeviceAsync | None = None
     mutation_started = False
     try:
         async with asyncio.timeout(_LAUNCH_TIMEOUT_SECONDS):
             device = await _async_connect(target, signer)
-            await _async_require_identity(device, target)
+            await _async_require_identity_root(device, target, expected_root_mode)
             nonce = token_hex(16)
             _parse_package_present(
                 await _async_shell(
@@ -1312,6 +1387,8 @@ async def async_cleanup_staged_apk(
     signer: PythonRSASigner,
     staged: StagedApk,
     reason: DefiniteCleanupReason,
+    *,
+    expected_root_mode: AdbRootMode,
 ) -> None:
     """Delete one verified job-owned stage after a definite disposition."""
     if not isinstance(target, AdbInstallTarget) or not isinstance(
@@ -1319,13 +1396,14 @@ async def async_cleanup_staged_apk(
     ):
         raise InstallAdbError(InstallAdbErrorCode.INVALID_REQUEST)
     _validate_target(target)
+    _validate_expected_root_mode(expected_root_mode)
     remote_path = _validate_staged_apk(staged)
     device: AdbDeviceAsync | None = None
     mutation_started = False
     try:
         async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
             device = await _async_connect(target, signer)
-            await _async_require_identity(device, target)
+            await _async_require_identity_root(device, target, expected_root_mode)
             nonce = token_hex(16)
             mutation_started = True
             _parse_cleanup(
