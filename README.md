@@ -2,22 +2,29 @@
 
 This repository contains the HACS custom integration for [ha-paneld](https://github.com/maxlyth/ha-paneld), the Home Assistant dashboard application for Android wall panels.
 
-The initial `0.1.0` integration connects to a panel's stable local health endpoint, creates one Home Assistant device and exposes a diagnostic status sensor. It also adds a bounded, privacy-safe projection of the panel's status endpoint to downloadable diagnostics. The installation preview can identify an Android panel whose Package Manager has no ha-paneld record, explicitly establish durable ADB trust with physical approval, apply the integration's current Android API and ABI checks, and authenticate the exact current stable release. It still stops before checking rooted residual files, downloading the APK or installing anything. Existing MQTT entities remain authoritative.
+The initial `0.1.0` integration can install ha-paneld on a clean Android panel over network Android Debug Bridge (ADB), or connect a panel that is already running it. A configured panel creates one Home Assistant device with a diagnostic status sensor and a bounded, privacy-safe projection of the panel's status endpoint in downloadable diagnostics. The installer admits only a verified clean first installation of a stable release carrying ha-paneld's signed installation descriptor. It does not upgrade or overwrite an existing installation. Existing MQTT entities remain authoritative.
 
 ## Requirements
 
 - Home Assistant `2026.8.3` or newer
 - An Android panel on the same trusted network
-- A running ha-paneld installation for the connection path, or network ADB on port `5555` for the installation preview
-- HACS, for managed installation after this repository is published
+- A running ha-paneld installation for the connection path, or network ADB on port `5555` and physical access to the Android panel for a clean first installation
+- Internet access from Home Assistant to GitHub for clean-install release metadata and the APK
+- HACS, for managed installation
 
 ## Manual installation
 
-Copy `custom_components/ha_paneld` into the `custom_components` directory in your Home Assistant configuration, restart Home Assistant, then add **ha-paneld** from **Settings → Devices & services**. Choose **Install ha-paneld on a panel** to run the first-install preview, or **Connect an existing ha-paneld installation** to add a running panel.
+Copy `custom_components/ha_paneld` into the `custom_components` directory in your Home Assistant configuration, restart Home Assistant, then add **ha-paneld** from **Settings → Devices & services**. Choose **Install ha-paneld on a panel** for a clean first installation, or **Connect an existing ha-paneld installation** to add a running panel.
 
-The installation preview accepts a hostname or IP address and keeps the fixed ha-paneld port `8888` separate from ADB port `5555`. It first checks for a healthy installation. If none responds, it uses read-only ADB observations to distinguish an installed package, an unproven or retained package state, an incompatible device and a package-absent install candidate. A protected panel then requires a separate confirmation before Home Assistant generates and offers one persistent ADB key; if that key is not already trusted, Android displays the physical approval prompt. That approval grants general ADB shell access while network debugging remains enabled and can be revoked from the panel's developer settings. The private key is stored in Home Assistant's private storage, outside the HACS-managed integration directory, and is never replaced automatically if its stored data is corrupt.
+The installation path accepts a hostname or IP address and keeps the fixed ha-paneld port `8888` separate from ADB port `5555`. It first checks for a healthy installation. If none responds, it uses bounded ADB observations to distinguish an installed package, an unproven or retained package state, an incompatible device and a package-absent install candidate. An installed, retained, ambiguous or incompatible target is refused rather than overwritten.
 
-After authorization, a candidate screen includes the device model, serial, ABI, Android SDK, release tag and authenticated SHA-256, then exits without downloading or installing the APK. This preview does not inspect residual app files that may remain on a rooted panel, so it is not yet installation admission.
+A protected panel requires a separate confirmation before Home Assistant generates and offers one persistent ADB key. Android displays a prompt if the key is not already trusted, and someone must physically approve it on the panel. That approval grants general ADB shell access while network debugging remains enabled and can be revoked from the panel's developer settings. The private key is stored in Home Assistant's private storage, outside the HACS-managed integration directory, and is never replaced automatically if its stored data is corrupt.
+
+The candidate screen shows the observed device identity and the authenticated stable release before any installation begins. Automatic installation requires that release to carry a valid signed descriptor binding the exact APK, package, version, signer, minimum Android version, supported processor architectures, launch component and database compatibility contract. Older stable releases without this descriptor remain preview-only: Home Assistant creates no ADB credential for them, downloads no APK and makes no panel change.
+
+After confirmation, Home Assistant records a durable installation transaction, rechecks the target and credential, downloads and verifies the exact release APK, stages it through ADB, installs and launches it, then requires the expected version from the local health endpoint. The normal config entry is created only after fresh ADB identity, package, root-mode and health checks pass. The installer does not configure ha-paneld after launch.
+
+The transaction belongs to Home Assistant rather than the setup dialog, so closing the dialog does not cancel the installer. Safe phases can resume after a Core restart when another ha-paneld config entry loads the integration. If no ha-paneld entries exist yet, reopen **Add integration**, choose the installation path and enter the same address to reattach and continue. Home Assistant does not replay a step whose outcome may be ambiguous; it stops and requests manual recovery instead.
 
 The existing-installation path accepts a hostname or IP address. Port `8888` is used by default; append a different port as `host:port` only if the panel has been configured to use one.
 
@@ -25,7 +32,7 @@ The configured network endpoint identifies the config entry. The panel name retu
 
 ## Scope
 
-This release reads `GET /api/v1/health` and `GET /api/v1/status` over the trusted LAN. Status warnings, free-form summaries, action text, opaque acknowledgement fingerprints and unknown fields are not retained in diagnostics. The installation preview uses ADB only for bounded package-manager and device-property reads, and it verifies the signed checksum record for the current stable release without downloading the APK. Only the separately confirmed ADB authorization step offers a persistent key and can change panel trust. It does not inspect rooted residual files, install or configure ha-paneld, proxy panel traffic, replace MQTT entities or add a sidebar UI.
+This release reads `GET /api/v1/health` and `GET /api/v1/status` over the trusted LAN. Status warnings, free-form summaries, action text, opaque acknowledgement fingerprints and unknown fields are not retained in diagnostics. The clean first-install path uses ADB for bounded target checks, APK staging, installation, launch and final verification. It does not upgrade, repair or configure an existing installation. It does not discover panels, add commands or a sidebar UI, proxy panel traffic, or reproduce or replace MQTT entities. Each config entry retains the existing endpoint-based identity and adds only its diagnostic status sensor. MQTT remains the authority for panel entities and control.
 
 ## Development
 
