@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from http import HTTPStatus
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_paneld import async_reload_entry
@@ -21,10 +23,7 @@ from custom_components.ha_paneld.client import (
     PanelHealth,
 )
 from custom_components.ha_paneld.const import DOMAIN
-from custom_components.ha_paneld.diagnostics import (
-    async_get_config_entry_diagnostics,
-    async_get_device_diagnostics,
-)
+from custom_components.ha_paneld.diagnostics import async_get_config_entry_diagnostics
 from custom_components.ha_paneld.install_artifacts import (
     ArtifactCustodyError,
     ArtifactErrorCode,
@@ -121,7 +120,7 @@ def _assert_healthy_entry_loaded(hass: HomeAssistant, entry: MockConfigEntry) ->
     )
 
 
-async def test_setup_device_diagnostics_unload_reload(hass: HomeAssistant) -> None:
+async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> None:
     """The vertical slice creates one device and unloads/reloads cleanly."""
     entry = _entry(hass)
     health_mock = AsyncMock(side_effect=[HEALTH, BETA_HEALTH])
@@ -170,13 +169,12 @@ async def test_setup_device_diagnostics_unload_reload(hass: HomeAssistant) -> No
         assert devices[0].sw_version == HEALTH.version
 
         diagnostics = await async_get_config_entry_diagnostics(hass, entry)
-        device_diagnostics = await async_get_device_diagnostics(hass, entry, devices[0])
         assert diagnostics["entry"][CONF_ADDRESS] == "**REDACTED**"
+        assert diagnostics["last_update_success"] is True
         assert diagnostics["health"]["panel_id"] == "**REDACTED**"
         assert diagnostics["health"]["build"] == HEALTH.build
         assert diagnostics["status"] == STATUS.as_dict()
         assert diagnostics["status_error"] is None
-        assert device_diagnostics == diagnostics
         assert health_mock.await_count == 1
         assert status_mock.await_count == 1
 
@@ -203,6 +201,67 @@ async def test_setup_device_diagnostics_unload_reload(hass: HomeAssistant) -> No
     assert status_mock.await_count == 2
     assert resume_mock.await_count == 2
     assert manager.async_list.await_count == 2
+
+
+async def test_diagnostics_download_uses_privacy_safe_entry_filename(
+    hass: HomeAssistant, hass_client
+) -> None:
+    """Diagnostics never expose the panel ID in a download filename."""
+    private_panel_id = "private-bedroom-panel"
+    entry = _entry(hass)
+    health = PanelHealth(
+        version=HEALTH.version,
+        panel_id=private_panel_id,
+        build=HEALTH.build,
+        config_hash=HEALTH.config_hash,
+        ha_state=HEALTH.ha_state,
+        ha_source=HEALTH.ha_source,
+    )
+    executor, manager = _installer_doubles()
+
+    with (
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=health),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        assert await async_setup_component(hass, "diagnostics", {})
+        await hass.async_block_till_done()
+
+        client = await hass_client()
+        response = await client.get(f"/api/diagnostics/config_entry/{entry.entry_id}")
+        assert response.status == HTTPStatus.OK
+        assert response.headers["Content-Disposition"] == (
+            f'attachment; filename="config_entry-ha_paneld-{entry.entry_id}.json"'
+        )
+        assert private_panel_id not in response.headers["Content-Disposition"]
+        payload = await response.json()
+        assert payload["data"]["health"]["panel_id"] == "**REDACTED**"
+
+        device = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)[
+            0
+        ]
+        response = await client.get(
+            f"/api/diagnostics/config_entry/{entry.entry_id}/device/{device.id}"
+        )
+        assert response.status == HTTPStatus.NOT_FOUND
 
 
 async def test_setup_survives_install_job_resume_failure(
@@ -244,6 +303,41 @@ async def test_setup_survives_install_job_resume_failure(
     resume_mock.assert_awaited_once_with(hass)
     assert private_detail not in caplog.text
     assert "Unable to resume durable ha-paneld install jobs" in caplog.text
+
+
+async def test_setup_contains_unexpected_install_resume_failure(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unexpected installer faults cannot block an ordinary existing entry."""
+    entry = _entry(hass)
+    private_detail = "panel-secret.local"
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(side_effect=RuntimeError(private_detail)),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(side_effect=RuntimeError(private_detail)),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    _assert_healthy_entry_loaded(hass, entry)
+    assert private_detail not in caplog.text
+    assert "Unable to resume durable ha-paneld install jobs" in caplog.text
+    assert "Unable to reconcile a durable ha-paneld install receipt" in caplog.text
 
 
 async def test_setup_survives_install_artifact_resume_failure(
@@ -645,6 +739,47 @@ async def test_setup_survives_install_receipt_revision_failure(
     assert entry.runtime_data.coordinator.data.health == HEALTH
 
 
+async def test_setup_contains_unexpected_finalizer_release_failure(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unexpected finalizer cleanup faults cannot remove a healthy entry."""
+    entry = _entry(hass)
+    receipt = _receipt()
+    executor, manager = _installer_doubles((receipt,))
+    private_detail = "private-finalizer-detail"
+    executor.async_release_finalizer.side_effect = RuntimeError(private_detail)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    _assert_healthy_entry_loaded(hass, entry)
+    assert private_detail not in caplog.text
+    assert "Unable to release a durable ha-paneld install finalizer" in caplog.text
+
+
 @pytest.mark.parametrize(
     "receipts",
     [
@@ -739,6 +874,48 @@ async def test_coordinator_translates_client_failure(hass: HomeAssistant) -> Non
     else:
         raise AssertionError("Client failure was not translated to UpdateFailed")
     assert status_mock.await_count == 1
+
+
+async def test_diagnostics_marks_cached_snapshot_after_health_failure(
+    hass: HomeAssistant,
+) -> None:
+    """Diagnostics distinguish cached data after the current refresh fails."""
+    entry = _entry(hass)
+    executor, manager = _installer_doubles()
+    with (
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    entry.runtime_data.client.async_get_health = AsyncMock(  # type: ignore[method-assign]
+        side_effect=CannotConnectError
+    )
+    await entry.runtime_data.coordinator.async_request_refresh()
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["last_update_success"] is False
+    assert diagnostics["health"]["panel_id"] == "**REDACTED**"
+    assert diagnostics["health"]["build"] == HEALTH.build
 
 
 @pytest.mark.parametrize(
