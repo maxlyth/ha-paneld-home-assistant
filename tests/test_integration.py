@@ -1,6 +1,7 @@
 """Integration lifecycle, device and diagnostics tests."""
 
 import asyncio
+import json
 import logging
 from http import HTTPStatus
 from types import SimpleNamespace
@@ -39,7 +40,7 @@ from custom_components.ha_paneld.install_jobs import (
     InstallPhase,
     InstallResultCode,
 )
-from custom_components.ha_paneld.status import PanelStatus
+from custom_components.ha_paneld.status import PanelStatus, parse_status_response
 
 HEALTH = PanelHealth(
     version="0.9.0",
@@ -1098,4 +1099,41 @@ async def test_status_failure_does_not_override_health_authority(
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert diagnostics["status"] is None
     assert diagnostics["status_error"] == diagnostic_error
+    assert diagnostics["health"]["build"] == HEALTH.build
+
+
+async def test_huge_status_integer_does_not_override_health_authority(
+    hass: HomeAssistant,
+) -> None:
+    """An integer conversion failure remains optional diagnostic failure."""
+    entry = _entry(hass)
+
+    async def _get_invalid_status() -> PanelStatus:
+        return parse_status_response(
+            json.dumps(
+                {
+                    "warnings": [],
+                    "capabilities": [],
+                    "camera": {"state": "live", "delivered_fps": 10**400},
+                }
+            )
+        )
+
+    with (
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(side_effect=_get_invalid_status),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    _assert_healthy_entry_loaded(hass, entry)
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["status"] is None
+    assert diagnostics["status_error"] == "invalid_response"
     assert diagnostics["health"]["build"] == HEALTH.build

@@ -163,7 +163,7 @@ def _nullable_android_integer(value: object) -> int | None:
 def _nonnegative_number(value: object) -> int | float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise InvalidResponseError
-    if not math.isfinite(value) or not 0 <= value <= MAX_STATUS_INTEGER:
+    if not 0 <= value <= MAX_STATUS_INTEGER or not math.isfinite(value):
         raise InvalidResponseError
     return value
 

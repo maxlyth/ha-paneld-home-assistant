@@ -267,6 +267,30 @@ def test_status_parser_accepts_android_zigbee_and_signed_setting_bounds() -> Non
 
 
 @pytest.mark.parametrize(
+    ("component", "field"),
+    [
+        ("camera", "delivered_fps"),
+        ("storage_health", "used_percent"),
+    ],
+)
+def test_status_parser_rejects_huge_integer_numbers(component: str, field: str) -> None:
+    """Bounded JSON integers cannot escape the invalid-response contract."""
+    huge_integer = 10**400
+    body = json.dumps(
+        {
+            "warnings": [],
+            "capabilities": [],
+            component: {"state": "ok", field: huge_integer},
+        }
+    )
+    assert len(str(huge_integer)) == 401
+    assert len(body.encode()) <= MAX_STATUS_RESPONSE_BYTES
+
+    with pytest.raises(InvalidResponseError):
+        parse_status_response(body)
+
+
+@pytest.mark.parametrize(
     "body",
     [
         "[]",
