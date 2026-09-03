@@ -606,9 +606,10 @@ def test_durable_reader_rejects_same_inode_overwrite_during_read(
 ) -> None:
     """Same-size mutation cannot return bytes no longer held by the durable path."""
     original = _generate_credential()
-    replacement = _generate_credential()
     original_body = json.dumps(_stored_document(original)).encode()
-    replacement_body = json.dumps(_stored_document(replacement)).encode()
+    replacement_document = _stored_document(original)
+    replacement_document["minor_version"] = 2
+    replacement_body = json.dumps(replacement_document).encode()
     assert len(original_body) == len(replacement_body)
     store_path = tmp_path / "ha_paneld.adb_key"
     store_path.write_bytes(original_body)
