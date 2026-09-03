@@ -1056,25 +1056,60 @@ def _validate_filesync_maxdata(device: AdbDeviceAsync) -> None:
         raise InstallAdbError(InstallAdbErrorCode.FILESYNC_UNSAFE)
 
 
-def _open_verified_apk(path: Path, descriptor: InstallDescriptor) -> int:
-    if not hasattr(os, "O_NOFOLLOW"):
+def _verified_apk_identity(
+    status: os.stat_result, expected_size: int
+) -> tuple[int, int, int, int, int, int, int, int]:
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_IMODE(status.st_mode) != 0o600
+        or status.st_uid != os.geteuid()
+        or status.st_nlink != 1
+        or status.st_size != expected_size
+    ):
         raise InstallAdbError(InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID)
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_uid,
+        status.st_nlink,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
+def _open_verified_apk(path: Path, descriptor: InstallDescriptor) -> int:
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise InstallAdbError(InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
+        path_stat = os.lstat(path)
         file_descriptor = os.open(path, flags)
     except OSError, TypeError, ValueError:
         raise InstallAdbError(InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID) from None
     try:
-        file_stat = os.fstat(file_descriptor)
-        if (
-            not stat.S_ISREG(file_stat.st_mode)
-            or file_stat.st_size != descriptor.apk_size
-        ):
+        path_identity = _verified_apk_identity(path_stat, descriptor.apk_size)
+        opened_identity = _verified_apk_identity(
+            os.fstat(file_descriptor), descriptor.apk_size
+        )
+        if opened_identity != path_identity:
             raise InstallAdbError(InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID)
         digest = hashlib.sha256()
+        actual_size = 0
         while chunk := os.read(file_descriptor, 1024 * 1024):
+            actual_size += len(chunk)
+            if actual_size > descriptor.apk_size:
+                raise InstallAdbError(InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID)
             digest.update(chunk)
-        if digest.hexdigest() != descriptor.apk_sha256:
+        if (
+            actual_size != descriptor.apk_size
+            or digest.hexdigest() != descriptor.apk_sha256
+            or _verified_apk_identity(os.fstat(file_descriptor), descriptor.apk_size)
+            != opened_identity
+            or _verified_apk_identity(os.lstat(path), descriptor.apk_size)
+            != opened_identity
+        ):
             raise InstallAdbError(InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID)
         os.lseek(file_descriptor, 0, os.SEEK_SET)
         return file_descriptor

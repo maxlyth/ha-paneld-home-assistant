@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import stat
 import threading
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
@@ -54,6 +55,11 @@ def _staged() -> StagedApk:
         apk_size=len(APK_BYTES),
         apk_sha256=APK_SHA256,
     )
+
+
+def _write_private_apk(path: Path, body: bytes = APK_BYTES) -> None:
+    path.write_bytes(body)
+    path.chmod(0o600)
 
 
 @pytest.fixture
@@ -554,7 +560,7 @@ async def test_identity_drift_or_descriptor_incompatibility_blocks_mutation(
 ) -> None:
     artifact = replace(descriptor, **(changed_descriptor or {}))
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice([response])
     _install_fakes(monkeypatch, [fake])
 
@@ -581,7 +587,7 @@ async def test_descriptor_abi_compatibility_is_rechecked_before_mutation(
 ) -> None:
     x86_target = replace(target, primary_abi="x86_64")
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice([_preflight_output(NONCES[0], abi="x86_64")])
     _install_fakes(monkeypatch, [fake])
 
@@ -880,7 +886,7 @@ async def test_invalid_expected_root_mode_fails_before_panel_contact(
     operation: str,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     device_iterator = _install_fakes(monkeypatch, [])
     invalid_root_mode = "rootless"
 
@@ -955,7 +961,7 @@ async def test_stage_root_drift_or_ambiguity_blocks_filesync(
     expected_error: InstallAdbErrorCode,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice(
         [
             preflight,
@@ -991,7 +997,7 @@ async def test_peer_maxdata_attack_is_rejected_before_filesync(
     maxdata: object,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice(
         [
             _preflight_output(NONCES[0]),
@@ -1023,7 +1029,7 @@ async def test_stage_pushes_fixed_regular_0644_path_and_verifies_exact_artifact(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "name with shell ; metacharacters.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice(
         [
             _preflight_output(NONCES[0]),
@@ -1063,6 +1069,123 @@ async def test_stage_pushes_fixed_regular_0644_path_and_verifies_exact_artifact(
     )
 
 
+@pytest.mark.parametrize("unsafe_metadata", ["mode", "hardlink"])
+async def test_stage_rejects_unsafe_local_apk_metadata_before_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+    unsafe_metadata: str,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    if unsafe_metadata == "mode":
+        apk.chmod(0o644)
+    else:
+        os.link(apk, tmp_path / "artifact-hardlink.apk")
+    device_iterator = _install_fakes(monkeypatch, [])
+
+    with pytest.raises(InstallAdbError) as caught:
+        await async_stage_apk(
+            target,
+            signer,
+            descriptor,
+            JOB_ID,
+            apk,
+            expected_root_mode=AdbRootMode.ROOTLESS,
+        )
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    with pytest.raises(StopIteration):
+        next(device_iterator)
+
+
+async def test_stage_fifo_swap_at_open_boundary_fails_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    displaced = tmp_path / "artifact-displaced.apk"
+    original_open = os.open
+    observed_flags: list[int] = []
+
+    def _open_after_fifo_swap(path: Any, flags: int, *args: Any) -> int:
+        if Path(path) == apk and not observed_flags:
+            observed_flags.append(flags)
+            if not flags & os.O_NONBLOCK:
+                raise AssertionError("APK open omitted O_NONBLOCK")
+            apk.rename(displaced)
+            os.mkfifo(apk, mode=0o600)
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(install_adb.os, "open", _open_after_fifo_swap)
+    device_iterator = _install_fakes(monkeypatch, [])
+
+    with pytest.raises(InstallAdbError) as caught:
+        await asyncio.wait_for(
+            async_stage_apk(
+                target,
+                signer,
+                descriptor,
+                JOB_ID,
+                apk,
+                expected_root_mode=AdbRootMode.ROOTLESS,
+            ),
+            timeout=1,
+        )
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    assert observed_flags[0] & os.O_NONBLOCK
+    assert stat.S_ISFIFO(apk.lstat().st_mode)
+    assert displaced.read_bytes() == APK_BYTES
+    with pytest.raises(StopIteration):
+        next(device_iterator)
+
+
+async def test_stage_rejects_local_apk_growth_during_bounded_hash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    original_read = os.read
+    grew = False
+
+    def _grow_then_read(file_descriptor: int, size: int) -> bytes:
+        nonlocal grew
+        if not grew:
+            with apk.open("ab") as stream:
+                stream.write(b"x")
+            grew = True
+        return original_read(file_descriptor, size)
+
+    monkeypatch.setattr(install_adb.os, "read", _grow_then_read)
+    device_iterator = _install_fakes(monkeypatch, [])
+
+    with pytest.raises(InstallAdbError) as caught:
+        await async_stage_apk(
+            target,
+            signer,
+            descriptor,
+            JOB_ID,
+            apk,
+            expected_root_mode=AdbRootMode.ROOTLESS,
+        )
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    assert grew
+    with pytest.raises(StopIteration):
+        next(device_iterator)
+
+
 async def test_preexisting_fixed_staging_path_is_refused_before_filesync(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1071,7 +1194,7 @@ async def test_preexisting_fixed_staging_path_is_refused_before_filesync(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice(
         [
             _preflight_output(NONCES[0]),
@@ -1101,7 +1224,7 @@ async def test_interrupted_filesync_is_an_ambiguous_staging_mutation(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice(
         [
             _preflight_output(NONCES[0]),
@@ -1132,7 +1255,7 @@ async def test_local_hash_mismatch_never_connects_or_pushes(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(b"same byte count!!!")
+    _write_private_apk(apk, b"same byte count!!!")
     assert apk.stat().st_size == descriptor.apk_size
     device_iterator = _install_fakes(monkeypatch, [])
 
@@ -1181,7 +1304,7 @@ async def test_local_read_error_is_not_misreported_as_a_target_failure(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     _install_fakes(monkeypatch, [])
 
     def fail_read(_file_descriptor: int, _size: int) -> bytes:
@@ -1210,7 +1333,7 @@ async def test_cancellation_drains_delayed_apk_worker_and_closes_returned_fd(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     worker_opened = threading.Event()
     release_worker = threading.Event()
     returned_fds: list[int] = []
@@ -1262,7 +1385,7 @@ async def test_repeated_cancellation_during_device_close_cannot_leak_staged_fd(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     push_started = asyncio.Event()
     close_started = asyncio.Event()
     release_close = asyncio.Event()
@@ -1324,7 +1447,7 @@ async def test_cancellation_before_stage_task_starts_opens_no_apk(
     descriptor: InstallDescriptor,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     opened = False
     original_open = install_adb._open_verified_apk
 
@@ -1368,7 +1491,7 @@ async def test_remote_size_hash_or_mode_mismatch_never_reports_staged(
     remote: bytes,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     fake = FakeDevice(
         [
             _preflight_output(NONCES[0]),
@@ -1904,7 +2027,7 @@ async def test_invalid_job_id_cannot_reach_shell_or_filesync(
     job_id: str,
 ) -> None:
     apk = tmp_path / "artifact.apk"
-    apk.write_bytes(APK_BYTES)
+    _write_private_apk(apk)
     _install_fakes(monkeypatch, [])
 
     with pytest.raises(InstallAdbError) as caught:
