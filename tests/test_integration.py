@@ -16,7 +16,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ha_paneld import async_reload_entry
+from custom_components.ha_paneld import _async_resume_install_jobs, async_reload_entry
 from custom_components.ha_paneld.client import (
     CannotConnectError,
     InvalidResponseError,
@@ -345,13 +345,14 @@ async def test_setup_propagates_cancelled_install_resume(
     hass: HomeAssistant,
 ) -> None:
     """Best-effort containment must not consume task cancellation."""
-    entry = _entry(hass)
-
-    with patch(
-        "custom_components.ha_paneld.async_resume_loaded_install_jobs",
-        AsyncMock(side_effect=asyncio.CancelledError),
+    with (
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        pytest.raises(asyncio.CancelledError),
     ):
-        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await _async_resume_install_jobs(hass)
 
 
 async def test_setup_propagates_cancelled_install_reconciliation(
