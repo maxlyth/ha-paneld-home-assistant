@@ -138,10 +138,16 @@ async def transition_to_staging(
     for phase in (
         InstallPhase.AUTHORIZING,
         InstallPhase.PREFLIGHT,
-        InstallPhase.DOWNLOADING,
     ):
         receipt = await manager.async_transition(job_id, revision, phase)
         revision = receipt.revision
+    receipt = await manager.async_transition(
+        job_id,
+        revision,
+        InstallPhase.DOWNLOADING,
+        preflight_root_mode="root_adbd",
+    )
+    revision = receipt.revision
     receipt = await manager.async_transition(
         job_id,
         revision,
@@ -203,6 +209,13 @@ async def receipt_at_phase(
                 receipt.revision,
                 next_phase,
                 actual_apk_bytes=artifact().apk_size,
+            )
+        elif next_phase is InstallPhase.DOWNLOADING:
+            receipt = await manager.async_transition(
+                receipt.job_id,
+                receipt.revision,
+                next_phase,
+                preflight_root_mode="root_adbd",
             )
         elif next_phase is InstallPhase.HEALTHY_UNCLAIMED:
             receipt = await manager.async_transition(
@@ -280,6 +293,7 @@ async def test_create_is_durable_private_and_has_no_unsafe_fields(
     assert receipt.phase == InstallPhase.APPROVED
     assert receipt.revision == 0
     assert receipt.adb_credential_id == CREDENTIAL_ID
+    assert receipt.preflight_root_mode is None
     assert receipt.target.address == "panel.local"
     assert receipt.artifact.apk_size == 12_345
 
@@ -294,6 +308,123 @@ async def test_create_is_durable_private_and_has_no_unsafe_fields(
     assert "error" not in raw
     assert "secret" not in raw
     assert json.loads(raw)["jobs"][0]["adb_credential_id"] == CREDENTIAL_ID
+    assert json.loads(raw)["jobs"][0]["preflight_root_mode"] is None
+
+
+@pytest.mark.parametrize("root_mode", ["root_adbd", "rootless"])
+async def test_preflight_root_mode_is_learned_once_and_survives_restart(
+    hass: HomeAssistant, root_mode: str
+) -> None:
+    """Both ADB root postures become durable at the preflight boundary."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.PREFLIGHT)
+
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.DOWNLOADING,
+        preflight_root_mode=root_mode,
+    )
+    restarted = InstallJobManager(hass, now=Clock())
+    loaded = await restarted.async_get(receipt.job_id)
+
+    assert receipt.preflight_root_mode == root_mode
+    assert loaded == receipt
+    assert loaded.preflight_root_mode == root_mode
+
+
+@pytest.mark.parametrize(
+    "root_mode",
+    ["", "root", "ROOTLESS", True, 1, [], {"mode": "rootless"}],
+)
+async def test_preflight_to_downloading_rejects_invalid_root_mode(
+    hass: HomeAssistant, root_mode: object
+) -> None:
+    """A downstream receipt accepts only an exact supported posture."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.PREFLIGHT)
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.DOWNLOADING,
+            preflight_root_mode=root_mode,  # type: ignore[arg-type]
+        )
+
+    assert await manager.async_get(receipt.job_id) == receipt
+
+
+async def test_preflight_to_downloading_requires_explicit_root_mode(
+    hass: HomeAssistant,
+) -> None:
+    """Omitting the observed root posture cannot create a downstream receipt."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.PREFLIGHT)
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id, receipt.revision, InstallPhase.DOWNLOADING
+        )
+
+    assert await manager.async_get(receipt.job_id) == receipt
+
+
+async def test_preflight_root_mode_rejects_wrong_transition_timing(
+    hass: HomeAssistant,
+) -> None:
+    """Root posture is neither caller-supplied early nor learned on failure."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.AUTHORIZING,
+            preflight_root_mode="rootless",
+        )
+    receipt = await manager.async_transition(
+        receipt.job_id, receipt.revision, InstallPhase.AUTHORIZING
+    )
+    receipt = await manager.async_transition(
+        receipt.job_id, receipt.revision, InstallPhase.PREFLIGHT
+    )
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.FAILED,
+            preflight_root_mode="rootless",
+            result_code=InstallResultCode.PREFLIGHT_REJECTED,
+        )
+
+
+@pytest.mark.parametrize("replacement", ["root_adbd", "rootless"])
+async def test_preflight_root_mode_cannot_be_reasserted_or_overwritten(
+    hass: HomeAssistant, replacement: str
+) -> None:
+    """Later transitions preserve rather than accept a root-posture value."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.PREFLIGHT)
+    receipt = await manager.async_transition(
+        receipt.job_id,
+        receipt.revision,
+        InstallPhase.DOWNLOADING,
+        preflight_root_mode="root_adbd",
+    )
+
+    with pytest.raises(InstallJobTransitionError):
+        await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.ARTIFACT_READY,
+            preflight_root_mode=replacement,
+            actual_apk_bytes=artifact().apk_size,
+        )
+
+    assert await manager.async_get(receipt.job_id) == receipt
 
 
 async def test_create_rejects_a_plan_digest_not_bound_to_frozen_facts(
@@ -365,6 +496,29 @@ async def test_restart_reloads_same_immutable_receipt(hass: HomeAssistant) -> No
     assert not hasattr(loaded, "entry")
     with pytest.raises(FrozenInstanceError):
         loaded.phase = InstallPhase.CONSUMED  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        InstallPhase.DOWNLOADING,
+        InstallPhase.ARTIFACT_READY,
+        InstallPhase.REVALIDATING,
+    ],
+)
+async def test_restart_preserves_root_posture_in_safe_downstream_phases(
+    hass: HomeAssistant, phase: InstallPhase
+) -> None:
+    """Safe restart claims retain the preflight result needed by the executor."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, phase)
+    restarted = InstallJobManager(hass, now=Clock())
+
+    claimed = await restarted.async_claim(receipt.job_id, receipt.revision)
+
+    assert claimed.phase is phase
+    assert claimed.preflight_root_mode == "root_adbd"
+    assert claimed.executor_generation == receipt.executor_generation + 1
 
 
 async def test_restart_reclaims_pre_mutation_but_quarantines_ambiguous_phase(
@@ -473,10 +627,15 @@ async def test_restart_at_attempt_ceiling_becomes_recovery_required(
     assert receipt.attempt == receipt.executor_generation == 32
 
     if at_mutation_barrier:
-        for phase in (InstallPhase.PREFLIGHT, InstallPhase.DOWNLOADING):
-            receipt = await manager.async_transition(
-                receipt.job_id, receipt.revision, phase
-            )
+        receipt = await manager.async_transition(
+            receipt.job_id, receipt.revision, InstallPhase.PREFLIGHT
+        )
+        receipt = await manager.async_transition(
+            receipt.job_id,
+            receipt.revision,
+            InstallPhase.DOWNLOADING,
+            preflight_root_mode="root_adbd",
+        )
         receipt = await manager.async_transition(
             receipt.job_id,
             receipt.revision,
@@ -973,6 +1132,44 @@ async def test_cancel_is_requested_then_acknowledged_at_safe_phase(
         await manager.async_request_cancel(cancelled.job_id, cancelled.revision)
 
 
+async def test_terminal_receipts_preserve_whether_root_posture_was_learned(
+    hass: HomeAssistant,
+) -> None:
+    """Early terminals remain empty while downstream terminals retain posture."""
+    manager = InstallJobManager(hass, now=Clock())
+    early_failed = await receipt_at_phase(manager, InstallPhase.FAILED)
+    assert early_failed.preflight_root_mode is None
+
+    later, _ = await create(
+        manager,
+        install_target=target("later.local", "LATER-SERIAL", "192.168.1.24"),
+    )
+    later = await manager.async_claim(later.job_id, later.revision)
+    for phase in (InstallPhase.AUTHORIZING, InstallPhase.PREFLIGHT):
+        later = await manager.async_transition(later.job_id, later.revision, phase)
+    later = await manager.async_transition(
+        later.job_id,
+        later.revision,
+        InstallPhase.DOWNLOADING,
+        preflight_root_mode="rootless",
+    )
+    later = await manager.async_request_cancel(later.job_id, later.revision)
+    later = await manager.async_transition(
+        later.job_id,
+        later.revision,
+        InstallPhase.CANCELLED,
+        result_code=InstallResultCode.CANCELLED_BY_USER,
+    )
+
+    assert later.preflight_root_mode == "rootless"
+    assert (await InstallJobManager(hass, now=Clock()).async_get(later.job_id)) == later
+
+    consumed = await receipt_at_phase(manager, InstallPhase.CONSUMED)
+    recovery = await receipt_at_phase(manager, InstallPhase.RECOVERY_REQUIRED)
+    assert consumed.preflight_root_mode == "root_adbd"
+    assert recovery.preflight_root_mode == "root_adbd"
+
+
 async def test_staging_can_cancel_but_installing_requires_terminal_recovery(
     hass: HomeAssistant,
 ) -> None:
@@ -1188,6 +1385,35 @@ async def test_cleanup_barrier_rejects_store_drift_between_fresh_reads(
         )
 
 
+async def test_cleanup_barrier_rejects_valid_root_posture_drift_between_reads(
+    hass: HomeAssistant,
+) -> None:
+    """A valid but changed root posture cannot cross a cleanup barrier."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.INSTALLING)
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    drifted = copy.deepcopy(document)
+    drifted["jobs"][0]["preflight_root_mode"] = "rootless"
+    first_reader = MagicMock()
+    first_reader.async_load = AsyncMock(return_value=document)
+    independent_reader = MagicMock()
+    independent_reader.async_load = AsyncMock(return_value=drifted)
+
+    with (
+        patch.object(
+            install_jobs, "Store", side_effect=[first_reader, independent_reader]
+        ),
+        pytest.raises(InstallJobTransitionError),
+    ):
+        await manager.async_verify_cleanup_barrier(
+            receipt.job_id, receipt.revision, receipt.phase
+        )
+
+
 async def test_cleanup_barrier_rejects_corrupt_independent_store_read(
     hass: HomeAssistant,
 ) -> None:
@@ -1343,6 +1569,100 @@ async def test_corrupt_or_excessive_stored_documents_fail_closed(
 
     with pytest.raises(InstallJobStoreError):
         await InstallJobManager(hass, now=Clock()).async_list()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda receipt: receipt.pop("preflight_root_mode"),
+        lambda receipt: receipt.update(preflight_root_mode=None),
+        lambda receipt: receipt.update(preflight_root_mode=""),
+        lambda receipt: receipt.update(preflight_root_mode="ROOTLESS"),
+        lambda receipt: receipt.update(preflight_root_mode="root"),
+        lambda receipt: receipt.update(preflight_root_mode=True),
+        lambda receipt: receipt.update(preflight_root_mode=1),
+        lambda receipt: receipt.update(preflight_root_mode=[]),
+    ],
+)
+async def test_downstream_store_rejects_missing_or_invalid_root_posture(
+    hass: HomeAssistant, mutation
+) -> None:
+    """Active downstream receipts fail closed on malformed root posture."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, InstallPhase.REVALIDATING)
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    stored_receipt = next(
+        item for item in document["jobs"] if item["job_id"] == receipt.job_id
+    )
+    mutation(stored_receipt)
+    await store.async_save(document)
+
+    with pytest.raises(InstallJobStoreError):
+        await InstallJobManager(hass, now=Clock()).async_get(receipt.job_id)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        InstallPhase.DOWNLOADING,
+        InstallPhase.ARTIFACT_READY,
+        InstallPhase.REVALIDATING,
+        InstallPhase.STAGING,
+        InstallPhase.INSTALLING,
+        InstallPhase.INSTALLED,
+        InstallPhase.LAUNCHING,
+        InstallPhase.HEALTH_CHECK,
+        InstallPhase.HEALTHY_UNCLAIMED,
+    ],
+)
+async def test_every_active_downstream_phase_requires_stored_root_posture(
+    hass: HomeAssistant, phase: InstallPhase
+) -> None:
+    """No active post-preflight phase can reload after losing root posture."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, phase)
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    stored_receipt = next(
+        item for item in document["jobs"] if item["job_id"] == receipt.job_id
+    )
+    stored_receipt["preflight_root_mode"] = None
+    await store.async_save(document)
+
+    with pytest.raises(InstallJobStoreError):
+        await InstallJobManager(hass, now=Clock()).async_get(receipt.job_id)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [InstallPhase.APPROVED, InstallPhase.AUTHORIZING, InstallPhase.PREFLIGHT],
+)
+async def test_every_preflight_phase_rejects_premature_stored_root_posture(
+    hass: HomeAssistant, phase: InstallPhase
+) -> None:
+    """The Store cannot claim a posture before preflight has observed it."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt = await receipt_at_phase(manager, phase)
+    store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await store.async_load()
+    assert document is not None
+    stored_receipt = next(
+        item for item in document["jobs"] if item["job_id"] == receipt.job_id
+    )
+    stored_receipt["preflight_root_mode"] = "rootless"
+    await store.async_save(document)
+
+    with pytest.raises(InstallJobStoreError):
+        await InstallJobManager(hass, now=Clock()).async_get(receipt.job_id)
 
 
 @pytest.mark.parametrize(

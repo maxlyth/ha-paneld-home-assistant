@@ -69,6 +69,7 @@ _RELEASE_SIGNER_SHA256 = (
     "ac6193307fb0b70113aae205d7549406f96e063bc5491b67b1d5694a34b0e339"
 )
 _SUPPORTED_ABIS = ("arm64-v8a", "armeabi-v7a")
+_PREFLIGHT_ROOT_MODES = frozenset({"root_adbd", "rootless"})
 
 
 class InstallJobError(Exception):
@@ -164,6 +165,27 @@ _ARTIFACT_REQUIRED_PHASES = frozenset(
         InstallPhase.HEALTH_CHECK,
         InstallPhase.HEALTHY_UNCLAIMED,
         InstallPhase.CONSUMED,
+    }
+)
+_PREFLIGHT_ROOT_MODE_REQUIRED_PHASES = frozenset(
+    {
+        InstallPhase.DOWNLOADING,
+        InstallPhase.ARTIFACT_READY,
+        InstallPhase.REVALIDATING,
+        InstallPhase.STAGING,
+        InstallPhase.INSTALLING,
+        InstallPhase.INSTALLED,
+        InstallPhase.LAUNCHING,
+        InstallPhase.HEALTH_CHECK,
+        InstallPhase.HEALTHY_UNCLAIMED,
+        InstallPhase.CONSUMED,
+    }
+)
+_PREFLIGHT_ROOT_MODE_FORBIDDEN_PHASES = frozenset(
+    {
+        InstallPhase.APPROVED,
+        InstallPhase.AUTHORIZING,
+        InstallPhase.PREFLIGHT,
     }
 )
 _CANCELLABLE_PHASES = frozenset(
@@ -366,6 +388,7 @@ class InstallJobReceipt:
     artifact: InstallArtifact
     plan_sha256: str
     adb_credential_id: str
+    preflight_root_mode: str | None = None
     actual_apk_bytes: int | None = None
     health_checked_at: str | None = None
     result_code: InstallResultCode | None = None
@@ -579,6 +602,7 @@ def _parse_receipt(value: object) -> InstallJobReceipt:
         "artifact",
         "plan_sha256",
         "adb_credential_id",
+        "preflight_root_mode",
         "actual_apk_bytes",
         "health_checked_at",
         "result_code",
@@ -606,6 +630,12 @@ def _parse_receipt(value: object) -> InstallJobReceipt:
     cancel_requested = value["cancel_requested"]
     if not isinstance(cancel_requested, bool):
         raise InstallJobStoreError
+    preflight_root_mode = value["preflight_root_mode"]
+    if preflight_root_mode is not None and (
+        not isinstance(preflight_root_mode, str)
+        or preflight_root_mode not in _PREFLIGHT_ROOT_MODES
+    ):
+        raise InstallJobStoreError
     actual = value["actual_apk_bytes"]
     if actual is not None:
         actual = _integer(actual, 1, _MAX_APK_BYTES)
@@ -632,6 +662,7 @@ def _parse_receipt(value: object) -> InstallJobReceipt:
         artifact=_parse_artifact(value["artifact"]),
         plan_sha256=plan_sha256,
         adb_credential_id=credential_id,
+        preflight_root_mode=preflight_root_mode,
         actual_apk_bytes=actual,
         health_checked_at=health,
         result_code=result,
@@ -663,6 +694,14 @@ def _validate_receipt_invariants(receipt: InstallJobReceipt) -> None:
     if (
         receipt.attempt != receipt.executor_generation
         or receipt.revision < receipt.executor_generation
+    ):
+        raise InstallJobStoreError
+    if (
+        receipt.phase in _PREFLIGHT_ROOT_MODE_FORBIDDEN_PHASES
+        and receipt.preflight_root_mode is not None
+    ) or (
+        receipt.phase in _PREFLIGHT_ROOT_MODE_REQUIRED_PHASES
+        and receipt.preflight_root_mode not in _PREFLIGHT_ROOT_MODES
     ):
         raise InstallJobStoreError
     if receipt.phase in _ARTIFACT_REQUIRED_PHASES and receipt.actual_apk_bytes is None:
@@ -1128,6 +1167,7 @@ class InstallJobManager:
         expected_revision: int,
         phase: InstallPhase,
         *,
+        preflight_root_mode: str | None = None,
         actual_apk_bytes: int | None = None,
         health_checked_at: str | None = None,
         result_code: InstallResultCode | None = None,
@@ -1139,6 +1179,16 @@ class InstallJobManager:
         if result_code is not None and not isinstance(result_code, InstallResultCode):
             raise InstallJobTransitionError
         try:
+            parsed_preflight_root_mode = (
+                None
+                if preflight_root_mode is None
+                else _safe_text(preflight_root_mode, 16)
+            )
+            if (
+                parsed_preflight_root_mode is not None
+                and parsed_preflight_root_mode not in _PREFLIGHT_ROOT_MODES
+            ):
+                raise InstallJobStoreError
             parsed_actual = (
                 None
                 if actual_apk_bytes is None
@@ -1172,6 +1222,19 @@ class InstallJobManager:
                 )
                 and self._claimed_jobs.get(job_id) != current.executor_generation
             ):
+                raise InstallJobTransitionError
+
+            learns_preflight_root_mode = (
+                current.phase == InstallPhase.PREFLIGHT
+                and phase == InstallPhase.DOWNLOADING
+            )
+            if learns_preflight_root_mode:
+                if (
+                    parsed_preflight_root_mode is None
+                    or current.preflight_root_mode is not None
+                ):
+                    raise InstallJobTransitionError
+            elif parsed_preflight_root_mode is not None:
                 raise InstallJobTransitionError
 
             if phase == InstallPhase.ARTIFACT_READY:
@@ -1226,6 +1289,11 @@ class InstallJobManager:
                 revision=current.revision + 1,
                 updated_at=_timestamp(self._now()),
                 phase=phase,
+                preflight_root_mode=(
+                    current.preflight_root_mode
+                    if parsed_preflight_root_mode is None
+                    else parsed_preflight_root_mode
+                ),
                 actual_apk_bytes=(
                     current.actual_apk_bytes if parsed_actual is None else parsed_actual
                 ),
