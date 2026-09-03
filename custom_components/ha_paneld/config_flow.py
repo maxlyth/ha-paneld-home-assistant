@@ -83,7 +83,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _finalizer_job_id: str | None = None
     _finalization_owner_task: asyncio.Task[Any] | None = None
     _release_after_finalization = False
-    _finalizer_release_scheduled = False
+    _finalizer_release_task: asyncio.Task[None] | None = None
+    _removed_release_retry_started = False
     _flow_removed = False
 
     async def async_step_user(
@@ -644,8 +645,29 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         """Serialize finalization attempts made through this individual flow."""
         if self._flow_removed:
             return self.async_abort(reason="install_worker_stopped")
-        if self._finalization_owner_task is not None:
-            return self._show_install_result_retry(receipt, "install_finalization_busy")
+        previous_owner = self._finalization_owner_task
+        if previous_owner is not None:
+            release_task = self._finalizer_release_task
+            if not previous_owner.done() or (
+                release_task is not None and not release_task.done()
+            ):
+                return self._show_install_result_retry(
+                    receipt, "install_finalization_busy"
+                )
+            try:
+                await self._async_release_finalizer()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return self._show_install_result_retry(
+                    receipt, "install_finalization_retry"
+                )
+            if self._finalizer_job_id is not None:
+                return self._show_install_result_retry(
+                    receipt, "install_finalization_retry"
+                )
+            if self._flow_removed:
+                return self.async_abort(reason="install_worker_stopped")
 
         # Reserve this flow before the first await. Removal can then defer a safe
         # release even while executor lookup or lease acquisition is in flight.
@@ -654,6 +676,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="install_failed")
         self._finalizer_job_id = receipt.job_id
         self._finalization_owner_task = owner
+        self._removed_release_retry_started = False
         try:
             return await self._async_finalize_healthy_install_locked(manager, receipt)
         except asyncio.CancelledError:
@@ -871,30 +894,87 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def _finalization_done(self, _task: asyncio.Task[Any]) -> None:
         """Release a removed flow's lease only after its finalizer has exited."""
-        if self._release_after_finalization:
-            self._schedule_finalizer_release()
+        if not self._release_after_finalization:
+            return
+        release_task = self._finalizer_release_task
+        if release_task is not None or self._removed_release_retry_started:
+            return
+        self._schedule_finalizer_release()
 
     def _schedule_finalizer_release(self) -> None:
         """Schedule non-blocking finalizer release from a synchronous callback."""
-        job_id = self._finalizer_job_id
-        if job_id is None or self._finalizer_release_scheduled:
-            return
-        self._finalizer_release_scheduled = True
-        self.hass.async_create_task(
-            self._async_release_finalizer(),
-            f"release ha-paneld install finalizer {job_id}",
-        )
+        self._ensure_finalizer_release_task()
 
     async def _async_release_finalizer(self) -> None:
-        """Release this flow's lease and clear only local finalization state."""
+        """Release this flow's lease without transferring caller cancellation."""
+        task = self._ensure_finalizer_release_task()
+        if task is not None:
+            try:
+                await asyncio.shield(task)
+            finally:
+                if task.done() and self._finalizer_release_task is task:
+                    self._finalizer_release_task = None
+
+    def _ensure_finalizer_release_task(self) -> asyncio.Task[None] | None:
+        """Return one process-tracked release task for the retained lease identity."""
+        task = self._finalizer_release_task
+        if task is not None:
+            return task
+
         job_id = self._finalizer_job_id
         executor = self._install_executor
+        if job_id is None or executor is None:
+            # No executor means lease acquisition never started. There is no
+            # process-wide ownership to release, only the optimistic local guard.
+            self._clear_finalizer_state(job_id)
+            return None
+
+        task = self.hass.async_create_task(
+            self._async_run_finalizer_release(job_id, executor),
+            f"release ha-paneld install finalizer {job_id}",
+        )
+        self._finalizer_release_task = task
+        task.add_done_callback(self._finalizer_release_done)
+        return task
+
+    async def _async_run_finalizer_release(
+        self, job_id: str, executor: InstallExecutor
+    ) -> None:
+        """Keep the lease coordinates durable in memory until release succeeds."""
+        await executor.async_release_finalizer(job_id, self.flow_id)
+        if self._finalizer_job_id == job_id and self._install_executor is executor:
+            self._clear_finalizer_state(job_id)
+
+    def _finalizer_release_done(self, task: asyncio.Task[None]) -> None:
+        """Permit a failed release to be retried without hiding its coordinates."""
+        if self._finalizer_release_task is task:
+            self._finalizer_release_task = None
+        failed = task.cancelled()
+        if not failed:
+            try:
+                task.result()
+            except Exception:
+                failed = True
+                _LOGGER.exception("Unable to release install finalizer")
+        if (
+            failed
+            and self._flow_removed
+            and self._finalizer_job_id is not None
+            and not self._removed_release_retry_started
+        ):
+            # A removed flow has no future UI submission to trigger cleanup.
+            # Retry once; the executor operation is exact-owner and idempotent.
+            self._removed_release_retry_started = True
+            self._schedule_finalizer_release()
+
+    def _clear_finalizer_state(self, job_id: str | None) -> None:
+        """Clear local ownership only if it still describes this release."""
+        if self._finalizer_job_id != job_id:
+            return
         self._finalizer_job_id = None
         self._finalization_owner_task = None
         self._release_after_finalization = False
-        self._finalizer_release_scheduled = False
-        if job_id is not None and executor is not None:
-            await executor.async_release_finalizer(job_id, self.flow_id)
+        self._removed_release_retry_started = False
 
     def _address_is_configured(self, address: str) -> bool:
         """Check the existing endpoint identity without contacting the panel."""

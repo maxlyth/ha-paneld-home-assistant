@@ -2048,6 +2048,190 @@ async def test_removal_during_lease_acquisition_cannot_leak_finalizer(
     verify.assert_not_awaited()
 
 
+async def test_cancellation_at_release_lock_keeps_lease_retryable(
+    hass: HomeAssistant,
+) -> None:
+    """Caller cancellation cannot orphan a lease or duplicate its release."""
+    receipt = _receipt(InstallPhase.HEALTHY_UNCLAIMED)
+    manager = _manager_for(receipt)
+    executor = _executor_for()
+    flow = _direct_result_flow(hass, receipt, executor)
+    owner: str | None = None
+    release_started = asyncio.Event()
+    allow_first_release = asyncio.Event()
+    release_count = 0
+
+    async def _acquire(_job_id: str, flow_id: str) -> bool:
+        nonlocal owner
+        if owner is None:
+            owner = flow_id
+            return True
+        return owner == flow_id
+
+    async def _release(_job_id: str, flow_id: str) -> None:
+        nonlocal owner, release_count
+        release_count += 1
+        if release_count == 1:
+            release_started.set()
+            await allow_first_release.wait()
+        if owner == flow_id:
+            owner = None
+
+    executor.async_acquire_finalizer.side_effect = _acquire
+    executor.async_release_finalizer.side_effect = _release
+    revalidate = AsyncMock(
+        side_effect=InstallNetworkError(InstallNetworkErrorCode.RESOLUTION_FAILED)
+    )
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            revalidate,
+        ),
+    ):
+        first_task = hass.async_create_task(flow.async_step_install_result())
+        await release_started.wait()
+        first_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_task
+
+        assert flow._finalizer_job_id == receipt.job_id
+        assert flow._finalizer_release_task is not None
+        busy = await flow.async_step_install_result()
+        assert busy["type"] is FlowResultType.FORM
+        assert busy["errors"] == {"base": "install_finalization_busy"}
+        assert executor.async_acquire_finalizer.await_count == 1
+        assert executor.async_release_finalizer.await_count == 1
+
+        allow_first_release.set()
+        await flow._finalizer_release_task
+        await asyncio.sleep(0)
+        assert flow._finalizer_job_id is None
+
+        retry = await flow.async_step_install_result()
+
+    assert retry["type"] is FlowResultType.FORM
+    assert retry["errors"] == {"base": "install_finalization_retry"}
+    assert executor.async_acquire_finalizer.await_count == 2
+    assert executor.async_release_finalizer.await_count == 2
+    assert owner is None
+    assert flow._finalizer_job_id is None
+
+
+async def test_completed_owner_retries_a_failed_finalizer_release(
+    hass: HomeAssistant,
+) -> None:
+    """A later submission can finish cleanup left by a failed owner task."""
+    receipt = _receipt(InstallPhase.HEALTHY_UNCLAIMED)
+    manager = _manager_for(receipt)
+    executor = _executor_for()
+    flow = _direct_result_flow(hass, receipt, executor)
+    executor.async_release_finalizer.side_effect = [RuntimeError, None, None]
+    revalidate = AsyncMock(
+        side_effect=InstallNetworkError(InstallNetworkErrorCode.RESOLUTION_FAILED)
+    )
+
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            revalidate,
+        ),
+    ):
+        first_task = hass.async_create_task(flow.async_step_install_result())
+        with pytest.raises(RuntimeError):
+            await first_task
+        await asyncio.sleep(0)
+
+        assert flow._finalizer_job_id == receipt.job_id
+        assert flow._finalization_owner_task is first_task
+        assert first_task.done()
+
+        retry = await flow.async_step_install_result()
+
+    assert retry["type"] is FlowResultType.FORM
+    assert retry["errors"] == {"base": "install_finalization_retry"}
+    assert executor.async_acquire_finalizer.await_count == 2
+    assert executor.async_release_finalizer.await_count == 3
+    assert flow._finalizer_job_id is None
+    assert flow._finalization_owner_task is None
+
+
+async def test_removed_flow_retries_failed_background_release(
+    hass: HomeAssistant,
+) -> None:
+    """A removed flow retries cleanup because no later UI request can do so."""
+    receipt = _receipt(InstallPhase.HEALTHY_UNCLAIMED)
+    executor = _executor_for()
+    executor.async_release_finalizer.side_effect = [RuntimeError, None]
+    flow = _direct_result_flow(hass, receipt, executor)
+    flow._finalizer_job_id = receipt.job_id
+
+    flow.async_remove()
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    assert executor.async_release_finalizer.await_count == 2
+    assert flow._finalizer_job_id is None
+    assert flow._finalization_owner_task is None
+
+
+async def test_removed_active_owner_shares_background_release_retry_budget(
+    hass: HomeAssistant,
+) -> None:
+    """Deferred owner cleanup cannot add a third removed-flow release attempt."""
+    receipt = _receipt(InstallPhase.HEALTHY_UNCLAIMED)
+    manager = _manager_for(receipt)
+    executor = _executor_for()
+    flow = _direct_result_flow(hass, receipt, executor)
+    release_started = asyncio.Event()
+    allow_failure = asyncio.Event()
+    release_count = 0
+
+    async def _release(_job_id: str, _flow_id: str) -> None:
+        nonlocal release_count
+        release_count += 1
+        if release_count == 1:
+            release_started.set()
+            await allow_failure.wait()
+        raise RuntimeError
+
+    executor.async_release_finalizer.side_effect = _release
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            AsyncMock(
+                side_effect=InstallNetworkError(
+                    InstallNetworkErrorCode.RESOLUTION_FAILED
+                )
+            ),
+        ),
+    ):
+        owner = hass.async_create_task(flow.async_step_install_result())
+        await release_started.wait()
+        flow.async_remove()
+        allow_failure.set()
+        with pytest.raises(RuntimeError):
+            await owner
+        for _ in range(4):
+            await asyncio.sleep(0)
+
+    assert executor.async_release_finalizer.await_count == 2
+    assert flow._finalizer_job_id == receipt.job_id
+    assert flow._finalization_owner_task is owner
+    assert flow._removed_release_retry_started
+
+
 async def test_same_flow_double_submit_runs_one_finalizer(
     hass: HomeAssistant,
 ) -> None:
