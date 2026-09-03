@@ -253,6 +253,7 @@ async def test_diagnostics_download_uses_privacy_safe_entry_filename(
         )
         assert private_panel_id not in response.headers["Content-Disposition"]
         payload = await response.json()
+        assert payload["data"]["entry"][CONF_ADDRESS] == "**REDACTED**"
         assert payload["data"]["health"]["panel_id"] == "**REDACTED**"
 
         device = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)[
@@ -338,6 +339,46 @@ async def test_setup_contains_unexpected_install_resume_failure(
     assert private_detail not in caplog.text
     assert "Unable to resume durable ha-paneld install jobs" in caplog.text
     assert "Unable to reconcile a durable ha-paneld install receipt" in caplog.text
+
+
+async def test_setup_propagates_cancelled_install_resume(
+    hass: HomeAssistant,
+) -> None:
+    """Best-effort containment must not consume task cancellation."""
+    entry = _entry(hass)
+
+    with patch(
+        "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+
+async def test_setup_propagates_cancelled_install_reconciliation(
+    hass: HomeAssistant,
+) -> None:
+    """Receipt reconciliation must not consume task cancellation."""
+    entry = _entry(hass)
+
+    with (
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
 
 
 async def test_setup_survives_install_artifact_resume_failure(
@@ -778,6 +819,40 @@ async def test_setup_contains_unexpected_finalizer_release_failure(
     _assert_healthy_entry_loaded(hass, entry)
     assert private_detail not in caplog.text
     assert "Unable to release a durable ha-paneld install finalizer" in caplog.text
+
+
+async def test_setup_propagates_cancelled_finalizer_release(
+    hass: HomeAssistant,
+) -> None:
+    """Finalizer cleanup must not consume task cancellation."""
+    entry = _entry(hass)
+    receipt = _receipt()
+    executor, manager = _installer_doubles((receipt,))
+    executor.async_release_finalizer.side_effect = asyncio.CancelledError
+
+    with (
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            AsyncMock(return_value=STATUS),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.ha_paneld.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
 
 
 @pytest.mark.parametrize(
