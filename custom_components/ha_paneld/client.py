@@ -23,6 +23,31 @@ if TYPE_CHECKING:
     from .status import PanelStatus
 
 _CONFIG_HASH_PATTERN = re.compile(r"^[0-9a-f]{8}$")
+_HEALTH_FIELD_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_PANEL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9_]*[a-z0-9])?$")
+_VERSION_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+)
+_INSTALL_TIME_PATTERN = re.compile(r"^(0|[1-9][0-9]{0,18})$")
+_MAX_VERSION_LENGTH = 63
+_MAX_ANDROID_LONG = 2**63 - 1
+_KNOWN_HEALTH_FIELDS = frozenset(
+    {
+        "panel",
+        "build",
+        "cfg",
+        "ha",
+        "ha_src",
+        "ha_refused",
+        "ha_net",
+        "ha_resp",
+        "ha_net_p95",
+        "ha_net_n",
+        "ha_net_miss",
+        "ha_net_age",
+    }
+)
 _LIFECYCLE_STATES = frozenset(
     {"normal", "shutting_down", "starting", "back_online", "connection_lost"}
 )
@@ -114,22 +139,48 @@ def normalize_address(value: str) -> PanelAddress:
 
 def parse_health_response(body: str) -> PanelHealth:
     """Parse the stable health line while ignoring future appended tokens."""
-    tokens = body.strip().split()
-    if len(tokens) < 5 or tokens[0] != "ha-paneld" or not tokens[1]:
+    if len(body) > MAX_HEALTH_RESPONSE_BYTES:
+        raise InvalidResponseError
+    line = body[:-1] if body.endswith("\n") else body
+    if any(not " " <= character <= "~" for character in line):
+        raise InvalidResponseError
+    tokens = line.split(" ")
+    if (
+        len(tokens) < 5
+        or tokens[0] != "ha-paneld"
+        or len(tokens[1]) > _MAX_VERSION_LENGTH
+        or _VERSION_PATTERN.fullmatch(tokens[1]) is None
+    ):
         raise InvalidResponseError
 
     fields: dict[str, str] = {}
     for token in tokens[2:]:
-        key, separator, value = token.partition("=")
-        if separator and key and value:
-            fields.setdefault(key, value)
+        key, _, value = token.partition("=")
+        if (
+            not value
+            or _HEALTH_FIELD_KEY_PATTERN.fullmatch(key) is None
+            or (key in _KNOWN_HEALTH_FIELDS and key in fields)
+        ):
+            raise InvalidResponseError
+        fields.setdefault(key, value)
 
     panel_id = fields.get("panel")
     build = fields.get("build")
     config_hash = fields.get("cfg")
     if (
-        not panel_id
-        or not build
+        panel_id is None
+        or _PANEL_ID_PATTERN.fullmatch(panel_id) is None
+        or build is None
+        or not (
+            len(build) <= _MAX_VERSION_LENGTH
+            and (
+                _VERSION_PATTERN.fullmatch(build) is not None
+                or (
+                    _INSTALL_TIME_PATTERN.fullmatch(build) is not None
+                    and int(build) <= _MAX_ANDROID_LONG
+                )
+            )
+        )
         or config_hash is None
         or _CONFIG_HASH_PATTERN.fullmatch(config_hash) is None
     ):

@@ -15,6 +15,7 @@ from custom_components.ha_paneld.client import (
     HaPaneldClient,
     InvalidAddressError,
     InvalidResponseError,
+    PanelHealth,
     normalize_address,
     parse_health_response,
 )
@@ -113,12 +114,114 @@ def test_parse_health_fixture() -> None:
 def test_parser_ignores_future_tokens_and_values() -> None:
     """Additive health tokens do not invalidate an otherwise stable response."""
     health = parse_health_response(
-        "ha-paneld 1.2.3 panel=test build=abc cfg=0123abcd "
+        "ha-paneld 1.2.3 panel=test build=1234 cfg=0123abcd "
         "ha=future_state future=value ha_refused=1\n"
     )
     assert health.panel_id == "test"
     assert health.ha_state is None
     assert health.ha_subscription_refused is True
+
+
+def test_parser_accepts_current_android_network_suffix() -> None:
+    """Current unconsumed Android health fields remain additive and harmless."""
+    health = parse_health_response(
+        "ha-paneld 0.9.7-rc3 panel=test_panel build=1725312345678 "
+        "cfg=0123abcd ha=normal ha_net=healthy ha_resp=warning "
+        "ha_net_p95=4200 ha_net_n=30 ha_net_miss=3 ha_net_age=4000\n"
+    )
+
+    assert health == PanelHealth(
+        version="0.9.7-rc3",
+        panel_id="test_panel",
+        build="1725312345678",
+        config_hash="0123abcd",
+        ha_state="normal",
+    )
+
+
+def test_parser_accepts_metadata_boundaries_and_build_fallback() -> None:
+    """The response envelope, version limit and Android fallback remain valid."""
+    version = f"1.2.3-{'a' * 57}"
+    health = parse_health_response(
+        f"ha-paneld {version} panel=test build={version} cfg=0123abcd"
+    )
+    assert health == PanelHealth(version, "test", version, "0123abcd")
+
+    legacy_panel_id = "a" * 469
+    legacy_health = parse_health_response(
+        f"ha-paneld 0.0.0 panel={legacy_panel_id} build=0 cfg=0123abcd"
+    )
+    assert legacy_health == PanelHealth("0.0.0", legacy_panel_id, "0", "0123abcd")
+
+    maximum_install_time = str(2**63 - 1)
+    timestamp_health = parse_health_response(
+        f"ha-paneld 1.2.3 panel=test build={maximum_install_time} cfg=0123abcd"
+    )
+    assert timestamp_health.build == maximum_install_time
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        "panel=other",
+        "build=5678",
+        "cfg=89abcdef",
+        "ha=normal ha=starting",
+        "ha_src=mqtt ha_src=socket",
+        "ha_refused=1 ha_refused=1",
+        "ha_net=healthy ha_net=warning",
+    ],
+)
+def test_parser_rejects_duplicate_known_fields(duplicate: str) -> None:
+    """Consumed fields cannot carry an order-dependent second value."""
+    body = f"ha-paneld 1.2.3 panel=test build=1234 cfg=0123abcd {duplicate}"
+
+    with pytest.raises(InvalidResponseError):
+        parse_health_response(body)
+
+
+@pytest.mark.parametrize("suffix", ["future", "future=", "=value"])
+def test_parser_rejects_malformed_suffix_tokens(suffix: str) -> None:
+    """Every additive suffix remains an explicit key-value token."""
+    body = f"ha-paneld 1.2.3 panel=test build=1234 cfg=0123abcd {suffix}"
+
+    with pytest.raises(InvalidResponseError):
+        parse_health_response(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "ha-paneld 1.2 panel=test build=1234 cfg=0123abcd",
+        "ha-paneld 01.2.3 panel=test build=1234 cfg=0123abcd",
+        f"ha-paneld 1.2.3-{'a' * 58} panel=test build=1234 cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=Test-Panel build=1234 cfg=0123abcd",
+        f"ha-paneld 1.2.3 panel={'a' * 470} build=1234 cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=test build=arbitrary cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=test build=9223372036854775808 cfg=0123abcd",
+    ],
+)
+def test_parser_rejects_metadata_outside_android_bounds(body: str) -> None:
+    """Registry-facing metadata must match the current Android producer bounds."""
+    with pytest.raises(InvalidResponseError):
+        parse_health_response(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "ha-paneld\t1.2.3 panel=test build=1234 cfg=0123abcd",
+        "ha-paneld  1.2.3 panel=test build=1234 cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=test\x7f build=1234 cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=test build=1234\x1b cfg=0123abcd",
+        "ha-paneld 1.2.3 panel=test build=1234 cfg=0123abcd future=value\x00",
+        "ha-paneld 1.2.3 panel=test build=1234 cfg=0123abcd\nsecond=line",
+    ],
+)
+def test_parser_rejects_control_bearing_lines(body: str) -> None:
+    """Control characters cannot reach HA diagnostics or registry metadata."""
+    with pytest.raises(InvalidResponseError):
+        parse_health_response(body)
 
 
 @pytest.mark.parametrize(
