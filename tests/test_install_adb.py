@@ -1101,6 +1101,125 @@ async def test_stage_rejects_unsafe_local_apk_metadata_before_connection(
         next(device_iterator)
 
 
+def test_verified_apk_identity_requires_current_effective_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    status = apk.lstat()
+    monkeypatch.setattr(install_adb.os, "geteuid", lambda: status.st_uid + 1)
+
+    with pytest.raises(InstallAdbError) as caught:
+        install_adb._verified_apk_identity(status, len(APK_BYTES))
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+
+
+def test_verified_apk_identity_requires_a_regular_file(tmp_path: Path) -> None:
+    fifo = tmp_path / "artifact.apk"
+    os.mkfifo(fifo, mode=0o600)
+    status = fifo.lstat()
+    assert status.st_nlink == 1
+    assert status.st_size == 0
+
+    with pytest.raises(InstallAdbError) as caught:
+        install_adb._verified_apk_identity(status, 0)
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+
+
+def test_verified_apk_identity_requires_the_descriptor_size(tmp_path: Path) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+
+    with pytest.raises(InstallAdbError) as caught:
+        install_adb._verified_apk_identity(apk.lstat(), len(APK_BYTES) + 1)
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+
+
+def test_verified_apk_identity_requires_private_mode(tmp_path: Path) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    apk.chmod(0o644)
+
+    with pytest.raises(InstallAdbError) as caught:
+        install_adb._verified_apk_identity(apk.lstat(), len(APK_BYTES))
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+
+
+def test_verified_apk_identity_requires_one_filesystem_link(tmp_path: Path) -> None:
+    apk = tmp_path / "artifact.apk"
+    hardlink = tmp_path / "artifact-hardlink.apk"
+    _write_private_apk(apk)
+    os.link(apk, hardlink)
+    assert apk.lstat().st_nlink == 2
+
+    with pytest.raises(InstallAdbError) as caught:
+        install_adb._verified_apk_identity(apk.lstat(), len(APK_BYTES))
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+
+
+def test_verified_apk_identity_includes_nanosecond_timestamps(tmp_path: Path) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    status = apk.lstat()
+
+    assert install_adb._verified_apk_identity(status, len(APK_BYTES)) == (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_uid,
+        status.st_nlink,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
+def test_open_verified_apk_compares_preopen_path_with_open_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    descriptor: InstallDescriptor,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    other_apk = tmp_path / "other.apk"
+    _write_private_apk(apk)
+    _write_private_apk(other_apk)
+    original_open = os.open
+    original_lstat = os.lstat
+    path_stat_calls = 0
+
+    def _open_other(path: Any, flags: int, *args: Any) -> int:
+        if Path(path) == apk:
+            return original_open(other_apk, flags, *args)
+        return original_open(path, flags, *args)
+
+    def _follow_opened_identity(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        nonlocal path_stat_calls
+        if Path(path) == apk:
+            path_stat_calls += 1
+            if path_stat_calls > 1:
+                return original_lstat(other_apk, *args, **kwargs)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(install_adb.os, "open", _open_other)
+    monkeypatch.setattr(install_adb.os, "lstat", _follow_opened_identity)
+
+    try:
+        file_descriptor = install_adb._open_verified_apk(apk, descriptor)
+    except InstallAdbError as caught:
+        assert caught.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    else:
+        os.close(file_descriptor)
+        pytest.fail("mismatched pathname and opened descriptor were accepted")
+
+    assert path_stat_calls == 1
+
+
 async def test_stage_fifo_swap_at_open_boundary_fails_without_blocking(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1147,6 +1266,85 @@ async def test_stage_fifo_swap_at_open_boundary_fails_without_blocking(
         next(device_iterator)
 
 
+def test_open_verified_apk_rejects_post_hash_path_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    descriptor: InstallDescriptor,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    replacement = tmp_path / "replacement.apk"
+    displaced = tmp_path / "displaced.apk"
+    _write_private_apk(apk)
+    _write_private_apk(replacement)
+    initial_status = apk.lstat()
+    original_fstat = os.fstat
+    original_read = os.read
+    rebound = False
+
+    def _rebind_after_hash(file_descriptor: int, size: int) -> bytes:
+        nonlocal rebound
+        data = original_read(file_descriptor, size)
+        if not data and not rebound:
+            apk.rename(displaced)
+            replacement.rename(apk)
+            rebound = True
+        return data
+
+    def _stable_opened_status(file_descriptor: int) -> os.stat_result:
+        if rebound:
+            return initial_status
+        return original_fstat(file_descriptor)
+
+    monkeypatch.setattr(install_adb.os, "read", _rebind_after_hash)
+    monkeypatch.setattr(install_adb.os, "fstat", _stable_opened_status)
+
+    try:
+        file_descriptor = install_adb._open_verified_apk(apk, descriptor)
+    except InstallAdbError as caught:
+        assert caught.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    else:
+        os.close(file_descriptor)
+        pytest.fail("pathname rebound after hashing was accepted")
+
+    assert rebound
+    assert apk.lstat().st_ino != initial_status.st_ino
+
+
+def test_open_verified_apk_rechecks_descriptor_metadata_after_hash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    descriptor: InstallDescriptor,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    initial_status = apk.lstat()
+    original_read = os.read
+    metadata_changed = False
+
+    def _change_mode_after_hash(file_descriptor: int, size: int) -> bytes:
+        nonlocal metadata_changed
+        data = original_read(file_descriptor, size)
+        if not data and not metadata_changed:
+            os.fchmod(file_descriptor, 0o400)
+            metadata_changed = True
+        return data
+
+    monkeypatch.setattr(install_adb.os, "read", _change_mode_after_hash)
+    monkeypatch.setattr(install_adb.os, "lstat", lambda _path: initial_status)
+
+    try:
+        file_descriptor = install_adb._open_verified_apk(apk, descriptor)
+    except InstallAdbError as caught:
+        assert caught.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    else:
+        os.close(file_descriptor)
+        pytest.fail("opened descriptor metadata change after hashing was accepted")
+    finally:
+        apk.chmod(0o600)
+
+    assert metadata_changed
+
+
 async def test_stage_rejects_local_apk_growth_during_bounded_hash(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1184,6 +1382,31 @@ async def test_stage_rejects_local_apk_growth_during_bounded_hash(
     assert grew
     with pytest.raises(StopIteration):
         next(device_iterator)
+
+
+def test_open_verified_apk_rejects_oversize_before_a_second_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    descriptor: InstallDescriptor,
+) -> None:
+    apk = tmp_path / "artifact.apk"
+    _write_private_apk(apk)
+    read_calls = 0
+
+    def _oversize_then_fail(_file_descriptor: int, _size: int) -> bytes:
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls == 1:
+            return APK_BYTES + b"x"
+        raise AssertionError("oversize input was read again")
+
+    monkeypatch.setattr(install_adb.os, "read", _oversize_then_fail)
+
+    with pytest.raises(InstallAdbError) as caught:
+        install_adb._open_verified_apk(apk, descriptor)
+
+    assert caught.value.code is InstallAdbErrorCode.LOCAL_ARTIFACT_INVALID
+    assert read_calls == 1
 
 
 async def test_preexisting_fixed_staging_path_is_refused_before_filesync(
