@@ -13,7 +13,7 @@ import json
 import os
 import re
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -22,7 +22,7 @@ from pathlib import Path
 from secrets import token_hex
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util.ulid import bytes_to_ulid, ulid_to_bytes_or_none
 
@@ -825,6 +825,34 @@ def _serialize_document(
     }
 
 
+def _validated_document_for_save(
+    jobs: dict[str, InstallJobReceipt],
+) -> dict[str, Any]:
+    """Strictly round-trip the exact candidate before Store may write it."""
+    document = _serialize_document(jobs)
+    wrapped = {
+        "version": _STORE_VERSION,
+        "minor_version": 1,
+        "key": _STORE_KEY,
+        "data": document,
+    }
+    try:
+        body = json.dumps(
+            wrapped,
+            ensure_ascii=True,
+            allow_nan=False,
+            indent=2,
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as err:
+        raise InstallJobStoreError from err
+    if not 1 <= len(body) <= _MAX_STORE_BYTES:
+        raise InstallJobStoreError
+    verified = _parse_store_document(body)
+    if verified != jobs or _serialize_document(verified) != document:
+        raise InstallJobStoreError
+    return document
+
+
 def _store_presence(path_text: str) -> tuple[bool, bool]:
     path = Path(path_text)
     try:
@@ -1023,18 +1051,67 @@ class InstallJobManager:
         return self._jobs
 
     async def _async_save_locked(self, jobs: dict[str, InstallJobReceipt]) -> None:
-        document = _serialize_document(jobs)
         try:
-            await self._store.async_save(document)
-            existed, _corrupt = await self._hass.async_add_executor_job(
-                _store_presence, self._store.path
-            )
-            if not existed:
+            document = _validated_document_for_save(jobs)
+            if self._jobs is None or any(
+                candidate.updated_at < previous.updated_at
+                for job_id, previous in self._jobs.items()
+                if (candidate := jobs.get(job_id)) is not None
+            ):
                 raise InstallJobStoreError
-            verified = await self._hass.async_add_executor_job(
-                _read_durable_jobs, self._store.path
+            cancellation: asyncio.CancelledError | None = None
+            _save_result, failure, cancellation = await self._async_drain_operation(
+                lambda: self._async_store_save(document),
+                name=f"{DOMAIN}-install-job-store-save",
+                cancellation=cancellation,
             )
-            if verified != jobs or _serialize_document(verified) != document:
+            presence, presence_error, cancellation = await self._async_drain_operation(
+                lambda: self._hass.async_add_executor_job(
+                    _store_presence, self._store.path
+                ),
+                name=f"{DOMAIN}-install-job-store-presence",
+                cancellation=cancellation,
+            )
+            if failure is None:
+                failure = presence_error
+
+            verified: dict[str, InstallJobReceipt] | None = None
+            if presence_error is None:
+                existed, corrupt = presence
+                if not existed or corrupt:
+                    if failure is None:
+                        failure = InstallJobStoreError()
+                else:
+                    (
+                        verified_result,
+                        read_error,
+                        cancellation,
+                    ) = await self._async_drain_operation(
+                        lambda: self._hass.async_add_executor_job(
+                            _read_durable_jobs, self._store.path
+                        ),
+                        name=f"{DOMAIN}-install-job-store-readback",
+                        cancellation=cancellation,
+                    )
+                    if failure is None:
+                        failure = read_error
+                    if read_error is None:
+                        verified = verified_result
+                        if (
+                            verified != jobs
+                            or _serialize_document(verified) != document
+                        ) and failure is None:
+                            failure = InstallJobStoreError()
+
+            if cancellation is not None:
+                if failure is not None:
+                    raise cancellation from failure
+                raise cancellation
+            if failure is not None:
+                if isinstance(failure, asyncio.CancelledError):
+                    raise InstallJobStoreError from failure
+                raise failure
+            if verified is None:
                 raise InstallJobStoreError
         except asyncio.CancelledError:
             self._invalidate_cache()
@@ -1044,6 +1121,46 @@ class InstallJobManager:
             raise InstallJobStoreError from err
         self._jobs = verified
         self._reconcile_claims()
+
+    async def _async_store_save(self, document: dict[str, Any]) -> None:
+        """Enter Store's immediate-write path without an intervening yield."""
+        if self._hass.state in {CoreState.stopping, CoreState.final_write}:
+            raise InstallJobStoreError
+        await self._store.async_save(document)
+
+    async def _async_drain_operation(
+        self,
+        operation_factory: Callable[[], Awaitable[Any]],
+        *,
+        name: str,
+        cancellation: asyncio.CancelledError | None,
+    ) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
+        """Drain one authority operation despite repeated caller cancellation."""
+        operation_task = self._hass.async_create_task(
+            self._async_operation_outcome(operation_factory),
+            name,
+            eager_start=False,
+        )
+        while not operation_task.done():
+            try:
+                await asyncio.shield(operation_task)
+            except asyncio.CancelledError as err:
+                if cancellation is None:
+                    cancellation = err
+        result, error = operation_task.result()
+        return result, error, cancellation
+
+    @staticmethod
+    async def _async_operation_outcome(
+        operation_factory: Callable[[], Awaitable[Any]],
+    ) -> tuple[Any, BaseException | None]:
+        """Capture an operation result so cancelled shield wrappers stay quiet."""
+        try:
+            return await operation_factory(), None
+        except asyncio.CancelledError as err:
+            return None, err
+        except Exception as err:
+            return None, err
 
     async def _async_load_durable_locked(self) -> dict[str, InstallJobReceipt]:
         """Load two equal, independently verified mutation-authority snapshots."""

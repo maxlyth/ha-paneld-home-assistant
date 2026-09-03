@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import os
+import threading
 from collections.abc import Generator
 from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from custom_components.ha_paneld import install_jobs
@@ -1839,6 +1841,430 @@ async def test_swallowed_store_write_failure_fails_closed(hass: HomeAssistant) -
         await create(InstallJobManager(hass, now=Clock()))
 
     assert reader.call_count == 1
+
+
+async def test_cancelled_save_drains_before_a_new_writer_can_start(
+    hass: HomeAssistant,
+) -> None:
+    """Cancellation cannot release receipt authority ahead of Store's writer."""
+    persisted: dict[str, InstallJobReceipt] = {}
+    persisted_lock = threading.Lock()
+    release_old_writer = threading.Event()
+    release_presence = threading.Event()
+    release_readback = threading.Event()
+    old_writer_started = asyncio.Event()
+    new_writer_started = asyncio.Event()
+    post_save_presence_started = threading.Event()
+    post_save_readback_started = threading.Event()
+    old_writer_finished = threading.Event()
+    blocked_presence = False
+    blocked_readback = False
+    writes: list[dict[str, InstallJobReceipt]] = []
+    writer = MagicMock()
+    writer.path = "/secure/install_jobs"
+
+    def commit(
+        snapshot: dict[str, InstallJobReceipt],
+        release: threading.Event | None,
+    ) -> None:
+        if release is not None and not release.wait(timeout=5):
+            raise RuntimeError("timed out waiting to release old writer")
+        with persisted_lock:
+            persisted.clear()
+            persisted.update(snapshot)
+        if release is not None:
+            old_writer_finished.set()
+
+    async def save(document: dict[str, Any]) -> None:
+        snapshot = install_jobs._parse_document(copy.deepcopy(document))
+        writes.append(snapshot)
+        if len(writes) == 1:
+            old_writer_started.set()
+            release = release_old_writer
+        else:
+            new_writer_started.set()
+            release = None
+        await hass.async_add_executor_job(commit, snapshot, release)
+
+    def presence(_path: str) -> tuple[bool, bool]:
+        nonlocal blocked_presence
+        if old_writer_finished.is_set() and not blocked_presence:
+            blocked_presence = True
+            post_save_presence_started.set()
+            if not release_presence.wait(timeout=5):
+                raise RuntimeError("timed out waiting to release store presence")
+        with persisted_lock:
+            return bool(persisted), False
+
+    def read(_path: str) -> dict[str, InstallJobReceipt]:
+        nonlocal blocked_readback
+        if not blocked_readback:
+            blocked_readback = True
+            post_save_readback_started.set()
+            if not release_readback.wait(timeout=5):
+                raise RuntimeError("timed out waiting to release store readback")
+        with persisted_lock:
+            return persisted.copy()
+
+    writer.async_save = AsyncMock(side_effect=save)
+    first_task: asyncio.Task[tuple[InstallJobReceipt, bool]] | None = None
+    second_task: asyncio.Task[tuple[InstallJobReceipt, bool]] | None = None
+    try:
+        with (
+            patch.object(install_jobs, "Store", return_value=writer),
+            patch.object(install_jobs, "_store_presence", side_effect=presence),
+            patch.object(install_jobs, "_read_durable_jobs", side_effect=read),
+            patch.object(
+                hass,
+                "async_add_executor_job",
+                side_effect=lambda target, *args: asyncio.to_thread(target, *args),
+            ),
+        ):
+            manager = InstallJobManager(hass, now=Clock())
+            first_task = asyncio.create_task(create(manager))
+            await asyncio.wait_for(old_writer_started.wait(), timeout=1)
+
+            first_task.cancel()
+            await asyncio.sleep(0)
+            first_task.cancel()
+            await asyncio.sleep(0)
+            assert not first_task.done()
+
+            second_task = asyncio.create_task(
+                create(
+                    manager,
+                    install_target=target(
+                        "panel-two.local", "SERIAL-2", "192.168.1.24"
+                    ),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not new_writer_started.is_set()
+            assert len(writes) == 1
+
+            release_old_writer.set()
+            assert await asyncio.to_thread(post_save_presence_started.wait, 1)
+            first_task.cancel()
+            await asyncio.sleep(0)
+            assert not first_task.done()
+            assert not new_writer_started.is_set()
+
+            release_presence.set()
+            assert await asyncio.to_thread(post_save_readback_started.wait, 1)
+            first_task.cancel()
+            await asyncio.sleep(0)
+            assert not first_task.done()
+            assert not new_writer_started.is_set()
+
+            release_readback.set()
+            with pytest.raises(asyncio.CancelledError):
+                await first_task
+            newest, created = await asyncio.wait_for(second_task, timeout=1)
+
+            assert created
+            assert new_writer_started.is_set()
+            assert len(writes) == 2
+            durable = await InstallJobManager(hass, now=Clock()).async_list()
+            assert newest in durable
+            assert len(durable) == 2
+            with persisted_lock:
+                assert persisted == writes[-1]
+    finally:
+        release_old_writer.set()
+        release_presence.set()
+        release_readback.set()
+        for task in (first_task, second_task):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_queued_cancel_never_reaches_store_writer(hass: HomeAssistant) -> None:
+    """A caller cancelled behind the manager lock cannot enqueue a Store write."""
+    release_writer = asyncio.Event()
+    writer_started = asyncio.Event()
+    persisted: dict[str, InstallJobReceipt] = {}
+    writes: list[dict[str, InstallJobReceipt]] = []
+    writer = MagicMock()
+    writer.path = "/secure/install_jobs"
+
+    async def save(document: dict[str, Any]) -> None:
+        snapshot = install_jobs._parse_document(copy.deepcopy(document))
+        writes.append(snapshot)
+        writer_started.set()
+        await release_writer.wait()
+        persisted.clear()
+        persisted.update(snapshot)
+
+    writer.async_save = AsyncMock(side_effect=save)
+    with (
+        patch.object(install_jobs, "Store", return_value=writer),
+        patch.object(
+            install_jobs,
+            "_store_presence",
+            side_effect=lambda _path: (bool(persisted), False),
+        ),
+        patch.object(
+            install_jobs,
+            "_read_durable_jobs",
+            side_effect=lambda _path: persisted.copy(),
+        ),
+    ):
+        manager = InstallJobManager(hass, now=Clock())
+        first_task = asyncio.create_task(create(manager))
+        await asyncio.wait_for(writer_started.wait(), timeout=1)
+        queued_task = asyncio.create_task(
+            create(
+                manager,
+                install_target=target("panel-two.local", "SERIAL-2", "192.168.1.24"),
+            )
+        )
+        await asyncio.sleep(0)
+        assert manager._lock._waiters is not None  # type: ignore[attr-defined]
+        assert any(
+            not waiter.done()
+            for waiter in manager._lock._waiters  # type: ignore[attr-defined]
+        )
+        queued_task.cancel()
+        queued_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued_task
+        assert len(writes) == 1
+
+        release_writer.set()
+        first, created = await asyncio.wait_for(first_task, timeout=1)
+        assert created
+        assert (await InstallJobManager(hass, now=Clock()).async_list()) == (first,)
+        assert len(writes) == 1
+
+
+async def test_cancelled_claimed_save_blocks_barrier_and_clears_claim(
+    hass: HomeAssistant,
+) -> None:
+    """A barrier cannot pass a cancelled write or retain its executor claim."""
+    manager = InstallJobManager(hass, now=Clock())
+    staging = await transition_to_staging(manager, (await create(manager))[0].job_id)
+    assert manager._claimed_jobs == {
+        staging.job_id: staging.executor_generation,
+    }
+    real_save = manager._store.async_save
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+
+    async def save(document: dict[str, Any]) -> None:
+        writer_started.set()
+        await release_writer.wait()
+        await real_save(document)
+
+    manager._store.async_save = AsyncMock(side_effect=save)  # type: ignore[method-assign]
+    save_task = asyncio.create_task(
+        manager.async_request_cancel(staging.job_id, staging.revision)
+    )
+    await asyncio.wait_for(writer_started.wait(), timeout=1)
+    save_task.cancel()
+    await asyncio.sleep(0)
+    save_task.cancel()
+    await asyncio.sleep(0)
+    assert not save_task.done()
+
+    barrier_task = asyncio.create_task(
+        manager.async_verify_mutation_barrier(
+            staging.job_id, staging.revision, InstallPhase.STAGING
+        )
+    )
+    await asyncio.sleep(0)
+    assert not barrier_task.done()
+    assert manager._lock._waiters is not None  # type: ignore[attr-defined]
+    assert any(
+        not waiter.done()
+        for waiter in manager._lock._waiters  # type: ignore[attr-defined]
+    )
+
+    release_writer.set()
+    with pytest.raises(asyncio.CancelledError):
+        await save_task
+    assert manager._claimed_jobs == {}
+    with pytest.raises(InstallJobRevisionError):
+        await barrier_task
+
+    durable = await InstallJobManager(hass, now=Clock()).async_get(staging.job_id)
+    assert durable.revision == staging.revision + 1
+    assert durable.cancel_requested
+
+
+async def test_cancelled_failing_save_is_drained_and_invalidates_authority(
+    hass: HomeAssistant,
+) -> None:
+    """Repeated cancellation retrieves a late writer error before lock release."""
+    release_writer = asyncio.Event()
+    writer_started = asyncio.Event()
+    writer = MagicMock()
+    writer.path = "/secure/install_jobs"
+
+    async def save(_document: dict[str, Any]) -> None:
+        writer_started.set()
+        await release_writer.wait()
+        raise RuntimeError("late writer failure")
+
+    writer.async_save = AsyncMock(side_effect=save)
+    with (
+        patch.object(install_jobs, "Store", return_value=writer),
+        patch.object(install_jobs, "_store_presence", return_value=(False, False)),
+        patch.object(install_jobs, "_read_durable_jobs") as reader,
+    ):
+        manager = InstallJobManager(hass, now=Clock())
+        task = asyncio.create_task(create(manager))
+        await asyncio.wait_for(writer_started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        release_writer.set()
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    reader.assert_not_called()
+
+
+async def test_stopping_core_cannot_defer_a_receipt_write(
+    hass: HomeAssistant,
+) -> None:
+    """The manager never lets Store queue authority for final-write time."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    hass.set_state(CoreState.stopping)
+
+    with pytest.raises(InstallJobStoreError):
+        await manager.async_request_cancel(receipt.job_id, receipt.revision)
+
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_FINAL_WRITE)
+    await hass.async_block_till_done()
+    durable = await InstallJobManager(hass, now=Clock()).async_get(receipt.job_id)
+    assert durable == receipt
+
+
+async def test_shutdown_background_cancellation_cannot_detach_store_writer(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Core classifies Store's in-flight executor writer as tracked work."""
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, _ = await create(manager)
+    writer_started = threading.Event()
+    release_writer = threading.Event()
+    save_task: asyncio.Task[InstallJobReceipt] | None = None
+
+    def write(document: dict[str, Any]) -> None:
+        writer_started.set()
+        if not release_writer.wait(timeout=5):
+            raise RuntimeError("timed out waiting to release Store writer")
+        hass_storage[f"{DOMAIN}.install_jobs"] = copy.deepcopy(document)
+
+    async def write_data(document: dict[str, Any]) -> None:
+        await hass.async_add_executor_job(write, document)
+
+    manager._store._async_write_data = write_data  # type: ignore[method-assign]
+    tracked_before = set(hass._tasks)
+    background_before = set(hass._background_tasks)
+    try:
+        save_task = asyncio.create_task(
+            manager.async_request_cancel(receipt.job_id, receipt.revision)
+        )
+        assert await asyncio.to_thread(writer_started.wait, 1)
+
+        added_tracked = hass._tasks - tracked_before
+        added_background = hass._background_tasks - background_before
+        writer_futures = {
+            future
+            for future in added_tracked | added_background
+            if not isinstance(future, asyncio.Task)
+        }
+        assert len(writer_futures) == 1
+
+        for future in added_background:
+            future.cancel("Home Assistant is stopping")
+        hass.set_state(CoreState.stopping)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert not save_task.done()
+        assert manager._lock.locked()
+        assert writer_futures <= added_tracked
+        assert not any(future.cancelled() for future in writer_futures)
+
+        release_writer.set()
+        updated = await asyncio.wait_for(save_task, timeout=1)
+        assert updated.cancel_requested
+        durable = await InstallJobManager(hass, now=Clock()).async_get(receipt.job_id)
+        assert durable == updated
+    finally:
+        release_writer.set()
+        hass.set_state(CoreState.running)
+        if save_task is not None and not save_task.done():
+            save_task.cancel()
+            await asyncio.gather(save_task, return_exceptions=True)
+
+
+async def test_backward_clock_is_rejected_before_store_write(
+    hass: HomeAssistant,
+) -> None:
+    """A timestamp regression after an update cannot replace its receipt."""
+    clock = Clock()
+    manager = InstallJobManager(hass, now=clock)
+    receipt, _ = await create(manager)
+    clock.advance(timedelta(minutes=10))
+    receipt = await manager.async_claim(receipt.job_id, receipt.revision)
+    assert manager._claimed_jobs == {
+        receipt.job_id: receipt.executor_generation,
+    }
+    clock.advance(timedelta(minutes=-5))
+    writer = AsyncMock()
+    manager._store.async_save = writer  # type: ignore[method-assign]
+
+    with pytest.raises(InstallJobStoreError):
+        await manager.async_transition(
+            receipt.job_id, receipt.revision, InstallPhase.AUTHORIZING
+        )
+
+    writer.assert_not_awaited()
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
+    durable = await InstallJobManager(hass, now=Clock()).async_get(receipt.job_id)
+    assert durable == receipt
+
+
+async def test_revision_overflow_is_rejected_before_store_write(
+    hass: HomeAssistant,
+) -> None:
+    """The maximum durable revision cannot wrap through a claim save."""
+    receipt, _ = await create(InstallJobManager(hass, now=Clock()))
+    raw_store: Store[dict[str, Any]] = Store(
+        hass, 1, f"{DOMAIN}.install_jobs", private=True, atomic_writes=True
+    )
+    document = await raw_store.async_load()
+    assert document is not None
+    document["jobs"][0]["revision"] = 2**63 - 1
+    await raw_store.async_save(document)
+    maximum = replace(receipt, revision=2**63 - 1)
+
+    manager = InstallJobManager(hass, now=Clock())
+    writer = AsyncMock()
+    manager._store.async_save = writer  # type: ignore[method-assign]
+    with pytest.raises(InstallJobStoreError):
+        await manager.async_claim(maximum.job_id, maximum.revision)
+
+    writer.assert_not_awaited()
+    assert manager._jobs is None
+    assert manager._claimed_jobs == {}
+    durable = await InstallJobManager(hass, now=Clock()).async_get(maximum.job_id)
+    assert durable == maximum
 
 
 @pytest.mark.parametrize(
