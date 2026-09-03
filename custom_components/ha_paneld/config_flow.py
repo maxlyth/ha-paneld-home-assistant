@@ -213,7 +213,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                                     return release_result
                                 if self._pending_release is None:
                                     errors["base"] = "unknown"
-                                elif self._pending_release.descriptor is None:
+                                elif self._pending_release.descriptor is None:  # type: ignore[unreachable]
                                     return self._show_release_preview_only()
                                 else:
                                     return self._show_authorize_adb()
@@ -233,7 +233,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                                     self._pending_probe = probe
                                     if self._pending_release is None:
                                         errors["base"] = "unknown"
-                                    elif self._pending_release.descriptor is None:
+                                    elif self._pending_release.descriptor is None:  # type: ignore[unreachable]
                                         return self._show_release_preview_only()
                                     else:
                                         return self._show_install_candidate_preview()
@@ -667,7 +667,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                     receipt, "install_finalization_retry"
                 )
             if self._flow_removed:
-                return self.async_abort(reason="install_worker_stopped")
+                # async_remove may run while the release await yields control.
+                return self.async_abort(reason="install_worker_stopped")  # type: ignore[unreachable]
 
         # Reserve this flow before the first await. Removal can then defer a safe
         # release even while executor lookup or lease acquisition is in flight.
@@ -800,7 +801,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         if health.version != receipt.artifact.version_name:
             return await self._async_reject_healthy_receipt(manager, receipt)
         if self._flow_removed:
-            await self._async_release_finalizer()
+            # async_remove may run during the preceding network awaits.
+            await self._async_release_finalizer()  # type: ignore[unreachable]
             return self.async_abort(reason="install_worker_stopped")
         if self._address_is_configured(receipt.target.address):
             await self._async_release_finalizer()

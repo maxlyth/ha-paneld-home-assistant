@@ -513,7 +513,9 @@ class InstallExecutor:
                                 receipt, InstallPhase.INSTALLED
                             )
                         else:
-                            receipt = await self._async_recovery(receipt)
+                            # Retain a fail-closed runtime fallback if the dependency
+                            # ever violates this currently exhaustive enum contract.
+                            receipt = await self._async_recovery(receipt)  # type: ignore[unreachable]
                 elif phase is InstallPhase.INSTALLED:
                     staged = _staged_from_receipt(receipt)
                     try:
@@ -773,7 +775,9 @@ class InstallExecutor:
             return await self._async_transition(receipt, InstallPhase.HEALTH_CHECK)
         if outcome is LaunchOutcome.REFUSED:
             return await self._async_fail(receipt, InstallResultCode.LAUNCH_FAILED)
-        return await self._async_recovery(receipt)
+        # Retain a fail-closed runtime fallback if the dependency ever violates
+        # this currently exhaustive enum contract.
+        return await self._async_recovery(receipt)  # type: ignore[unreachable]
 
     async def _async_health(self, execution: _FrozenExecution) -> PanelHealth | None:
         client = HaPaneldClient(
