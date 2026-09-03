@@ -1,13 +1,28 @@
 """Repository and distribution contract tests."""
 
 import ast
+import importlib.util
 import json
 from pathlib import Path
+
+import pytest
 
 from custom_components.ha_paneld.client import parse_health_response
 
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "ha_paneld"
+RELEASE_VERSION_SCRIPT = ROOT / ".github" / "scripts" / "verify_release_version.py"
+
+
+def _load_release_version_module():
+    spec = importlib.util.spec_from_file_location(
+        "verify_release_version", RELEASE_VERSION_SCRIPT
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_manifest_and_hacs_versions_match_repository_policy() -> None:
@@ -29,6 +44,54 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "version": "0.1.0",
     }
     assert hacs == {"homeassistant": "2026.8.3", "name": "ha-paneld"}
+
+
+def test_release_version_guard_accepts_current_and_prerelease_versions(
+    tmp_path: Path,
+) -> None:
+    """Tag admission uses exact raw equality for stable and prerelease versions."""
+    verifier = _load_release_version_module()
+
+    verifier.verify_release_version("0.1.0", INTEGRATION / "manifest.json")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"version":"0.2.0-rc.1"}', encoding="utf-8")
+    verifier.verify_release_version("0.2.0-rc.1", manifest)
+
+
+@pytest.mark.parametrize(
+    ("tag", "version", "message"),
+    [
+        ("v0.1.0", "0.1.0", "must not use a v prefix"),
+        ("V0.1.0", "0.1.0", "must not use a v prefix"),
+        ("0.1.1", "0.1.0", "does not match manifest version"),
+        ("", "0.1.0", "release tag must be non-empty"),
+        ("0.1.0", "", "manifest version must be a non-empty string"),
+        ("0.1.0", 1, "manifest version must be a non-empty string"),
+    ],
+)
+def test_release_version_guard_rejects_invalid_pairs(
+    tmp_path: Path,
+    tag: str,
+    version: str | int,
+    message: str,
+) -> None:
+    """Tag admission rejects prefixes, drift and malformed manifest versions."""
+    verifier = _load_release_version_module()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        verifier.verify_release_version(tag, manifest)
+
+
+def test_hacs_workflow_runs_release_version_guard_for_tags() -> None:
+    """The HACS workflow checks a tag before invoking external validation."""
+    workflow = (ROOT / ".github" / "workflows" / "hacs.yml").read_text(encoding="utf-8")
+    guard = 'run: python .github/scripts/verify_release_version.py "$RELEASE_TAG"'
+
+    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
+    assert "RELEASE_TAG: ${{ github.ref_name }}" in workflow
+    assert workflow.index(guard) < workflow.index("name: Run HACS validation")
 
 
 def test_hacs_repository_foundation() -> None:
