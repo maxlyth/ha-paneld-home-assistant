@@ -3,6 +3,8 @@
 import ast
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -84,10 +86,25 @@ def test_release_version_guard_rejects_invalid_pairs(
         verifier.verify_release_version(tag, manifest)
 
 
+@pytest.mark.parametrize("tag", ["-h", "--help"])
+def test_release_version_guard_cli_does_not_parse_tag_as_option(tag: str) -> None:
+    """A valid option-shaped Git tag must reach the equality check and fail."""
+    result = subprocess.run(
+        [sys.executable, str(RELEASE_VERSION_SCRIPT), "--", tag],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "does not match manifest version '0.1.0'" in result.stderr
+
+
 def test_hacs_workflow_runs_release_version_guard_for_tags() -> None:
     """The HACS workflow checks a tag before invoking external validation."""
     workflow = (ROOT / ".github" / "workflows" / "hacs.yml").read_text(encoding="utf-8")
-    guard = 'run: python .github/scripts/verify_release_version.py "$RELEASE_TAG"'
+    guard = 'run: python .github/scripts/verify_release_version.py -- "$RELEASE_TAG"'
 
     assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
     assert "RELEASE_TAG: ${{ github.ref_name }}" in workflow

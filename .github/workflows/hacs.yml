@@ -19,7 +19,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: python .github/scripts/verify_release_version.py "$RELEASE_TAG"
+        run: python .github/scripts/verify_release_version.py -- "$RELEASE_TAG"
       - name: Run HACS validation
         uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main
         with:
