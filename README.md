@@ -8,11 +8,23 @@ The initial `0.1.0` integration can install ha-paneld on a clean Android panel o
 
 - Home Assistant `2026.8.3` minimum; currently verified versions are listed under Development
 - An Android panel on the same trusted network
-- A running ha-paneld installation for the connection path, or network ADB on port `5555` and physical access to the Android panel for a clean first installation
+- A running ha-paneld installation for the connection path, or the panel's IP address, network ADB on port `5555` and physical access to the panel for a clean first installation; root access is not required
 - Internet access from Home Assistant to GitHub for clean-install release metadata and the APK
 - HACS, for managed installation
 
-## Manual installation
+## Install with HACS
+
+[![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=maxlyth&repository=ha-paneld-home-assistant&category=integration)
+
+Until ha-paneld appears in the default HACS catalogue, open **HACS → Integrations**, choose **Custom repositories** from the menu, add `https://github.com/maxlyth/ha-paneld-home-assistant` with the **Integration** category, then search for and download **ha-paneld**. Restart Home Assistant after HACS finishes the download, then open **Settings → Devices & services → Add integration** and select **ha-paneld**.
+
+The HACS workflow runs the installer inside Home Assistant. Once network ADB is available on the panel, it does not require Git Bash, PowerShell, a workstation `adb` executable or any other workstation installer.
+
+Before starting a clean installation, find the panel's IP address, keep physical access to its screen and use the public [model-specific panel access guide](https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware#gaining-adb--root-access) to make network ADB available on port `5555`. Some models need a one-time USB or vendor-specific preparation step before Home Assistant can reach network ADB. The Home Assistant installer supports both normal rootless ADB and rooted ADB; root access is not a requirement.
+
+Choose **Install ha-paneld on a panel** for a clean first installation, or **Connect an existing ha-paneld installation** to add a running panel.
+
+## Manual integration installation
 
 Copy `custom_components/ha_paneld` into the `custom_components` directory in your Home Assistant configuration, restart Home Assistant, then add **ha-paneld** from **Settings → Devices & services**. Choose **Install ha-paneld on a panel** for a clean first installation, or **Connect an existing ha-paneld installation** to add a running panel.
 
@@ -22,9 +34,9 @@ A protected panel requires a separate confirmation before Home Assistant generat
 
 The candidate screen shows the observed device identity and the authenticated stable release before any installation begins. Automatic installation requires that release to carry a valid signed descriptor binding the exact APK, package, version, signer, minimum Android version, supported processor architectures, launch component and database compatibility contract. Older stable releases without this descriptor remain preview-only: Home Assistant creates no ADB credential for them, downloads no APK and makes no panel change.
 
-After confirmation, Home Assistant records a durable installation transaction, rechecks the target and credential, downloads and verifies the exact release APK, stages it through ADB, installs and launches it, then requires the expected version from the local health endpoint. The normal config entry is created only after fresh ADB identity, package, root-mode and health checks pass. The installer does not configure ha-paneld after launch.
+After confirmation, Home Assistant records a durable installation transaction, rechecks the target and credential, downloads and verifies the exact release APK, stages it through ADB, installs and launches it, then requires the expected version from the local health endpoint. The normal config entry is created only after fresh ADB identity, package, root-mode and health checks pass. The installer does not configure ha-paneld after launch. When Home Assistant adds the device, select **Set up** on the panel or open `http://<panel>:8888/setup` from a phone or computer to complete ha-paneld's guided setup for the Home Assistant connection, dashboard and entity filter.
 
-The transaction belongs to Home Assistant rather than the setup dialog, so closing the dialog does not cancel the installer. Safe phases can resume after a Core restart when another ha-paneld config entry loads the integration. If no ha-paneld entries exist yet, reopen **Add integration**, choose the installation path and enter the same address to reattach and continue. Home Assistant does not replay a step whose outcome may be ambiguous; it stops and requests manual recovery instead.
+The transaction belongs to Home Assistant rather than the setup dialog, so closing the dialog does not cancel the installer. Leave the dialog open to finish setup automatically. If you close it, reopen **Settings → Devices & services → Add integration**, select **ha-paneld**, choose the installation path and enter the same address to reattach; Home Assistant cannot add the device until the flow reattaches. Safe phases can resume after a Core restart when another ha-paneld config entry loads the integration. Home Assistant does not replay a step whose outcome may be ambiguous; it stops and directs you to the [provisioning safety and recovery guide](https://github.com/maxlyth/ha-paneld/blob/main/docs/provisioning-safety.md) instead.
 
 The existing-installation path accepts a hostname or IP address. Port `8888` is used by default; append a different port as `host:port` only if the panel has been configured to use one.
 

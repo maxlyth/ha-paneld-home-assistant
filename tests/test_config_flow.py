@@ -1718,14 +1718,54 @@ async def test_existing_job_reattaches_before_any_panel_or_release_contact(
             "install_cancelled",
         ),
         (
+            InstallPhase.CANCELLED,
+            InstallResultCode.CANCELLED_AFTER_STAGING_CLEANUP,
+            "install_cancelled_after_staging_cleanup",
+        ),
+        (
+            InstallPhase.FAILED,
+            InstallResultCode.AUTHORIZATION_FAILED,
+            "install_authorization_failed",
+        ),
+        (
+            InstallPhase.FAILED,
+            InstallResultCode.PREFLIGHT_REJECTED,
+            "install_preflight_rejected",
+        ),
+        (
+            InstallPhase.FAILED,
+            InstallResultCode.ARTIFACT_REJECTED,
+            "install_artifact_rejected",
+        ),
+        (
+            InstallPhase.FAILED,
+            InstallResultCode.TRANSPORT_FAILED,
+            "install_transport_failed",
+        ),
+        (
             InstallPhase.FAILED,
             InstallResultCode.INSTALL_FAILED,
-            "install_failed",
+            "install_package_failed",
+        ),
+        (
+            InstallPhase.FAILED,
+            InstallResultCode.LAUNCH_FAILED,
+            "install_launch_failed",
+        ),
+        (
+            InstallPhase.FAILED,
+            InstallResultCode.HEALTH_CHECK_FAILED,
+            "install_health_check_failed",
+        ),
+        (
+            InstallPhase.RECOVERY_REQUIRED,
+            InstallResultCode.AMBIGUOUS_MUTATION,
+            "install_ambiguous_mutation",
         ),
         (
             InstallPhase.RECOVERY_REQUIRED,
             InstallResultCode.VERIFICATION_REQUIRED,
-            "install_recovery_required",
+            "install_verification_required",
         ),
         (
             InstallPhase.CONSUMED,

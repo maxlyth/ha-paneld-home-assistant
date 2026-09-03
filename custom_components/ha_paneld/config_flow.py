@@ -62,6 +62,26 @@ from .release import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_CANCELLED_ABORT_REASONS = {
+    InstallResultCode.CANCELLED_BY_USER: "install_cancelled",
+    InstallResultCode.CANCELLED_AFTER_STAGING_CLEANUP: (
+        "install_cancelled_after_staging_cleanup"
+    ),
+}
+_FAILED_ABORT_REASONS = {
+    InstallResultCode.AUTHORIZATION_FAILED: "install_authorization_failed",
+    InstallResultCode.PREFLIGHT_REJECTED: "install_preflight_rejected",
+    InstallResultCode.ARTIFACT_REJECTED: "install_artifact_rejected",
+    InstallResultCode.TRANSPORT_FAILED: "install_transport_failed",
+    InstallResultCode.INSTALL_FAILED: "install_package_failed",
+    InstallResultCode.LAUNCH_FAILED: "install_launch_failed",
+    InstallResultCode.HEALTH_CHECK_FAILED: "install_health_check_failed",
+}
+_RECOVERY_ABORT_REASONS = {
+    InstallResultCode.AMBIGUOUS_MUTATION: "install_ambiguous_mutation",
+    InstallResultCode.VERIFICATION_REQUIRED: "install_verification_required",
+}
+
 _DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_ADDRESS): TextSelector(TextSelectorConfig())}
 )
@@ -627,12 +647,12 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected exception while loading install result")
             return self.async_abort(reason="install_failed")
 
-        if receipt.phase is InstallPhase.CANCELLED:
-            return self.async_abort(reason="install_cancelled")
-        if receipt.phase is InstallPhase.FAILED:
-            return self.async_abort(reason="install_failed")
-        if receipt.phase is InstallPhase.RECOVERY_REQUIRED:
-            return self.async_abort(reason="install_recovery_required")
+        if receipt.phase in {
+            InstallPhase.CANCELLED,
+            InstallPhase.FAILED,
+            InstallPhase.RECOVERY_REQUIRED,
+        }:
+            return self.async_abort(reason=_install_terminal_abort_reason(receipt))
         if receipt.phase is InstallPhase.CONSUMED:
             return self.async_abort(reason="already_configured")
         if receipt.phase is not InstallPhase.HEALTHY_UNCLAIMED:
@@ -1063,3 +1083,21 @@ def _install_network_error(error: InstallNetworkError) -> str:
         InstallNetworkErrorCode.UNSAFE_TARGET: "unsafe_install_target",
         InstallNetworkErrorCode.PINNED_TARGET_REMOVED: "install_target_changed",
     }[error.code]
+
+
+def _install_terminal_abort_reason(receipt: InstallJobReceipt) -> str:
+    """Expose one privacy-safe and actionable durable installer outcome."""
+    result_code = receipt.result_code
+    if receipt.phase is InstallPhase.CANCELLED:
+        if result_code is None:
+            return "install_cancelled"
+        return _CANCELLED_ABORT_REASONS.get(result_code, "install_cancelled")
+    if receipt.phase is InstallPhase.FAILED:
+        if result_code is None:
+            return "install_failed"
+        return _FAILED_ABORT_REASONS.get(result_code, "install_failed")
+    if receipt.phase is InstallPhase.RECOVERY_REQUIRED:
+        if result_code is None:
+            return "install_recovery_required"
+        return _RECOVERY_ABORT_REASONS.get(result_code, "install_recovery_required")
+    return "install_failed"

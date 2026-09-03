@@ -54,3 +54,59 @@ def test_runtime_translations_are_complete() -> None:
 
     assert english == strings
     assert "[%key:" not in json.dumps(english)
+
+
+def test_readme_leads_with_complete_hacs_installation() -> None:
+    """The primary installation path stays workstation-tool-free and discoverable."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    hacs_heading = "## Install with HACS"
+    manual_heading = "## Manual integration installation"
+
+    assert readme.index(hacs_heading) < readme.index(manual_heading)
+    hacs_section = readme.split(hacs_heading, 1)[1].split(manual_heading, 1)[0]
+    assert (
+        "https://my.home-assistant.io/redirect/hacs_repository/"
+        "?owner=maxlyth&repository=ha-paneld-home-assistant&category=integration"
+    ) in hacs_section
+    assert "https://github.com/maxlyth/ha-paneld-home-assistant" in hacs_section
+    assert "Git Bash, PowerShell, a workstation `adb` executable" in hacs_section
+    assert (
+        "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
+        "#gaining-adb--root-access"
+    ) in hacs_section
+    assert "root access is not a requirement" in hacs_section
+
+
+def test_install_flow_copy_covers_first_time_handoffs() -> None:
+    """Visible setup copy explains panel preparation, reattachment, and recovery."""
+    strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
+    config = strings["config"]
+    steps = config["step"]
+    install = steps["install_or_upgrade"]["description"]
+    progress = config["progress"]["installing"]
+    all_errors = " ".join(config["error"].values())
+
+    assert "network ADB on port 5555" in install
+    assert "Root access is not required" in install
+    assert "Leave this dialog open to finish automatically" in progress
+    assert "Settings → Devices & services → Add integration" in progress
+    assert "enter the same address" in progress
+    assert "complete ha-paneld's guided setup on the panel" in progress
+    assert "dedicated recovery workflow" not in all_errors
+
+    abort = config["abort"]
+    mapped_reasons = {
+        "install_cancelled_after_staging_cleanup",
+        "install_authorization_failed",
+        "install_preflight_rejected",
+        "install_artifact_rejected",
+        "install_transport_failed",
+        "install_package_failed",
+        "install_launch_failed",
+        "install_health_check_failed",
+        "install_ambiguous_mutation",
+        "install_verification_required",
+    }
+    assert mapped_reasons <= abort.keys()
+    assert "Do not retry automatic installation" in abort["install_launch_failed"]
+    assert "Do not retry automatic installation" in abort["install_ambiguous_mutation"]
