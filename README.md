@@ -36,7 +36,7 @@ This release reads `GET /api/v1/health` and `GET /api/v1/status` over the truste
 
 ## Development
 
-The full test suite targets Home Assistant `2026.8.3` and Python `3.14.2`. A disposable real-Core load/reload smoke has also passed on Home Assistant `2026.9.0`; later releases have not yet been verified.
+The full test suite targets Home Assistant `2026.8.3` and `2026.9.0` on Python `3.14.2`. The default local dependency set selects the minimum supported version; CI runs the same suite against both versions. Later Home Assistant releases have not yet been verified.
 
 ```bash
 python -m pip install -e ".[test]"

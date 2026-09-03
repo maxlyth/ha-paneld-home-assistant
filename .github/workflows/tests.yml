@@ -10,7 +10,16 @@ permissions:
 
 jobs:
   tests:
+    name: Home Assistant ${{ matrix.home-assistant }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - home-assistant: "2026.8.3"
+            fixture: "0.13.357"
+          - home-assistant: "2026.9.0"
+            fixture: "0.13.363"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -20,6 +29,15 @@ jobs:
           python-version: "3.14.2"
       - name: Install test dependencies
         run: python -m pip install -e ".[test]"
+      - name: Select Home Assistant test version
+        if: matrix.fixture != '0.13.357'
+        run: >-
+          python -m pip install --upgrade
+          pytest-homeassistant-custom-component==${{ matrix.fixture }}
+      - name: Verify test environment
+        run: |
+          python -m pip check
+          python -c "import importlib.metadata as m; assert m.version('homeassistant') == '${{ matrix.home-assistant }}'"
       - name: Run lint and formatting checks
         run: ruff check . && ruff format --check .
       - name: Run type checks
