@@ -19,7 +19,6 @@ from contextlib import AbstractContextManager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-EXPECTED_HOME_ASSISTANT_VERSION = "2026.8.3"
 MAX_STATUS_RESPONSE_BYTES = 64 * 1024
 _ALLOWED_NETWORKS = (
     ipaddress.IPv4Network((0x0A000000, 8)),
@@ -412,6 +411,7 @@ def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hass", required=True, type=Path)
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--expected-home-assistant-version", required=True)
     parser.add_argument(
         "--keep",
         action="store_true",
@@ -432,8 +432,9 @@ def main() -> int:
             [str(arguments.hass), "--version"], cwd=repository
         ).stdout.strip()
         _require(
-            version == EXPECTED_HOME_ASSISTANT_VERSION,
-            f"Home Assistant {version} is not {EXPECTED_HOME_ASSISTANT_VERSION}",
+            version == arguments.expected_home_assistant_version,
+            "Home Assistant "
+            f"{version} is not {arguments.expected_home_assistant_version}",
         )
         control = runtime_root / "control"
         control.mkdir(mode=0o700)
