@@ -6,7 +6,7 @@ The initial `0.1.0` integration can install ha-paneld on a clean Android panel o
 
 ## Requirements
 
-- Home Assistant `2026.8.3` or newer
+- Home Assistant `2026.8.3` minimum; currently verified versions are listed under Development
 - An Android panel on the same trusted network
 - A running ha-paneld installation for the connection path, or network ADB on port `5555` and physical access to the Android panel for a clean first installation
 - Internet access from Home Assistant to GitHub for clean-install release metadata and the APK
@@ -36,10 +36,12 @@ This release reads `GET /api/v1/health` and `GET /api/v1/status` over the truste
 
 ## Development
 
-The test suite targets Home Assistant `2026.8.3` and Python `3.14.2`:
+The full test suite targets Home Assistant `2026.8.3` and Python `3.14.2`. A disposable real-Core load/reload smoke has also passed on Home Assistant `2026.9.0`; later releases have not yet been verified.
 
 ```bash
 python -m pip install -e ".[test]"
+python -m mypy custom_components/ha_paneld
+ruff check . && ruff format --check .
 python -m pytest
 ```
 
