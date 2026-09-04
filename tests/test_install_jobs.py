@@ -236,6 +236,79 @@ async def create(
     )
 
 
+@pytest.mark.parametrize("tag", ["v0.1.0", "v0.9.7-rc3"])
+async def test_stable_and_rc_receipts_restart_without_changing_frozen_plan(
+    hass: HomeAssistant, tag: str
+) -> None:
+    """Legacy stable shape and approved RC identity both survive durable reload."""
+    selected = replace(
+        artifact(),
+        release_tag=tag,
+        version_name=tag[1:],
+        apk_name=f"ha-paneld-{tag}-manual-setup-required.apk",
+    )
+    manager = InstallJobManager(hass, now=Clock())
+    receipt, created = await create(manager, install_artifact=selected)
+    assert created is True
+    persisted = install_jobs._serialize_receipt(receipt)
+    assert persisted["artifact"] == {
+        **asdict(selected),
+        "supported_abis": list(selected.supported_abis),
+    }
+    restarted = InstallJobManager(hass, now=Clock())
+    loaded = await restarted.async_get(receipt.job_id)
+    assert loaded == receipt
+    joined, created_again = await create(restarted, install_artifact=selected)
+    assert created_again is False
+    assert joined == receipt
+    different = replace(
+        selected,
+        release_tag="v0.9.7-rc4",
+        version_name="0.9.7-rc4",
+        apk_name="ha-paneld-v0.9.7-rc4-manual-setup-required.apk",
+    )
+    with pytest.raises(InstallJobConflictError):
+        await create(restarted, install_artifact=different)
+    assert await restarted.async_get(receipt.job_id) == receipt
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v0.9.7-rc0",
+        "v0.9.7-rc03",
+        "v0.9.7-rc.3",
+        "v0.9.7-beta3",
+        "v0.9.7-rc3+meta",
+        "v0.9.7-rc" + "9" * 60,
+    ],
+)
+def test_receipt_refuses_noncanonical_prerelease_even_with_matching_names(
+    tag: str,
+) -> None:
+    selected = replace(
+        artifact(),
+        release_tag=tag,
+        version_name=tag[1:],
+        apk_name=f"ha-paneld-{tag}-manual-setup-required.apk",
+    )
+    with pytest.raises(InstallJobStoreError):
+        install_jobs._parse_artifact(asdict(selected))
+
+
+def test_receipt_rc_tag_change_without_new_plan_hash_is_refused() -> None:
+    receipt = durable_receipt()
+    changed = replace(
+        receipt.artifact,
+        release_tag="v0.9.7-rc3",
+        version_name="0.9.7-rc3",
+        apk_name="ha-paneld-v0.9.7-rc3-manual-setup-required.apk",
+    )
+    document = install_jobs._serialize_receipt(replace(receipt, artifact=changed))
+    with pytest.raises(InstallJobStoreError):
+        install_jobs._parse_receipt(document)
+
+
 async def transition_to_staging(
     manager: InstallJobManager, job_id: str, revision: int = 0
 ):
@@ -667,12 +740,19 @@ async def test_restart_reclaims_pre_mutation_but_quarantines_ambiguous_phase(
 @pytest.mark.parametrize(
     "phase", [InstallPhase.STAGING, InstallPhase.INSTALLING, InstallPhase.LAUNCHING]
 )
+@pytest.mark.parametrize("tag", ["v0.1.0", "v0.9.7-rc3"])
 async def test_restart_quarantines_every_ambiguous_mutation_phase(
-    hass: HomeAssistant, phase: InstallPhase
+    hass: HomeAssistant, phase: InstallPhase, tag: str
 ) -> None:
     """A new process never replays a phase whose side effect may have started."""
     manager = InstallJobManager(hass, now=Clock())
-    receipt, _ = await create(manager)
+    selected = replace(
+        artifact(),
+        release_tag=tag,
+        version_name=tag[1:],
+        apk_name=f"ha-paneld-{tag}-manual-setup-required.apk",
+    )
+    receipt, _ = await create(manager, install_artifact=selected)
     receipt = await transition_to_staging(manager, receipt.job_id)
     if phase is InstallPhase.INSTALLING:
         receipt = await manager.async_transition(

@@ -2,7 +2,7 @@
 
 This repository contains the HACS custom integration for [ha-paneld](https://github.com/maxlyth/ha-paneld), the Home Assistant dashboard application for Android wall panels.
 
-The initial `0.1.0` integration can install ha-paneld on a clean Android panel over network Android Debug Bridge (ADB), or connect a panel that is already running it. A configured panel creates one Home Assistant device with a diagnostic status sensor and a bounded, privacy-safe projection of the panel's status endpoint in downloadable diagnostics. The installer admits only a verified clean first installation of a stable release carrying ha-paneld's signed installation descriptor. It does not upgrade or overwrite an existing installation. Existing MQTT entities remain authoritative.
+The initial `0.1.0` integration can install ha-paneld on a clean Android panel over network Android Debug Bridge (ADB), or connect a panel that is already running it. A configured panel creates one Home Assistant device with a diagnostic status sensor and a bounded, privacy-safe projection of the panel's status endpoint in downloadable diagnostics. The installer defaults to the latest stable release carrying ha-paneld's signed installation descriptor, with an explicit option to test one exact release candidate. It does not upgrade or overwrite an existing installation. Existing MQTT entities remain authoritative.
 
 ## Requirements
 
@@ -24,6 +24,8 @@ Before starting a clean installation, find the panel's IP address, keep physical
 
 Choose **Install ha-paneld on a panel** for a clean first installation, or **Connect an existing ha-paneld installation** to add a running panel.
 
+For release-candidate testing, enter an exact published Android release tag, such as `v0.9.7-rc3`, in **Exact release candidate tag (testing only)**. Leave it blank for the latest stable release. The selected RC must be published with the same signed installation descriptor and verification assets as a stable release; no fallback or automatic latest-RC selection occurs. The final confirmation identifies the exact candidate and warns that it may contain bugs. This option never upgrades an already-installed panel and does not change the HACS integration version.
+
 ## Manual integration installation
 
 Copy `custom_components/ha_paneld` into the `custom_components` directory in your Home Assistant configuration, restart Home Assistant, then add **ha-paneld** from **Settings → Devices & services**. Choose **Install ha-paneld on a panel** for a clean first installation, or **Connect an existing ha-paneld installation** to add a running panel.
@@ -32,13 +34,15 @@ The installation path accepts a hostname or IP address and keeps the fixed ha-pa
 
 A protected panel requires a separate confirmation before Home Assistant generates and offers one persistent ADB key. Android displays a prompt if the key is not already trusted, and someone must physically approve it on the panel. That approval grants general ADB shell access while network debugging remains enabled and can be revoked from the panel's developer settings. The private key is stored in Home Assistant's private storage, outside the HACS-managed integration directory, and is never replaced automatically if its stored data is corrupt.
 
-The candidate screen shows the observed device identity and the authenticated stable release before any installation begins. Automatic installation requires that release to carry a valid signed descriptor binding the exact APK, package, version, signer, minimum Android version, supported processor architectures, launch component and database compatibility contract. Older stable releases without this descriptor remain preview-only: Home Assistant creates no ADB credential for them, downloads no APK and makes no panel change.
+The candidate screen shows the observed device identity and the authenticated release before any installation begins. Automatic installation requires that release to carry a valid signed descriptor binding the exact APK, package, version, signer, minimum Android version, supported processor architectures, launch component and database compatibility contract. Releases without this descriptor remain preview-only: Home Assistant creates no ADB credential for them, downloads no APK and makes no panel change.
 
 After confirmation, Home Assistant records a durable installation transaction, rechecks the target and credential, downloads and verifies the exact release APK, stages it through ADB, installs and launches it, then requires the expected version from the local health endpoint. The normal config entry is created only after fresh ADB identity, package, root-mode and health checks pass. The installer does not configure ha-paneld after launch. When Home Assistant adds the device, select **Set up** on the panel or open `http://<panel>:8888/setup` from a phone or computer to complete ha-paneld's guided setup for the Home Assistant connection, dashboard and entity filter.
 
 The transaction belongs to Home Assistant rather than the setup dialog, so closing the dialog does not cancel the installer. Leave the dialog open to finish setup automatically. If you close it, reopen **Settings → Devices & services → Add integration**, select **ha-paneld**, choose the installation path and enter the same address to reattach; Home Assistant cannot add the device until the flow reattaches. Safe phases can resume after a Core restart when another ha-paneld config entry loads the integration. Home Assistant does not replay a step whose outcome may be ambiguous; it stops and directs you to the [provisioning safety and recovery guide](https://github.com/maxlyth/ha-paneld/blob/main/docs/provisioning-safety.md) instead.
 
 The existing-installation path accepts a hostname or IP address. Port `8888` is used by default; append a different port as `host:port` only if the panel has been configured to use one.
+
+An installation job keeps its originally confirmed release across dialog closure and restart. To reattach, leave the RC tag blank or enter the job's original RC tag. A different tag is refused rather than changing or replaying the job. The same ambiguity and recovery rules apply to RC and stable installations.
 
 The configured network endpoint identifies the config entry. The panel name returned by the current health contract is editable and is therefore used only for display; Home Assistant registry identifiers remain tied to the config entry across panel renames.
 

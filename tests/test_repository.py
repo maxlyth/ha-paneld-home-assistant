@@ -139,6 +139,22 @@ def test_runtime_translations_are_complete() -> None:
     assert "[%key:" not in json.dumps(english)
 
 
+def test_rc_selection_and_confirmation_are_keyed_and_explicit() -> None:
+    strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
+    steps = strings["config"]["step"]
+    help_text = steps["install_or_upgrade"]["data_description"]["release_candidate"]
+    warning = steps["confirm_install_rc"]["description"]
+    assert "Leave blank for the latest stable release" in help_text
+    assert "exact published tag" in help_text
+    assert "not a stable release" in warning
+    assert "may contain bugs" in warning
+    assert "{version}" in warning and "{tag}" in warning and "{sha256}" in warning
+    assert (
+        "even if a release candidate tag was entered"
+        in steps["confirm_existing"]["description"]
+    )
+
+
 def test_runtime_harness_health_fixture_uses_production_grammar() -> None:
     """Keep the real-Core fixture admissible by the shipping health parser."""
     source = (ROOT / "tests" / "runtime" / "core_negative_harness.py").read_text(

@@ -57,7 +57,9 @@ from .provisioning import InstallTargetProbe, async_probe_install_target
 from .release import (
     ReleaseArtifact,
     ReleaseResolutionError,
+    async_resolve_rc_release,
     async_resolve_stable_release,
+    is_rc_release_tag,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -89,6 +91,7 @@ _RECOVERY_ABORT_REASONS = {
 _DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_ADDRESS): TextSelector(TextSelectorConfig())}
 )
+_CONF_RELEASE_CANDIDATE = "release_candidate"
 
 
 class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -100,6 +103,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _pending_health: PanelHealth | None = None
     _pending_probe: InstallTargetProbe | None = None
     _pending_release: ReleaseArtifact | None = None
+    _pending_rc_tag: str | None = None
     _pending_install_target: PinnedPanelTarget | None = None
     _pending_job_id: str | None = None
     _progress_waiter: asyncio.Task[InstallJobReceipt] | None = None
@@ -153,9 +157,12 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str],
     ) -> ConfigFlowResult:
         """Show the install form with its fixed trusted documentation link."""
+        schema = _DATA_SCHEMA.extend(
+            {vol.Optional(_CONF_RELEASE_CANDIDATE): TextSelector(TextSelectorConfig())}
+        )
         return self.async_show_form(
             step_id="install_or_upgrade",
-            data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
+            data_schema=self.add_suggested_values_to_schema(schema, user_input),
             errors=errors,
             description_placeholders={"panel_access_url": _PANEL_ACCESS_GUIDE_URL},
         )
@@ -171,8 +178,17 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             self._pending_health = None
             self._pending_probe = None
             self._pending_release = None
+            self._pending_rc_tag = None
             self._pending_install_target = None
             self._pending_job_id = None
+            rc_tag = user_input.get(_CONF_RELEASE_CANDIDATE, "")
+            if rc_tag != "":
+                if not is_rc_release_tag(rc_tag):
+                    return self._show_install_address_form(
+                        user_input,
+                        {_CONF_RELEASE_CANDIDATE: "invalid_release_candidate"},
+                    )
+                self._pending_rc_tag = rc_tag
             try:
                 address = normalize_address(user_input[CONF_ADDRESS])
                 if address.port != DEFAULT_PORT:
@@ -210,6 +226,13 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                     if errors:
                         return self._show_install_address_form(user_input, errors)
                     if active is not None:
+                        if (
+                            self._pending_rc_tag is not None
+                            and self._pending_rc_tag != active.artifact.release_tag
+                        ):
+                            return self._show_install_address_form(
+                                user_input, {"base": "install_release_conflict"}
+                            )
                         self._pending_job_id = active.job_id
                         if active.phase is InstallPhase.HEALTHY_UNCLAIMED:
                             return await self.async_step_install_result()
@@ -456,6 +479,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 probe,
                 self._pending_release,
                 credential.generation_id,
+                expected_rc_tag=self._pending_rc_tag,
             )
             manager = await async_get_install_job_manager(self.hass)
             receipt, _created = await manager.async_create_or_join(
@@ -501,11 +525,21 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(
-            step_id="confirm_install_candidate",
+            step_id=(
+                "confirm_install_rc"
+                if self._pending_rc_tag is not None
+                else "confirm_install_candidate"
+            ),
             data_schema=vol.Schema({}),
             description_placeholders=placeholders,
             errors=errors,
         )
+
+    async def async_step_confirm_install_rc(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Use the same frozen consent path with an explicitly translated RC warning."""
+        return await self.async_step_confirm_install_candidate(user_input)
 
     async def async_step_release_preview_only(
         self, user_input: dict[str, Any] | None = None
@@ -539,8 +573,11 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult | None:
         """Resolve the release before any durable credential may be requested."""
         try:
-            self._pending_release = await async_resolve_stable_release(
-                async_get_clientsession(self.hass)
+            session = async_get_clientsession(self.hass)
+            self._pending_release = (
+                await async_resolve_stable_release(session)
+                if self._pending_rc_tag is None
+                else await async_resolve_rc_release(session, self._pending_rc_tag)
             )
         except ReleaseResolutionError:
             return self._show_install_address_form(

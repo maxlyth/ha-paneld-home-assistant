@@ -1,4 +1,4 @@
-"""Resolve an authenticated stable ha-paneld release without downloading its APK."""
+"""Authenticate stable or explicitly selected RC metadata without downloading an APK."""
 
 from __future__ import annotations
 
@@ -20,6 +20,9 @@ _LATEST_RELEASE_URL = URL(
 _REPOSITORY_RELEASE_ROOT = "https://github.com/maxlyth/ha-paneld/releases/download"
 _STABLE_TAG_PATTERN = re.compile(
     r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
+_RC_TAG_PATTERN = re.compile(
+    r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$"
 )
 _MAX_TAG_LENGTH = 64
 _MAX_RELEASE_RESPONSE_BYTES = 256 * 1024
@@ -94,7 +97,7 @@ LQIDAQAB
 
 
 class ReleaseResolutionError(Exception):
-    """Raised when a stable release cannot be authenticated exactly."""
+    """Raised when a selected release cannot be authenticated exactly."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +121,7 @@ class InstallDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class ReleaseArtifact:
-    """Authenticated metadata for one stable release APK."""
+    """Authenticated metadata for one exact release APK."""
 
     tag: str
     version: str
@@ -126,6 +129,26 @@ class ReleaseArtifact:
     apk_url: str
     sha256: str
     descriptor: InstallDescriptor | None = None
+
+
+def is_rc_release_tag(value: object) -> bool:
+    """Accept only a bounded canonical exact release-candidate tag."""
+    return (
+        isinstance(value, str)
+        and len(value) <= _MAX_TAG_LENGTH
+        and _RC_TAG_PATTERN.fullmatch(value) is not None
+    )
+
+
+def is_install_release_tag(value: object) -> bool:
+    """Keep durable release identity restricted to stable or canonical RC tags."""
+    return (
+        isinstance(value, str)
+        and len(value) <= _MAX_TAG_LENGTH
+        and (
+            _STABLE_TAG_PATTERN.fullmatch(value) is not None or is_rc_release_tag(value)
+        )
+    )
 
 
 def _request_timeout() -> ClientTimeout:
@@ -235,8 +258,10 @@ async def _async_fetch_bounded(
         raise ReleaseResolutionError from err
 
 
-def _parse_release_metadata(body: bytes) -> tuple[str, str, dict[str, URL]]:
-    """Select the one exact APK and proof triplet from a stable GitHub release."""
+def _parse_release_metadata(
+    body: bytes, *, expected_rc_tag: str | None = None
+) -> tuple[str, str, dict[str, URL]]:
+    """Select exact assets without allowing a channel or requested-tag substitution."""
     try:
         document: Any = json.loads(
             body.decode("utf-8"),
@@ -262,9 +287,13 @@ def _parse_release_metadata(body: bytes) -> tuple[str, str, dict[str, URL]]:
     if (
         not isinstance(tag, str)
         or len(tag) > _MAX_TAG_LENGTH
-        or _STABLE_TAG_PATTERN.fullmatch(tag) is None
+        or (
+            _STABLE_TAG_PATTERN.fullmatch(tag) is None
+            if expected_rc_tag is None
+            else not is_rc_release_tag(expected_rc_tag) or tag != expected_rc_tag
+        )
         or document.get("draft") is not False
-        or document.get("prerelease") is not False
+        or document.get("prerelease") is not (expected_rc_tag is not None)
         or not isinstance(assets, list)
         or len(assets) > _MAX_RELEASE_ASSETS
     ):
@@ -455,14 +484,31 @@ async def async_resolve_stable_release(session: ClientSession) -> ReleaseArtifac
     The APK itself is deliberately not downloaded. The returned digest is trusted
     only after the exact checksum bytes have passed detached RSA verification.
     """
+    return await _async_resolve_release(session, _LATEST_RELEASE_URL)
+
+
+async def async_resolve_rc_release(session: ClientSession, tag: str) -> ReleaseArtifact:
+    """Authenticate one explicitly requested RC; never fall back or select latest."""
+    if not is_rc_release_tag(tag):
+        raise ReleaseResolutionError
+    url = URL(f"https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/{tag}")
+    return await _async_resolve_release(session, url, expected_rc_tag=tag)
+
+
+async def _async_resolve_release(
+    session: ClientSession, url: URL, *, expected_rc_tag: str | None = None
+) -> ReleaseArtifact:
+    """Share identical byte bounds, signatures and descriptor binding for both paths."""
     release_body = await _async_fetch_bounded(
         session,
-        _LATEST_RELEASE_URL,
+        url,
         _MAX_RELEASE_RESPONSE_BYTES,
         allow_release_redirects=False,
         headers=_API_HEADERS,
     )
-    tag, apk_name, assets = _parse_release_metadata(release_body)
+    tag, apk_name, assets = _parse_release_metadata(
+        release_body, expected_rc_tag=expected_rc_tag
+    )
 
     checksum_name = f"{apk_name}.sha256"
     signature_name = f"{checksum_name}.sig"

@@ -33,6 +33,7 @@ from .install_network import (
     _resolver_hostname,
     is_allowed_install_address,
 )
+from .release import is_install_release_tag
 
 _STORE_VERSION = 1
 _STORE_KEY = f"{DOMAIN}.install_jobs"
@@ -51,14 +52,12 @@ _MAX_SDK = 100
 _MAX_ADDRESS_LENGTH = 255
 _MAX_MODEL_LENGTH = 128
 _MAX_RELEASE_TEXT_LENGTH = 128
-_MAX_RELEASE_TAG_LENGTH = 64
 _MAX_APK_NAME_LENGTH = 255
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ADB_SERIAL = re.compile(r"^[A-Za-z0-9._:-]{1,128}$", flags=re.ASCII)
 _ABI = re.compile(r"^[A-Za-z0-9_.-]{1,64}$", flags=re.ASCII)
 _APK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.apk$")
-_RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _DATABASE_COMPATIBILITY = re.compile(
     r"^hapaneld-db:v1:ha-paneld\.db:([1-9][0-9]*):([1-9][0-9]*)$"
 )
@@ -529,8 +528,7 @@ def _parse_artifact(value: object) -> InstallArtifact:
         or signer != _RELEASE_SIGNER_SHA256
         or not isinstance(abis, (list, tuple))
         or tuple(abis) != _SUPPORTED_ABIS
-        or len(release_tag) > _MAX_RELEASE_TAG_LENGTH
-        or _RELEASE_TAG.fullmatch(release_tag) is None
+        or not is_install_release_tag(release_tag)
         or version_name != release_tag.removeprefix("v")
         or apk_name != f"ha-paneld-{release_tag}-manual-setup-required.apk"
         or _APK_NAME.fullmatch(apk_name) is None

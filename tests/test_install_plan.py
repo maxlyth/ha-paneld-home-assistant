@@ -78,6 +78,61 @@ def release(**changes: object) -> ReleaseArtifact:
     return replace(value, **changes)
 
 
+def rc_release(tag: str = "v0.9.7-rc3") -> ReleaseArtifact:
+    apk_name = f"ha-paneld-{tag}-manual-setup-required.apk"
+    return release(
+        tag=tag,
+        version=tag[1:],
+        apk_name=apk_name,
+        descriptor=descriptor(release_tag=tag, version_name=tag[1:], apk_name=apk_name),
+    )
+
+
+def test_rc_plan_binds_only_explicit_exact_opt_in() -> None:
+    plan = build_install_plan(
+        pinned_target(),
+        probe(),
+        rc_release(),
+        CREDENTIAL_ID,
+        expected_rc_tag="v0.9.7-rc3",
+    )
+    assert plan.artifact.release_tag == "v0.9.7-rc3"
+    assert plan.artifact.version_name == "0.9.7-rc3"
+    assert plan.artifact.apk_name == "ha-paneld-v0.9.7-rc3-manual-setup-required.apk"
+    stable = build_install_plan(pinned_target(), probe(), release(), CREDENTIAL_ID)
+    assert plan.plan_sha256 != stable.plan_sha256
+    assert asdict(plan.artifact).keys() == asdict(stable.artifact).keys()
+
+
+@pytest.mark.parametrize(
+    "requested", [None, "", "v0.9.7", "v0.9.7-rc4", "v0.9.7-rc03", True, 3]
+)
+def test_rc_plan_refuses_missing_malformed_or_different_opt_in(
+    requested: object,
+) -> None:
+    with pytest.raises(InstallPlanError) as caught:
+        build_install_plan(
+            pinned_target(),
+            probe(),
+            rc_release(),
+            CREDENTIAL_ID,
+            expected_rc_tag=requested,  # type: ignore[arg-type]
+        )
+    assert caught.value.code is InstallPlanErrorCode.INVALID_RELEASE
+
+
+def test_rc_plan_refuses_stable_substitution() -> None:
+    with pytest.raises(InstallPlanError) as caught:
+        build_install_plan(
+            pinned_target(),
+            probe(),
+            release(),
+            CREDENTIAL_ID,
+            expected_rc_tag="v0.9.7-rc3",
+        )
+    assert caught.value.code is InstallPlanErrorCode.INVALID_RELEASE
+
+
 def assert_error(
     code: InstallPlanErrorCode,
     *,

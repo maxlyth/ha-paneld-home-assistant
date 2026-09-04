@@ -546,8 +546,9 @@ async def test_install_unavailable_duplicate_address_is_rejected_before_probe(
 
 
 @pytest.mark.parametrize("health_error", [CannotConnectError, InvalidResponseError])
+@pytest.mark.parametrize("empty_candidate", [False, True])
 async def test_install_candidate_readiness_is_non_mutating_until_confirmation(
-    hass: HomeAssistant, health_error: type[Exception]
+    hass: HomeAssistant, health_error: type[Exception], empty_candidate: bool
 ) -> None:
     """Both absent and invalid health fall through to a clean ADB classification."""
     probe_mock = AsyncMock(
@@ -575,8 +576,11 @@ async def test_install_candidate_readiness_is_non_mutating_until_confirmation(
         ),
     ):
         form = await _start_step(hass, "install_or_upgrade")
+        user_input = {CONF_ADDRESS: "Panel.local"}
+        if empty_candidate:
+            user_input["release_candidate"] = ""
         confirm = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "Panel.local"}
+            form["flow_id"], user_input
         )
 
         assert confirm["type"] is FlowResultType.FORM
@@ -1179,6 +1183,243 @@ CANDIDATE = InstallTargetProbe(
     android_sdk=TARGET.android_sdk,
 )
 CREDENTIAL = AdbCredential(signer=object(), generation_id="b" * 64)
+
+
+def _rc_release() -> ReleaseArtifact:
+    tag = "v0.9.7-rc3"
+    apk = f"ha-paneld-{tag}-manual-setup-required.apk"
+    return replace(
+        RELEASE,
+        tag=tag,
+        version=tag[1:],
+        apk_name=apk,
+        descriptor=replace(
+            DESCRIPTOR, release_tag=tag, version_name=tag[1:], apk_name=apk
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        None,
+        False,
+        3,
+        " ",
+        "v0.9.7",
+        "v0.9.7-rc03",
+        "v0.9.7-rc3\n",
+        "v0.9.7-rc" + "3" * 60,
+    ],
+)
+async def test_invalid_rc_selection_precedes_all_contact(
+    hass: HomeAssistant, tag: object
+) -> None:
+    flow = HaPaneldConfigFlow()
+    flow.hass = hass
+    with patch(
+        "custom_components.ha_paneld.config_flow.async_pin_install_target", AsyncMock()
+    ) as pin:
+        result = await flow.async_step_install_or_upgrade(
+            {CONF_ADDRESS: "panel.local", "release_candidate": tag}
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"release_candidate": "invalid_release_candidate"}
+    pin.assert_not_awaited()
+
+
+async def test_rc_selection_requires_exact_translated_consent_and_frozen_plan(
+    hass: HomeAssistant,
+) -> None:
+    selected = _rc_release()
+    receipt = _receipt(InstallPhase.APPROVED)
+    manager = _manager_for(receipt)
+    stable = AsyncMock()
+    rc = AsyncMock(return_value=selected)
+    credential = AsyncMock(return_value=CREDENTIAL)
+    progress = AsyncMock(
+        return_value={"type": FlowResultType.ABORT, "reason": "install_worker_stopped"}
+    )
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            AsyncMock(return_value=CANDIDATE),
+        ) as probe,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            stable,
+        ),
+        patch("custom_components.ha_paneld.config_flow.async_resolve_rc_release", rc),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            credential,
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            AsyncMock(return_value=CREDENTIAL),
+        ),
+        patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        assert "release_candidate" in form["data_schema"].schema
+        preview = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            {CONF_ADDRESS: "panel.local", "release_candidate": selected.tag},
+        )
+        assert preview["step_id"] == "confirm_install_rc"
+        assert preview["description_placeholders"]["tag"] == selected.tag
+        assert preview["description_placeholders"]["sha256"] == selected.sha256
+        credential.assert_not_awaited()
+        manager.async_create_or_join.assert_not_awaited()
+        await hass.config_entries.flow.async_configure(preview["flow_id"], {})
+    stable.assert_not_awaited()
+    rc.assert_awaited_once()
+    assert rc.await_args.args[1] == selected.tag
+    assert probe.await_count == 2
+    manager.async_create_or_join.assert_awaited_once()
+    planned = manager.async_create_or_join.await_args.args[1]
+    assert planned.release_tag == selected.tag
+    assert planned.apk_sha256 == selected.sha256
+    progress.assert_awaited_once_with(receipt)
+
+
+async def test_rc_resolution_failure_never_falls_back_or_creates_credential(
+    hass: HomeAssistant,
+) -> None:
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            AsyncMock(return_value=CANDIDATE),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_rc_release",
+            AsyncMock(side_effect=ReleaseResolutionError),
+        ) as rc,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            AsyncMock(),
+        ) as stable,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            AsyncMock(),
+        ) as credential,
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            {CONF_ADDRESS: "panel.local", "release_candidate": "v0.9.7-rc3"},
+        )
+    assert result["errors"] == {"base": "cannot_resolve_release"}
+    rc.assert_awaited_once()
+    stable.assert_not_awaited()
+    credential.assert_not_awaited()
+
+
+async def test_rc_requested_on_installed_panel_only_connects(
+    hass: HomeAssistant,
+) -> None:
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=HEALTH),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            AsyncMock(),
+        ) as adb,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_rc_release",
+            AsyncMock(),
+        ) as rc,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            AsyncMock(),
+        ) as stable,
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            {CONF_ADDRESS: "panel.local", "release_candidate": "v0.9.7-rc3"},
+        )
+        assert result["step_id"] == "confirm_existing"
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {CONF_ADDRESS: "panel.local"}
+    adb.assert_not_awaited()
+    rc.assert_not_awaited()
+    stable.assert_not_awaited()
+
+
+@pytest.mark.parametrize("requested", ["", "v0.9.7-rc3", "v0.9.7-rc4"])
+@pytest.mark.parametrize("active_tag", ["v0.9.7", "v0.9.7-rc3"])
+async def test_active_job_does_not_switch_release(
+    hass: HomeAssistant, requested: str, active_tag: str
+) -> None:
+    receipt = replace(
+        _receipt(InstallPhase.APPROVED),
+        artifact=replace(
+            ARTIFACT,
+            release_tag=active_tag,
+            version_name=active_tag[1:],
+            apk_name=f"ha-paneld-{active_tag}-manual-setup-required.apk",
+        ),
+    )
+    manager = _manager_for(receipt)
+    manager.async_find_active.return_value = receipt
+    progress = AsyncMock(
+        return_value={"type": FlowResultType.ABORT, "reason": "install_worker_stopped"}
+    )
+    with (
+        patch(
+            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(),
+        ) as health,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            AsyncMock(),
+        ) as adb,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_rc_release",
+            AsyncMock(),
+        ) as rc,
+        patch(
+            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            AsyncMock(),
+        ) as stable,
+        patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
+    ):
+        form = await _start_step(hass, "install_or_upgrade")
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            {CONF_ADDRESS: "panel.local", "release_candidate": requested},
+        )
+    if requested and requested != active_tag:
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "install_release_conflict"}
+        progress.assert_not_awaited()
+    else:
+        progress.assert_awaited_once_with(receipt)
+    health.assert_not_awaited()
+    adb.assert_not_awaited()
+    rc.assert_not_awaited()
+    stable.assert_not_awaited()
+    manager.async_create_or_join.assert_not_awaited()
 
 
 def _receipt(

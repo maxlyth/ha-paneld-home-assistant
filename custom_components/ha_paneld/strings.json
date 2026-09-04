@@ -18,7 +18,11 @@
         "title": "Install ha-paneld",
         "description": "Before continuing, find the panel's IP address, keep physical access to its screen and enable network ADB on port 5555 using the [model-specific panel access guide]({panel_access_url}). Root access is not required. Enter the hostname or IP address below. Home Assistant first checks for an existing installation, then uses ADB only for a clean first installation whose exact release can be verified.",
         "data": {
-          "address": "Panel hostname or IP address"
+          "address": "Panel hostname or IP address",
+          "release_candidate": "Exact release candidate tag (testing only)"
+        },
+        "data_description": {
+          "release_candidate": "Leave blank for the latest stable release. For testing only, enter an exact published tag such as v0.9.7-rc3. Release candidates may contain bugs. This does not upgrade an installed panel. To resume an existing job, leave blank or enter its original RC tag."
         }
       },
       "connect_existing": {
@@ -30,19 +34,23 @@
       },
       "confirm_existing": {
         "title": "ha-paneld is already installed",
-        "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant. A later integration version will add update management. No installation will be performed."
+        "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant. A later integration version will add update management. No installation will be performed, even if a release candidate tag was entered."
       },
       "authorize_adb": {
         "title": "Authorize Home Assistant on the panel",
-        "description": "The stable release includes a verified installation descriptor. Select Submit once to create or load a persistent ADB identity for this Home Assistant installation and offer its public key to the Android panel at {address}. On the panel, approve Android's Allow debugging prompt, then return here and select Submit again. Android may describe Home Assistant as a computer. Approval grants general ADB shell access while network debugging remains enabled; revoke it from the panel's developer settings. No APK is downloaded or installed at this step."
+        "description": "The selected release includes a verified installation descriptor. Select Submit once to create or load a persistent ADB identity for this Home Assistant installation and offer its public key to the Android panel at {address}. On the panel, approve Android's Allow debugging prompt, then return here and select Submit again. Android may describe Home Assistant as a computer. Approval grants general ADB shell access while network debugging remains enabled; revoke it from the panel's developer settings. No APK is downloaded or installed at this step."
       },
       "confirm_install_candidate": {
         "title": "Confirm first installation",
         "description": "The Android panel at {address} has no installed or retained ha-paneld package. Device: model {model}; serial {serial}; ABI {abi}; Android SDK {sdk}. Verified stable release: version {version}; tag {tag}; SHA-256 {sha256}. Submitting rechecks the panel and then downloads, verifies, installs, launches and health-checks this exact release. It will not overwrite or upgrade an existing installation. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
       },
+      "confirm_install_rc": {
+        "title": "Confirm release candidate installation",
+        "description": "Testing only: this is a release candidate, not a stable release, and may contain bugs. The Android panel at {address} has no installed or retained ha-paneld package. Device: model {model}; serial {serial}; ABI {abi}; Android SDK {sdk}. Verified release candidate: version {version}; tag {tag}; SHA-256 {sha256}. Submitting authorizes this exact candidate, rechecks the panel and then downloads, verifies, installs, launches and health-checks it. It will not overwrite or upgrade an existing installation. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
+      },
       "release_preview_only": {
         "title": "Release cannot be installed automatically",
-        "description": "Panel {address} is eligible for further inspection, and stable release {version} ({tag}, SHA-256 {sha256}) was authenticated. This older release has no signed installation descriptor, so Home Assistant will not create an ADB credential, download the APK, or change the panel."
+        "description": "Panel {address} is eligible for further inspection, and release {version} ({tag}, SHA-256 {sha256}) was authenticated. This release has no signed installation descriptor, so Home Assistant will not create an ADB credential, download the APK, or change the panel."
       },
       "install_result": {
         "title": "Finish panel setup",
@@ -68,7 +76,9 @@
       "installed_without_health": "The ha-paneld package is installed but its health endpoint did not respond. This flow will not overwrite or repair it. Do not retry automatic installation; open ha-paneld on the panel or follow the provisioning safety and recovery guide linked from the integration documentation. After restoring a healthy installation, start again to connect it.",
       "retained_or_ambiguous": "The panel may contain a retained ha-paneld package record or its package state could not be proven absent. No panel change was made. Retry once if the connection was unstable; otherwise follow the provisioning safety and recovery guide linked from the integration documentation. Do not uninstall or reset the app without a verified backup.",
       "incompatible": "The ha-paneld package was not found, but the panel's Android SDK or processor architecture is not supported. No APK was downloaded or installed.",
-      "cannot_resolve_release": "An install candidate was found, but Home Assistant could not resolve and verify the current stable ha-paneld release. No APK was downloaded or installed. Check internet access and try again.",
+      "cannot_resolve_release": "An install candidate was found, but Home Assistant could not resolve and verify the selected ha-paneld release. No APK was downloaded or installed. Check internet access and, if testing a release candidate, that the exact tag is published with its signed assets. No other release will be substituted.",
+      "invalid_release_candidate": "Enter an exact tag in the form v0.9.7-rc3, with no spaces, leading zeroes or extra suffixes. Leave blank for the latest stable release.",
+      "install_release_conflict": "An existing installation job owns this panel with a different release. Its version cannot be changed here. Leave the candidate field blank to resume that job, or enter its original RC tag.",
       "install_candidate_changed": "The panel identity or clean package state changed after the preview. No installation job was created. Start again after checking the panel.",
       "install_plan_rejected": "The panel and signed release could not be bound into a safe installation plan. No installation job was created.",
       "install_job_conflict": "A different installation job already owns this panel identity. No second job was created.",
@@ -79,7 +89,7 @@
     },
     "abort": {
       "already_configured": "This panel is already configured.",
-      "preview_only_release": "The authenticated stable release has no signed installation descriptor. No ADB credential was created, no APK was downloaded, and no panel state changed.",
+      "preview_only_release": "The authenticated release has no signed installation descriptor. No ADB credential was created, no APK was downloaded, and no panel state changed.",
       "install_cancelled": "The installation was cancelled before an APK was installed. No Home Assistant entry was created. To try again, add the ha-paneld integration and enter the same panel address.",
       "install_cancelled_after_staging_cleanup": "The installation was cancelled and the staged APK was removed before installation. No Home Assistant entry was created. To try again, add the ha-paneld integration and enter the same panel address.",
       "install_authorization_failed": "Home Assistant could not safely load or validate its stored ADB credential. No APK was installed. Check Home Assistant's storage and logs, then add the ha-paneld integration and enter the same address to try again.",

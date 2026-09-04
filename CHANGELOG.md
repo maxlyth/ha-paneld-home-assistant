@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## 0.1.0 - Unreleased
 
+- Allow advanced users to test one exact published Android release candidate while keeping the latest stable release as the default. RC installs retain the signed descriptor, exact consent, durable receipt and recovery checks; existing installations are never upgraded by this option.
 - Add a clean first-install workflow over network ADB while keeping connection to an existing installation as a separate path. Home Assistant verifies the panel and signed stable-release descriptor, downloads the exact APK, installs and launches it, then creates the config entry only after final identity and health checks pass.
 - Require physical approval of one persistent ADB credential stored in Home Assistant's private storage. Unreachable targets and the initial authorization probe do not create or offer a key.
 - Keep the installation transaction running if its setup dialog closes, resume safe phases after the integration loads again and refuse to replay any operation with an ambiguous outcome.

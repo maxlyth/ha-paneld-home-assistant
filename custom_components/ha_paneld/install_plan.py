@@ -17,7 +17,12 @@ from .install_jobs import (
 )
 from .install_network import PinnedPanelTarget, is_allowed_install_address
 from .provisioning import InstallTargetProbe, InstallTargetState
-from .release import InstallDescriptor, ReleaseArtifact
+from .release import (
+    InstallDescriptor,
+    ReleaseArtifact,
+    is_install_release_tag,
+    is_rc_release_tag,
+)
 
 _DESCRIPTOR_SCHEMA = "io.github.maxlyth.hapaneld.install.v1"
 _PACKAGE_ID = "io.github.maxlyth.hapaneld"
@@ -32,11 +37,9 @@ _MAX_ADDRESS_LENGTH = 255
 _MAX_MODEL_LENGTH = 128
 _MAX_APK_NAME_LENGTH = 255
 _MAX_RELEASE_TEXT_LENGTH = 128
-_MAX_RELEASE_TAG_LENGTH = 64
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ADB_SERIAL = re.compile(r"^[A-Za-z0-9._:-]{1,128}$", flags=re.ASCII)
 _ABI = re.compile(r"^[A-Za-z0-9_.-]{1,64}$", flags=re.ASCII)
-_RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _DATABASE_COMPATIBILITY = re.compile(
     r"^hapaneld-db:v1:ha-paneld\.db:([1-9][0-9]*):([1-9][0-9]*)$"
 )
@@ -180,7 +183,9 @@ def _build_target(
     )
 
 
-def _build_artifact(release: ReleaseArtifact) -> InstallArtifact:
+def _build_artifact(
+    release: ReleaseArtifact, expected_rc_tag: str | None
+) -> InstallArtifact:
     if not isinstance(release, ReleaseArtifact):
         raise InstallPlanError(InstallPlanErrorCode.INVALID_RELEASE)
     descriptor = release.descriptor
@@ -213,8 +218,13 @@ def _build_artifact(release: ReleaseArtifact) -> InstallArtifact:
     if (
         descriptor.schema != _DESCRIPTOR_SCHEMA
         or release_tag is None
-        or len(release_tag) > _MAX_RELEASE_TAG_LENGTH
-        or _RELEASE_TAG.fullmatch(release_tag) is None
+        or not is_install_release_tag(release_tag)
+        or (
+            is_rc_release_tag(release_tag)
+            if expected_rc_tag is None
+            else not is_rc_release_tag(expected_rc_tag)
+            or release_tag != expected_rc_tag
+        )
         or version_name != release_tag.removeprefix("v")
         or apk_name != f"ha-paneld-{release_tag}-manual-setup-required.apk"
         or apk_sha256 is None
@@ -257,10 +267,12 @@ def build_install_plan(
     probe: InstallTargetProbe,
     release: ReleaseArtifact,
     adb_credential_id: str,
+    *,
+    expected_rc_tag: str | None = None,
 ) -> InstallPlan:
     """Validate and bind one exact target, release, and ADB key generation."""
     target = _build_target(pinned_target, probe)
-    artifact = _build_artifact(release)
+    artifact = _build_artifact(release, expected_rc_tag)
     if (
         not isinstance(adb_credential_id, str)
         or _SHA256.fullmatch(adb_credential_id) is None

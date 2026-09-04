@@ -197,6 +197,210 @@ def _required_assets_for_tag(tag: str) -> list[dict[str, str]]:
     ]
 
 
+def _rc_session(signing_key: rsa.RSAPrivateKey) -> _FakeSession:
+    """Build real signed RC metadata without weakening any production verifier."""
+    tag = "v0.9.7-rc3"
+    root = f"https://github.com/maxlyth/ha-paneld/releases/download/{tag}"
+    api = f"https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/{tag}"
+    apk = f"ha-paneld-{tag}-manual-setup-required.apk"
+    descriptor_name = f"ha-paneld-{tag}-install.json"
+    checksum = f"{_SHA256}  {apk}\n".encode("ascii")
+    descriptor = _canonical_descriptor(
+        _descriptor_document(releaseTag=tag, versionName=tag[1:], apkName=apk)
+    )
+    assets = _required_assets_for_tag(tag) + [
+        {"name": name, "browser_download_url": f"{root}/{name}"}
+        for name in (descriptor_name, f"{descriptor_name}.sig")
+    ]
+    payloads = {
+        f"{root}/{apk}.sha256": checksum,
+        f"{root}/{apk}.sha256.sig": _signature(signing_key, checksum),
+        f"{root}/{descriptor_name}": descriptor,
+        f"{root}/{descriptor_name}.sig": _signature(signing_key, descriptor),
+        api: json.dumps(
+            _release_document(tag=tag, prerelease=True, assets=assets)
+        ).encode(),
+    }
+    # A wrong latest-endpoint implementation must reach the exact URL assertion,
+    # not fail because this fake happens to lack a response for that endpoint.
+    payloads[str(release._LATEST_RELEASE_URL)] = payloads[api]
+    return _FakeSession(
+        {url: _FakeResponse(200, body, URL(url)) for url, body in payloads.items()}
+    )
+
+
+async def test_rc_resolves_only_exact_requested_tag_and_signed_descriptor(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey
+) -> None:
+    """Opt-in authenticates exact RC bytes, not latest or an APK download."""
+    _install_test_key(monkeypatch, signing_key)
+    session = _rc_session(signing_key)
+    artifact = await release.async_resolve_rc_release(session, "v0.9.7-rc3")  # type: ignore[arg-type]
+    assert artifact.tag == "v0.9.7-rc3"
+    assert artifact.version == "0.9.7-rc3"
+    assert artifact.descriptor is not None
+    assert artifact.descriptor.release_tag == artifact.tag
+    assert artifact.descriptor.version_name == artifact.version
+    assert artifact.descriptor.apk_sha256 == artifact.sha256 == _SHA256
+    urls = [url for url, _kwargs in session.requests]
+    assert urls == [
+        "https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/v0.9.7-rc3",
+        artifact.apk_url + ".sha256",
+        artifact.apk_url + ".sha256.sig",
+        artifact.apk_url.rsplit("/", 1)[0] + "/ha-paneld-v0.9.7-rc3-install.json",
+        artifact.apk_url.rsplit("/", 1)[0] + "/ha-paneld-v0.9.7-rc3-install.json.sig",
+    ]
+    assert artifact.apk_url not in urls
+    assert all(kwargs["allow_redirects"] is False for _url, kwargs in session.requests)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        None,
+        True,
+        3,
+        "",
+        "v0.9.7",
+        "0.9.7-rc3",
+        "v0.9.7-rc0",
+        "v0.9.7-rc03",
+        "v00.9.7-rc3",
+        "v0.9.7-rc",
+        "v0.9.7-rc.3",
+        "v0.9.7-RC3",
+        "v0.9.7-beta3",
+        "v0.9.7-rc3+build",
+        "v0.9.7-rc3 ",
+        " v0.9.7-rc3",
+        "v0.9.7-rc3\n",
+        "v0.9.7-rc\N{ARABIC-INDIC DIGIT THREE}",
+        "v0.9.7-rc3/other",
+        "v0.9.7-rc" + "3" * 60,
+    ],
+)
+async def test_rc_invalid_selection_makes_no_request(tag: Any) -> None:
+    session = _FakeSession({})
+    with pytest.raises(ReleaseResolutionError):
+        await release.async_resolve_rc_release(session, tag)  # type: ignore[arg-type]
+    assert session.requests == []
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        ("v0.0.0-rc1", True),
+        ("v0.9.7-rc3", True),
+        ("v0.9.7-rc" + "3" * 55, True),
+        ("v0.9.7-rc" + "3" * 56, False),
+        (None, False),
+        (3, False),
+        ("v0.9.7", False),
+        ("v0.9.7-rc0", False),
+        ("v0.9.7-rc03", False),
+        ("v00.9.7-rc3", False),
+        ("v0.9.7-rc3\n", False),
+        ("v0.9.7-rc3+meta", False),
+        ("v0.9.7-rc\N{ARABIC-INDIC DIGIT THREE}", False),
+    ],
+)
+def test_rc_tag_grammar_has_positive_and_negative_controls(
+    tag: object, expected: bool
+) -> None:
+    assert release.is_rc_release_tag(tag) is expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tag_name", "v0.9.7-rc4"),
+        ("tag_name", "v0.9.7"),
+        ("prerelease", False),
+        ("prerelease", 1),
+        ("prerelease", None),
+        ("draft", True),
+        ("draft", 0),
+    ],
+)
+async def test_rc_refuses_tag_or_release_flag_substitution(
+    signing_key: rsa.RSAPrivateKey, field: str, value: Any
+) -> None:
+    session = _rc_session(signing_key)
+    api = "https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/v0.9.7-rc3"
+    metadata = json.loads(session._responses[api].body)
+    metadata[field] = value
+    if field == "tag_name":
+        metadata["assets"] = _required_assets_for_tag(value)
+    body = json.dumps(metadata).encode()
+    with pytest.raises(ReleaseResolutionError):
+        release._parse_release_metadata(body, expected_rc_tag="v0.9.7-rc3")
+    session._responses[api] = _FakeResponse(200, body, URL(api))
+    with pytest.raises(ReleaseResolutionError):
+        await release.async_resolve_rc_release(session, "v0.9.7-rc3")  # type: ignore[arg-type]
+    assert [url for url, _kwargs in session.requests] == [api]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "redirect",
+        "oversized",
+        "asset_url",
+        "checksum_sig",
+        "descriptor_sig",
+        "descriptor_tag",
+        "descriptor_hash",
+    ],
+)
+async def test_rc_failures_do_not_fall_back_or_bypass_proof(
+    monkeypatch: pytest.MonkeyPatch, signing_key: rsa.RSAPrivateKey, fault: str
+) -> None:
+    _install_test_key(monkeypatch, signing_key)
+    session = _rc_session(signing_key)
+    api = "https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/v0.9.7-rc3"
+    root = "https://github.com/maxlyth/ha-paneld/releases/download/v0.9.7-rc3"
+    checksum_sig = root + "/ha-paneld-v0.9.7-rc3-manual-setup-required.apk.sha256.sig"
+    descriptor_url = root + "/ha-paneld-v0.9.7-rc3-install.json"
+    if fault == "missing":
+        session._responses[api].status = 404
+    elif fault == "redirect":
+        session._responses[api].status = 302
+        session._responses[api].headers["Location"] = str(release._LATEST_RELEASE_URL)
+    elif fault == "oversized":
+        session._responses[api].declared_length = (
+            release._MAX_RELEASE_RESPONSE_BYTES + 1
+        )
+    elif fault == "asset_url":
+        metadata = json.loads(session._responses[api].body)
+        metadata["assets"][0]["browser_download_url"] = _APK_URL
+        session._responses[api] = _FakeResponse(
+            200, json.dumps(metadata).encode(), URL(api)
+        )
+    elif fault in {"checksum_sig", "descriptor_sig"}:
+        url = checksum_sig if fault == "checksum_sig" else descriptor_url + ".sig"
+        session._responses[url] = _FakeResponse(200, b"x" * 256, URL(url))
+    else:
+        descriptor = json.loads(session._responses[descriptor_url].body)
+        if fault == "descriptor_tag":
+            descriptor["releaseTag"] = "v0.9.7-rc4"
+        else:
+            descriptor["apkSha256"] = "a" * 64
+        body = _canonical_descriptor(descriptor)
+        session._responses[descriptor_url] = _FakeResponse(
+            200, body, URL(descriptor_url)
+        )
+        session._responses[descriptor_url + ".sig"] = _FakeResponse(
+            200, _signature(signing_key, body), URL(descriptor_url + ".sig")
+        )
+    with pytest.raises(ReleaseResolutionError):
+        await release.async_resolve_rc_release(session, "v0.9.7-rc3")  # type: ignore[arg-type]
+    urls = [url for url, _kwargs in session.requests]
+    assert urls[0] == api
+    assert str(release._LATEST_RELEASE_URL) not in urls
+    assert not any(url.endswith(".apk") for url in urls)
+
+
 def _metadata_response(document: Any) -> _FakeResponse:
     return _FakeResponse(
         status=200,
