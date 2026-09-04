@@ -48,7 +48,10 @@ class HaPaneldDataUpdateCoordinator(DataUpdateCoordinator[PanelSnapshot]):
         try:
             health = await self.client.async_get_health()
         except HaPaneldError as err:
-            raise UpdateFailed(f"Unable to read panel health: {err}") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="health_update_failed",
+            ) from err
 
         try:
             status = await self.client.async_get_status()

@@ -111,8 +111,16 @@
   "entity": {
     "sensor": {
       "status": {
-        "name": "Status"
+        "name": "Status",
+        "state": {
+          "online": "Online"
+        }
       }
+    }
+  },
+  "exceptions": {
+    "health_update_failed": {
+      "message": "Unable to read panel health"
     }
   }
 }

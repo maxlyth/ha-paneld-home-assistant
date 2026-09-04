@@ -1004,8 +1004,11 @@ async def test_setup_retries_when_panel_is_offline(hass: HomeAssistant) -> None:
     status_mock.assert_not_awaited()
 
 
-async def test_coordinator_translates_client_failure(hass: HomeAssistant) -> None:
-    """Polling keeps client exceptions behind the coordinator boundary."""
+@pytest.mark.parametrize("error_type", [CannotConnectError, InvalidResponseError])
+async def test_coordinator_translates_client_failure(
+    hass: HomeAssistant, error_type: type[CannotConnectError | InvalidResponseError]
+) -> None:
+    """Polling exposes a keyed error without interpolating client exception text."""
     entry = _entry(hass)
     status_mock = AsyncMock(return_value=STATUS)
     with (
@@ -1021,15 +1024,17 @@ async def test_coordinator_translates_client_failure(hass: HomeAssistant) -> Non
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
+    client_error = error_type("untrusted panel response detail")
     entry.runtime_data.client.async_get_health = AsyncMock(  # type: ignore[method-assign]
-        side_effect=CannotConnectError
+        side_effect=client_error
     )
-    try:
+    with pytest.raises(UpdateFailed) as raised:
         await entry.runtime_data.coordinator._async_update_data()
-    except UpdateFailed:
-        pass
-    else:
-        raise AssertionError("Client failure was not translated to UpdateFailed")
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == "health_update_failed"
+    assert raised.value.translation_placeholders is None
+    assert str(raised.value) == "Unable to read panel health"
+    assert raised.value.__cause__ is client_error
     assert status_mock.await_count == 1
 
 
