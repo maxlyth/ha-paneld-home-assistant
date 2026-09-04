@@ -15,13 +15,44 @@ from custom_components.ha_paneld.coordinator import HaPaneldDataUpdateCoordinato
 from custom_components.ha_paneld.sensor import HaPaneldStatusSensor
 
 
-@pytest.mark.parametrize("language", ["en", "de", "zh-Hans"])
+@pytest.mark.parametrize(
+    ("language", "setup_title", "status_name", "online_state", "health_error"),
+    [
+        (
+            "en",
+            "Set up a panel",
+            "Status",
+            "Online",
+            "Unable to read panel health",
+        ),
+        (
+            "de",
+            "Panel einrichten",
+            "Status",
+            "Online",
+            "Der Funktionsstatus des Panels konnte nicht gelesen werden",
+        ),
+        (
+            "zh-Hans",
+            "Set up a panel",
+            "Status",
+            "Online",
+            "Unable to read panel health",
+        ),
+    ],
+)
 async def test_native_status_and_exception_translations(
-    hass: HomeAssistant, language: str
+    hass: HomeAssistant,
+    language: str,
+    setup_title: str,
+    status_name: str,
+    online_state: str,
+    health_error: str,
 ) -> None:
-    """Missing locales use HA's English fallback, not a new translation engine."""
+    """Native German loads while a missing locale uses HA's English fallback."""
     hass.config.language = language
     assert await async_setup_component(hass, DOMAIN, {})
+    config_strings = await async_get_translations(hass, language, "config", {DOMAIN})
     entity_strings = await async_get_translations(hass, language, "entity", {DOMAIN})
     error_strings = await async_get_translations(hass, language, "exceptions", {DOMAIN})
     sensor = HaPaneldStatusSensor(
@@ -33,11 +64,15 @@ async def test_native_status_and_exception_translations(
     assert sensor.translation_key == "status"
     assert sensor.device_class is None
     assert (
-        entity_strings.get(f"component.{DOMAIN}.entity.sensor.status.name") == "Status"
+        config_strings.get(f"component.{DOMAIN}.config.step.user.title") == setup_title
+    )
+    assert (
+        entity_strings.get(f"component.{DOMAIN}.entity.sensor.status.name")
+        == status_name
     )
     assert (
         entity_strings.get(f"component.{DOMAIN}.entity.sensor.status.state.online")
-        == "Online"
+        == online_state
     )
     assert (
         async_translate_state(
@@ -48,9 +83,9 @@ async def test_native_status_and_exception_translations(
             sensor.translation_key,
             sensor.device_class,
         )
-        == "Online"
+        == online_state
     )
     assert (
         error_strings.get(f"component.{DOMAIN}.exceptions.health_update_failed.message")
-        == "Unable to read panel health"
+        == health_error
     )

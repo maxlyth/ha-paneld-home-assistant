@@ -3,9 +3,12 @@
 import ast
 import importlib.util
 import json
+import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,6 +17,105 @@ from custom_components.ha_paneld.client import parse_health_response
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "ha_paneld"
 RELEASE_VERSION_SCRIPT = ROOT / ".github" / "scripts" / "verify_release_version.py"
+PLACEHOLDER = re.compile(r"\{[a-z][a-z0-9_]*\}")
+MARKDOWN_LINK = re.compile(
+    r"(?<!\\)(?P<image>!?)\[[^\]\r\n]*\]\((?P<target>[^()\r\n]+)\)"
+)
+FROZEN_TRANSLATION_TOKENS = (
+    "ha-paneld",
+    "Home Assistant",
+    "Android Debug Bridge (ADB)",
+    "Android",
+    "ADB",
+    "HTTP",
+    "IPv4",
+    "IPv6",
+    "APK",
+    "DNS",
+    "IP",
+    "RC",
+    "SDK",
+    "ABI",
+    "SHA-256",
+    "URL",
+    "v0.9.7-rc3",
+    "8888",
+    "5555",
+)
+
+
+def _translation_leaves(
+    value: Any, prefix: tuple[str, ...] = ()
+) -> dict[tuple[str, ...], str]:
+    """Return every string leaf under its exact translation-key path."""
+    if isinstance(value, str):
+        return {prefix: value}
+    assert isinstance(value, dict)
+    leaves: dict[tuple[str, ...], str] = {}
+    for key, child in value.items():
+        assert isinstance(key, str)
+        leaves.update(_translation_leaves(child, (*prefix, key)))
+    return leaves
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object while rejecting silently shadowed duplicate keys."""
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        assert key not in value
+        value[key] = child
+    return value
+
+
+def _load_translation_catalogue(path: Path) -> dict[str, Any]:
+    """Load a catalogue through the strict JSON object boundary."""
+    value = json.loads(
+        path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+    )
+    assert isinstance(value, dict)
+    return value
+
+
+def _translation_shape(value: Any) -> Any:
+    """Return the complete object shape while discarding translated text."""
+    if isinstance(value, str):
+        return None
+    assert isinstance(value, dict)
+    return {key: _translation_shape(child) for key, child in value.items()}
+
+
+def _placeholders(value: str) -> Counter[str]:
+    """Return valid placeholders and reject every unmatched or malformed brace."""
+    placeholders = PLACEHOLDER.findall(value)
+    remainder = PLACEHOLDER.sub("", value)
+    assert "{" not in remainder and "}" not in remainder
+    return Counter(placeholders)
+
+
+def _markdown_links(value: str) -> list[tuple[bool, str]]:
+    """Return link kinds and targets, rejecting malformed Markdown delimiters."""
+    links = [
+        (bool(match.group("image")), match.group("target"))
+        for match in MARKDOWN_LINK.finditer(value)
+    ]
+    assert value.count("](") == len(links)
+    for opening, closing in (("[", "]"), ("(", ")")):
+        depth = 0
+        for character in value:
+            if character == opening:
+                depth += 1
+            elif character == closing:
+                depth -= 1
+                assert depth >= 0
+        assert depth == 0
+    return links
+
+
+def _literal_count(value: str, literal: str) -> int:
+    """Count an exact technical literal, excluding word or numeric supersets."""
+    return len(
+        re.findall(rf"(?<!\w){re.escape(literal)}(?!\w)", value, flags=re.UNICODE)
+    )
 
 
 def _load_release_version_module():
@@ -130,13 +232,42 @@ def test_hacs_repository_foundation() -> None:
 
 def test_runtime_translations_are_complete() -> None:
     """The custom-component translation does not depend on Core placeholders."""
-    strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
-    english = json.loads(
-        (INTEGRATION / "translations" / "en.json").read_text(encoding="utf-8")
-    )
+    strings = _load_translation_catalogue(INTEGRATION / "strings.json")
+    english = _load_translation_catalogue(INTEGRATION / "translations" / "en.json")
 
     assert english == strings
     assert "[%key:" not in json.dumps(english)
+
+
+def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
+    """Every locale has exact keys, placeholders, links, and technical literals."""
+    english_catalogue = _load_translation_catalogue(
+        INTEGRATION / "translations" / "en.json"
+    )
+    english = _translation_leaves(english_catalogue)
+    translations = INTEGRATION / "translations"
+    locale_paths = sorted(translations.glob("*.json"))
+    assert [path.name for path in locale_paths] == ["de.json", "en.json"]
+    assert len(english) == 74
+
+    for locale_path in locale_paths:
+        target_catalogue = _load_translation_catalogue(locale_path)
+        target = _translation_leaves(target_catalogue)
+        assert _translation_shape(target_catalogue) == _translation_shape(
+            english_catalogue
+        )
+        assert target.keys() == english.keys()
+        assert all(value.strip() for value in target.values())
+        assert all("[%key:" not in value for value in target.values())
+        for key, source_text in english.items():
+            target_text = target[key]
+            assert _placeholders(target_text) == _placeholders(source_text)
+            assert _markdown_links(target_text) == _markdown_links(source_text)
+            assert target_text.count("`") == source_text.count("`")
+            for token in FROZEN_TRANSLATION_TOKENS:
+                required_count = _literal_count(source_text, token)
+                if required_count:
+                    assert _literal_count(target_text, token) >= required_count
 
 
 def test_rc_selection_and_confirmation_are_keyed_and_explicit() -> None:
