@@ -68,7 +68,7 @@ _RELEASE_SIGNER_SHA256 = (
     "ac6193307fb0b70113aae205d7549406f96e063bc5491b67b1d5694a34b0e339"
 )
 _SUPPORTED_ABIS = ("arm64-v8a", "armeabi-v7a")
-_PREFLIGHT_ROOT_MODES = frozenset({"root_adbd", "rootless"})
+_PREFLIGHT_ROOT_MODES = frozenset({"root_adbd", "rootless", "root_su"})
 
 
 class InstallJobError(Exception):

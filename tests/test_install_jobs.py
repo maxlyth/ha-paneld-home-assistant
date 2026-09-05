@@ -490,11 +490,11 @@ async def test_create_is_durable_private_and_has_no_unsafe_fields(
     assert json.loads(raw)["jobs"][0]["preflight_root_mode"] is None
 
 
-@pytest.mark.parametrize("root_mode", ["root_adbd", "rootless"])
+@pytest.mark.parametrize("root_mode", ["root_adbd", "rootless", "root_su"])
 async def test_preflight_root_mode_is_learned_once_and_survives_restart(
     hass: HomeAssistant, root_mode: str
 ) -> None:
-    """Both ADB root postures become durable at the preflight boundary."""
+    """Every admitted ADB posture becomes durable at the preflight boundary."""
     manager = InstallJobManager(hass, now=Clock())
     receipt = await receipt_at_phase(manager, InstallPhase.PREFLIGHT)
 
@@ -580,7 +580,7 @@ async def test_preflight_root_mode_rejects_wrong_transition_timing(
         )
 
 
-@pytest.mark.parametrize("replacement", ["root_adbd", "rootless"])
+@pytest.mark.parametrize("replacement", ["root_adbd", "rootless", "root_su"])
 async def test_preflight_root_mode_cannot_be_reasserted_or_overwritten(
     hass: HomeAssistant, replacement: str
 ) -> None:

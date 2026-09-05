@@ -1407,14 +1407,25 @@ async def test_changed_pin_value_before_stage_prevents_the_mutation(
     assert completed.result_code is InstallResultCode.TRANSPORT_FAILED
 
 
+@pytest.mark.parametrize(
+    ("initial", "changed"),
+    [
+        (AdbRootMode.ROOTLESS, AdbRootMode.ROOT_ADBD),
+        (AdbRootMode.ROOT_SU, AdbRootMode.ROOTLESS),
+        (AdbRootMode.ROOTLESS, AdbRootMode.ROOT_SU),
+    ],
+)
 async def test_root_posture_drift_fails_before_staging(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    initial: AdbRootMode,
+    changed: AdbRootMode,
 ) -> None:
     """Fresh serial and root posture must match the earlier clean admission."""
     manager = InstallJobManager(hass)
     first = await create_job(manager)
     harness = Harness(monkeypatch)
-    harness.preflight_root_modes = [AdbRootMode.ROOTLESS, AdbRootMode.ROOT_ADBD]
+    harness.preflight_root_modes = [initial, changed]
 
     completed = await InstallExecutor(hass, manager).async_wait(first.job_id)
 
@@ -1424,24 +1435,26 @@ async def test_root_posture_drift_fails_before_staging(
     assert completed.result_code is InstallResultCode.PREFLIGHT_REJECTED
 
 
+@pytest.mark.parametrize("root_mode", list(AdbRootMode))
 async def test_admitted_root_posture_is_bound_to_every_mutation_primitive(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, root_mode: AdbRootMode
 ) -> None:
     """The same exact root admission is passed into every later ADB connection."""
     manager = InstallJobManager(hass)
     receipt = await create_job(manager)
     harness = Harness(monkeypatch)
     harness.preflight_root_modes = [
-        AdbRootMode.ROOT_ADBD,
-        AdbRootMode.ROOT_ADBD,
+        root_mode,
+        root_mode,
     ]
 
     completed = await InstallExecutor(hass, manager).async_wait(receipt.job_id)
 
-    assert harness.stage_arguments[0][-1] is AdbRootMode.ROOT_ADBD
-    assert harness.install_arguments[0][-1] is AdbRootMode.ROOT_ADBD
-    assert harness.remote_cleanup_arguments[0][-1] is AdbRootMode.ROOT_ADBD
-    assert harness.launch_arguments[0][-1] is AdbRootMode.ROOT_ADBD
+    assert harness.stage_arguments[0][-1] is root_mode
+    assert harness.install_arguments[0][-1] is root_mode
+    assert harness.remote_cleanup_arguments[0][-1] is root_mode
+    assert harness.launch_arguments[0][-1] is root_mode
+    assert completed.preflight_root_mode == root_mode.value
     assert completed.phase is InstallPhase.HEALTHY_UNCLAIMED
 
 

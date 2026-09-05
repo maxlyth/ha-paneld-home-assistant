@@ -1002,7 +1002,8 @@ def _require_preflight(observed: AdbPreflight, target: AdbInstallTarget) -> None
         or observed.model != target.model
         or observed.primary_abi != target.primary_abi
         or observed.android_sdk != target.android_sdk
-        or observed.root_mode not in {AdbRootMode.ROOT_ADBD, AdbRootMode.ROOTLESS}
+        or observed.root_mode
+        not in {AdbRootMode.ROOT_ADBD, AdbRootMode.ROOTLESS, AdbRootMode.ROOT_SU}
     ):
         raise InstallAdbError(InstallAdbErrorCode.TARGET_CHANGED)
 

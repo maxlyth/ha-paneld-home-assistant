@@ -13,6 +13,7 @@ import ipaddress
 import math
 import os
 import re
+import shlex
 import stat
 from contextlib import suppress
 from dataclasses import dataclass
@@ -77,6 +78,8 @@ _ABI_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$", flags=re.ASCII)
 _APK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.apk$", re.ASCII)
 _ROOT_DATA_BASES = ("/data/user/0", "/data/data", "/data/user_de/0")
 _RESIDUE_PATHS = tuple(f"{base}/{_PACKAGE_ID}" for base in _ROOT_DATA_BASES)
+_SU_PREFIXES = ("su 0", "su 0 sh -c", "su root", "su root sh -c", "su -c")
+_SU_TIMEOUT_SECONDS = 3.0
 
 _ADB_EXCEPTIONS = (
     AdbConnectionError,
@@ -124,10 +127,11 @@ class InstallAdbError(Exception):
 
 
 class AdbRootMode(StrEnum):
-    """The two positively admitted ADB privilege postures."""
+    """ADB privilege postures; delegated root requires a fresh runtime proof."""
 
     ROOT_ADBD = "root_adbd"
     ROOTLESS = "rootless"
+    ROOT_SU = "root_su"
 
 
 class InstallOutcome(StrEnum):
@@ -409,6 +413,47 @@ def _su_observation_command() -> str:
     )
 
 
+def _su_inspection_command(nonce: str, *, clean: bool) -> str:
+    """Build only fixed read-only operations for the delegated root shell."""
+    commands = [f"echo HAPANELD_SU_BEGIN:{nonce}"]
+    sections = [("UID", "id -u")]
+    if clean:
+        for index, path in enumerate(_ROOT_DATA_BASES):
+            sections.append(
+                (
+                    f"BASE{index}",
+                    f"if [ -d {path} ] && ls -1A {path} >/dev/null 2>&1; "
+                    "then echo readable; else echo unreadable; fi",
+                )
+            )
+        for index, path in enumerate(_RESIDUE_PATHS):
+            sections.append(
+                (
+                    f"RESIDUE{index}",
+                    f"if [ -e {path} ] || [ -L {path} ]; then "
+                    "echo present; else echo absent; fi",
+                )
+            )
+    for name, command in sections:
+        commands.extend(
+            (
+                f"echo HAPANELD_SU_{name}_BEGIN:{nonce}",
+                command,
+                f"echo HAPANELD_SU_{name}_END:{nonce}:$?",
+            )
+        )
+    commands.append(f"echo HAPANELD_SU_END:{nonce}")
+    return "; ".join(commands)
+
+
+def _su_attempt_command(prefix: str, nonce: str, *, clean: bool) -> str:
+    payload = shlex.quote(_su_inspection_command(nonce, clean=clean))
+    return (
+        f"echo HAPANELD_DELEGATE_BEGIN:{nonce}; {prefix} {payload}; "
+        f"echo HAPANELD_DELEGATE_END:{nonce}:$?"
+    )
+
+
 def _identity_root_command(nonce: str) -> str:
     commands = _framed_value_commands("POSTURE", nonce)
     commands.pop()
@@ -629,6 +674,9 @@ def _parse_root_mode(
         raise _MalformedAdbResponse
     if uid_lines == ["0"]:
         return AdbRootMode.ROOT_ADBD
+    # This is only a candidate. Async admission must prove delegated UID0.
+    if uid_lines == ["2000"] and su_lines == ["present"]:
+        return AdbRootMode.ROOT_SU
     if (
         uid_lines == ["2000"]
         and secure_lines == ["1"]
@@ -1025,7 +1073,55 @@ async def _async_preflight_on_device(
     body = await _async_shell(
         device, _preflight_command(nonce), read_timeout=_READ_TIMEOUT_SECONDS
     )
-    return _parse_preflight(body, nonce, target, descriptor)
+    preflight = _parse_preflight(body, nonce, target, descriptor)
+    if preflight.root_mode is AdbRootMode.ROOT_SU:
+        await _async_prove_su(device, clean=True)
+    return preflight
+
+
+async def _async_prove_su(device: AdbDeviceAsync, *, clean: bool) -> None:
+    """Prove delegated root afresh without elevating any mutation command."""
+    for prefix in _SU_PREFIXES:
+        nonce = token_hex(16)
+        async with asyncio.timeout(_SU_TIMEOUT_SECONDS):
+            body = await _async_shell(
+                device,
+                _su_attempt_command(prefix, nonce, clean=clean),
+                read_timeout=_SU_TIMEOUT_SECONDS,
+                transport_timeout=_SU_TIMEOUT_SECONDS,
+            )
+        lines = _decode_lines(body)
+        if not lines or lines[0] != f"HAPANELD_DELEGATE_BEGIN:{nonce}":
+            raise _MalformedAdbResponse
+        status = _parse_status(lines[-1], "DELEGATE", nonce)
+        if status is None:
+            raise _MalformedAdbResponse
+        if status != 0:
+            continue  # A different vendor dialect may be needed.
+        names: tuple[str, ...] = ("UID",)
+        if clean:
+            names += tuple(f"BASE{i}" for i in range(len(_ROOT_DATA_BASES)))
+            names += tuple(f"RESIDUE{i}" for i in range(len(_RESIDUE_PATHS)))
+        sections = _parse_sections(
+            ("\n".join(lines[1:-1]) + "\n").encode(),
+            prefix="SU",
+            nonce=nonce,
+            names=names,
+        )
+        if sections["UID"] != (["0"], 0):
+            raise InstallAdbError(InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS)
+        if clean:
+            for index in range(len(_ROOT_DATA_BASES)):
+                if sections[f"BASE{index}"] != (["readable"], 0):
+                    raise InstallAdbError(InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS)
+            for index in range(len(_RESIDUE_PATHS)):
+                values, status = sections[f"RESIDUE{index}"]
+                if status != 0 or values not in (["absent"], ["present"]):
+                    raise _MalformedAdbResponse
+                if values == ["present"]:
+                    raise InstallAdbError(InstallAdbErrorCode.TARGET_NOT_CLEAN)
+        return
+    raise InstallAdbError(InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS)
 
 
 async def _async_require_identity_root(
@@ -1044,6 +1140,8 @@ async def _async_require_identity_root(
         target,
     )
     _require_expected_root_mode(observed_root_mode, expected_root_mode)
+    if observed_root_mode is AdbRootMode.ROOT_SU:
+        await _async_prove_su(device, clean=False)
 
 
 def _validate_filesync_maxdata(device: AdbDeviceAsync) -> None:

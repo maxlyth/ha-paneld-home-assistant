@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shlex
 import stat
 import threading
 from collections.abc import AsyncIterator, Iterator
@@ -254,6 +255,27 @@ def _cleanup_output(nonce: str) -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
+def _su_output(
+    nonce: str,
+    *,
+    clean: bool = True,
+    uid: str = "0",
+    unreadable_base: int | None = None,
+    residue_index: int | None = None,
+) -> bytes:
+    lines = [f"HAPANELD_DELEGATE_BEGIN:{nonce}", f"HAPANELD_SU_BEGIN:{nonce}"]
+    lines.extend(_section("SU", "UID", nonce, [uid], 0))
+    if clean:
+        for index in range(3):
+            value = "unreadable" if index == unreadable_base else "readable"
+            lines.extend(_section("SU", f"BASE{index}", nonce, [value], 0))
+        for index in range(3):
+            value = "present" if index == residue_index else "absent"
+            lines.extend(_section("SU", f"RESIDUE{index}", nonce, [value], 0))
+    lines.extend([f"HAPANELD_SU_END:{nonce}", f"HAPANELD_DELEGATE_END:{nonce}:0"])
+    return ("\n".join(lines) + "\n").encode()
+
+
 class FakeDevice:
     def __init__(
         self,
@@ -358,6 +380,265 @@ async def test_preflight_admits_positive_rootless_target_with_persistent_signer(
     }
 
 
+@pytest.mark.parametrize("dialect", range(5))
+async def test_su_preflight_requires_exact_root_inventory_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+    dialect: int,
+) -> None:
+    failures = [
+        f"HAPANELD_DELEGATE_BEGIN:{nonce}\nunsupported dialect\n"
+        f"HAPANELD_DELEGATE_END:{nonce}:1\n".encode()
+        for nonce in NONCES[1 : dialect + 1]
+    ]
+    fake = FakeDevice(
+        [
+            _preflight_output(NONCES[0], su_lines=["present"], unreadable_base=0),
+            *failures,
+            _su_output(NONCES[dialect + 1]),
+        ]
+    )
+    _install_fakes(monkeypatch, [fake])
+    proof = await async_preflight_install(target, signer, descriptor)
+    assert proof.root_mode is AdbRootMode.ROOT_SU
+    assert len(fake.commands) == dialect + 2
+    assert fake.closed
+    assert not fake.pushes
+    command = fake.commands[-1]
+    prefix = install_adb._SU_PREFIXES[dialect]
+    payload = install_adb._su_inspection_command(NONCES[dialect + 1], clean=True)
+    assert f"{prefix} {shlex.quote(payload)};" in command
+    assert shlex.split(f"{prefix} {shlex.quote(payload)}")[-1] == payload
+    for path in install_adb._ROOT_DATA_BASES:
+        assert f"ls -1A {path} >/dev/null" in payload
+    for path in install_adb._RESIDUE_PATHS:
+        assert f"[ -e {path} ] || [ -L {path} ]" in payload
+    assert all(
+        "pm install" not in cmd and "adb root" not in cmd for cmd in fake.commands
+    )
+
+
+@pytest.mark.parametrize("index", range(3))
+@pytest.mark.parametrize("kind", ["unreadable_base", "residue_index"])
+async def test_su_cannot_admit_residue_or_unreadable_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+    index: int,
+    kind: str,
+) -> None:
+    fake = FakeDevice(
+        [
+            _preflight_output(NONCES[0], su_lines=["present"]),
+            _su_output(NONCES[1], **{kind: index}),
+        ]
+    )
+    _install_fakes(monkeypatch, [fake])
+    with pytest.raises(InstallAdbError) as caught:
+        await async_preflight_install(target, signer, descriptor)
+    expected = (
+        InstallAdbErrorCode.TARGET_NOT_CLEAN
+        if kind == "residue_index"
+        else InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS
+    )
+    assert caught.value.code is expected
+    assert len(fake.commands) == 2
+    assert not fake.pushes
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        TimeoutError(),
+        b"denied\n",
+        _su_output(NONCES[1], uid="2000"),
+        _su_output(NONCES[1]).replace(b"\n0\n", b"\nuid=0 noisy\n"),
+        _su_output(NONCES[1]).replace(
+            b"HAPANELD_SU_BEGIN", b"noise\nHAPANELD_SU_BEGIN"
+        ),
+        _su_output(NONCES[2]),
+    ],
+)
+async def test_su_timeout_noise_nonroot_or_wrong_nonce_never_admits(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+    output: bytes | BaseException,
+) -> None:
+    fake = FakeDevice([_preflight_output(NONCES[0], su_lines=["present"]), output])
+    _install_fakes(monkeypatch, [fake])
+    with pytest.raises(InstallAdbError):
+        await async_preflight_install(target, signer, descriptor)
+    assert len(fake.commands) == 2
+    assert fake.closed
+    assert not fake.pushes
+
+
+async def test_existing_package_short_circuits_before_su_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+) -> None:
+    fake = FakeDevice(
+        [
+            _preflight_output(
+                NONCES[0],
+                su_lines=["present"],
+                package_lines=["package:/data/app/base.apk"],
+            )
+        ]
+    )
+    _install_fakes(monkeypatch, [fake])
+    with pytest.raises(InstallAdbError) as caught:
+        await async_preflight_install(target, signer, descriptor)
+    assert caught.value.code is InstallAdbErrorCode.TARGET_NOT_CLEAN
+    assert fake.commands == [install_adb._preflight_command(NONCES[0])]
+
+
+async def test_su_denial_stops_after_five_bounded_dialects(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+) -> None:
+    fake = FakeDevice(
+        [
+            _preflight_output(NONCES[0], su_lines=["present"]),
+            *[
+                _single_output("DELEGATE", nonce, ["denied"], 1)
+                for nonce in NONCES[1:6]
+            ],
+        ]
+    )
+    _install_fakes(monkeypatch, [fake])
+    with pytest.raises(InstallAdbError) as caught:
+        await async_preflight_install(target, signer, descriptor)
+    assert caught.value.code is InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS
+    assert len(fake.commands) == 6
+    assert all(kwargs["read_timeout_s"] == 3.0 for kwargs in fake.shell_kwargs[1:])
+    assert fake.closed
+
+
+@pytest.mark.parametrize("operation", ["stage", "install", "launch", "cleanup"])
+async def test_su_never_wraps_mutation_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+    descriptor: InstallDescriptor,
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    clean = operation in ("stage", "install")
+    initial = _preflight_output if clean else _identity_root_output
+    outputs = [
+        initial(NONCES[0], su_lines=["present"]),
+        _su_output(NONCES[1], clean=clean),
+    ]
+    if operation == "stage":
+        outputs.extend(
+            [
+                _single_output("PATH", NONCES[2], ["absent"], 0),
+                _remote_output(NONCES[3]),
+            ]
+        )
+    elif operation == "install":
+        outputs.extend(
+            [
+                _remote_output(NONCES[2]),
+                _single_output("INSTALL", NONCES[3], ["Success"], 0),
+            ]
+        )
+    elif operation == "launch":
+        outputs.extend(
+            [
+                _single_output("PACKAGE", NONCES[2], ["package:/data/app/base.apk"], 0),
+                _single_output(
+                    "LAUNCH",
+                    NONCES[3],
+                    [
+                        "Starting: Intent { "
+                        "cmp=io.github.maxlyth.hapaneld/.MainActivity }"
+                    ],
+                    0,
+                ),
+            ]
+        )
+    else:
+        outputs.append(_cleanup_output(NONCES[2]))
+    fake = FakeDevice(outputs)
+    _install_fakes(monkeypatch, [fake])
+    if operation == "stage":
+        apk = tmp_path / "fixture.apk"
+        _write_private_apk(apk)
+        result = await async_stage_apk(
+            target,
+            signer,
+            descriptor,
+            JOB_ID,
+            apk,
+            expected_root_mode=AdbRootMode.ROOT_SU,
+        )
+        assert result == _staged()
+        assert len(fake.pushes) == 1
+    elif operation == "install":
+        assert (
+            await async_install_staged_apk(
+                target,
+                signer,
+                descriptor,
+                JOB_ID,
+                expected_root_mode=AdbRootMode.ROOT_SU,
+            )
+            is InstallOutcome.INSTALLED
+        )
+    elif operation == "launch":
+        assert (
+            await async_launch_installed_app(
+                target, signer, descriptor, expected_root_mode=AdbRootMode.ROOT_SU
+            )
+            is LaunchOutcome.STARTED
+        )
+    else:
+        await async_cleanup_staged_apk(
+            target,
+            signer,
+            _staged(),
+            reason=DefiniteCleanupReason.CANCELLED,
+            expected_root_mode=AdbRootMode.ROOT_SU,
+        )
+    assert "HAPANELD_DELEGATE" in fake.commands[1]
+    for command in fake.commands[2:]:
+        assert "su " not in command
+        assert "HAPANELD_DELEGATE" not in command
+    assert fake.closed
+
+
+async def test_su_posture_barrier_reproves_capability_before_package_query(
+    monkeypatch: pytest.MonkeyPatch,
+    signer: PythonRSASigner,
+    target: AdbInstallTarget,
+) -> None:
+    fake = FakeDevice(
+        [
+            _identity_root_output(NONCES[0], su_lines=["present"]),
+            _su_output(NONCES[1], clean=False, uid="2000"),
+        ]
+    )
+    _install_fakes(monkeypatch, [fake])
+    with pytest.raises(InstallAdbError) as caught:
+        await async_verify_installed_target(
+            target, signer, expected_root_mode=AdbRootMode.ROOT_SU
+        )
+    assert caught.value.code is InstallAdbErrorCode.ROOT_STATE_AMBIGUOUS
+    assert len(fake.commands) == 2
+    assert all("pm path" not in command for command in fake.commands)
+
+
 async def test_bounded_transport_honors_valid_phase_read_and_write_timeouts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -429,7 +710,6 @@ async def test_root_adbd_refuses_an_unreadable_data_inventory(
 @pytest.mark.parametrize(
     "changes",
     [
-        {"uid": "2000", "su_lines": ["present"]},
         {"uid": "2000", "secure": "0"},
         {"uid": "2000", "debuggable": "1"},
         {"uid": "1000"},
