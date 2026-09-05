@@ -42,11 +42,11 @@
       },
       "confirm_install_candidate": {
         "title": "Erstinstallation bestätigen",
-        "description": "Auf dem Android-Panel unter {address} ist kein ha-paneld-Paket installiert oder zurückbehalten. Gerät: Modell {model}; Seriennummer {serial}; ABI {abi}; Android SDK {sdk}. Verifiziertes stabiles Release: Version {version}; Tag {tag}; SHA-256 {sha256}. Beim Absenden wird das Panel erneut geprüft. Anschließend wird exakt dieses Release heruntergeladen, verifiziert, installiert, gestartet und auf Funktionsfähigkeit geprüft. Eine vorhandene Installation wird weder überschrieben noch aktualisiert. Nachdem Home Assistant das Gerät hinzugefügt hat, schließe die geführte Einrichtung von ha-paneld auf dem Panel ab."
+        "description": "Auf dem Panel ist kein ha-paneld-Paket installiert oder zurückbehalten. Prüfe das Gerät und das verifizierte stabile Release:\n\n- Adresse: {address}\n- Modell: {model}\n- Seriennummer: {serial}\n- ABI: {abi}\n- Android SDK: {sdk}\n- Version: {version}\n- Tag: {tag}\n- SHA-256: {sha256}\n\nMit Absenden wird das Panel erneut geprüft. Danach wird exakt dieses Release heruntergeladen, verifiziert, installiert, gestartet und auf Funktionsfähigkeit geprüft. Eine vorhandene Installation wird weder überschrieben noch aktualisiert.\n\nNachdem Home Assistant das Gerät hinzugefügt hat, wähle auf dem Panel die Einrichtung aus, um die geführte Einrichtung von ha-paneld abzuschließen. Die Installation konfiguriert das Dashboard nicht."
       },
       "confirm_install_rc": {
         "title": "Installation des Release Candidate bestätigen",
-        "description": "Nur für Tests: Dies ist ein Release Candidate, kein stabiles Release, und kann Fehler enthalten. Auf dem Android-Panel unter {address} ist kein ha-paneld-Paket installiert oder zurückbehalten. Gerät: Modell {model}; Seriennummer {serial}; ABI {abi}; Android SDK {sdk}. Verifizierter Release Candidate: Version {version}; Tag {tag}; SHA-256 {sha256}. Beim Absenden wird exakt dieser Kandidat autorisiert und das Panel erneut geprüft. Anschließend wird er heruntergeladen, verifiziert, installiert, gestartet und auf Funktionsfähigkeit geprüft. Eine vorhandene Installation wird weder überschrieben noch aktualisiert. Nachdem Home Assistant das Gerät hinzugefügt hat, schließe die geführte Einrichtung von ha-paneld auf dem Panel ab."
+        "description": "Nur für Tests: Dies ist ein Release Candidate, kein stabiles Release, und kann Fehler enthalten.\n\nAuf dem Panel ist kein ha-paneld-Paket installiert oder zurückbehalten. Prüfe das Gerät und den verifizierten Release Candidate:\n\n- Adresse: {address}\n- Modell: {model}\n- Seriennummer: {serial}\n- ABI: {abi}\n- Android SDK: {sdk}\n- Version: {version}\n- Tag: {tag}\n- SHA-256: {sha256}\n\nMit Absenden wird exakt dieser Kandidat autorisiert und das Panel erneut geprüft. Danach wird exakt dieses Release heruntergeladen, verifiziert, installiert, gestartet und auf Funktionsfähigkeit geprüft. Eine vorhandene Installation wird weder überschrieben noch aktualisiert.\n\nNachdem Home Assistant das Gerät hinzugefügt hat, wähle auf dem Panel die Einrichtung aus, um die geführte Einrichtung von ha-paneld abzuschließen. Die Installation konfiguriert das Dashboard nicht."
       },
       "release_preview_only": {
         "title": "Release kann nicht automatisch installiert werden",
@@ -54,7 +54,7 @@
       },
       "install_result": {
         "title": "Panel-Einrichtung abschließen",
-        "description": "ha-paneld {version} wurde unter {address} installiert. Wähle „Absenden“, um die abschließenden, nur lesenden Identitäts- und Funktionsstatusprüfungen erneut zu versuchen. Kein Installationsschritt wird wiederholt. Nachdem Home Assistant das Gerät hinzugefügt hat, schließe die geführte Einrichtung von ha-paneld auf dem Panel ab."
+        "description": "ha-paneld {version} wurde unter {address} installiert.\n\nWähle Absenden, um ausschließlich die abschließenden schreibgeschützten Identitäts- und Funktionsprüfungen zu wiederholen. Kein Installationsschritt wird wiederholt.\n\nNachdem Home Assistant das Gerät hinzugefügt hat, wähle auf dem Panel die Einrichtung aus, um ha-paneld mit Home Assistant zu verbinden und das Dashboard einzurichten."
       }
     },
     "progress": {

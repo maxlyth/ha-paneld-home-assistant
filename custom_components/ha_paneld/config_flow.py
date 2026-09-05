@@ -1052,6 +1052,14 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
+def _markdown_literal(value: str) -> str:
+    """Keep interpolated device text literal in HA's Markdown descriptions."""
+    return "".join(
+        f"&#{ord(character)};" if character in "\\`*_{}[]()<>!&:./@" else character
+        for character in value
+    )
+
+
 def _install_candidate_placeholders(
     probe: InstallTargetProbe,
 ) -> dict[str, str] | None:
@@ -1064,9 +1072,9 @@ def _install_candidate_placeholders(
     ):
         return None
     return {
-        "model": probe.model,
-        "serial": probe.serial,
-        "abi": probe.primary_abi,
+        "model": _markdown_literal(probe.model),
+        "serial": _markdown_literal(probe.serial),
+        "abi": _markdown_literal(probe.primary_abi),
         "sdk": str(probe.android_sdk),
     }
 

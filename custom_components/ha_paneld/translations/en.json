@@ -42,11 +42,11 @@
       },
       "confirm_install_candidate": {
         "title": "Confirm first installation",
-        "description": "The Android panel at {address} has no installed or retained ha-paneld package. Device: model {model}; serial {serial}; ABI {abi}; Android SDK {sdk}. Verified stable release: version {version}; tag {tag}; SHA-256 {sha256}. Submitting rechecks the panel and then downloads, verifies, installs, launches and health-checks this exact release. It will not overwrite or upgrade an existing installation. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
+        "description": "The panel has no installed or retained ha-paneld package. Check the device and verified stable release:\n\n- Address: {address}\n- Model: {model}\n- Serial: {serial}\n- ABI: {abi}\n- Android SDK: {sdk}\n- Version: {version}\n- Tag: {tag}\n- SHA-256: {sha256}\n\nSubmit to recheck the panel, then download, verify, install, launch and health-check this exact release. An existing installation will not be overwritten or upgraded.\n\nAfter Home Assistant adds the device, select Set up on the panel to complete ha-paneld's guided setup. Installation does not configure the dashboard."
       },
       "confirm_install_rc": {
         "title": "Confirm release candidate installation",
-        "description": "Testing only: this is a release candidate, not a stable release, and may contain bugs. The Android panel at {address} has no installed or retained ha-paneld package. Device: model {model}; serial {serial}; ABI {abi}; Android SDK {sdk}. Verified release candidate: version {version}; tag {tag}; SHA-256 {sha256}. Submitting authorizes this exact candidate, rechecks the panel and then downloads, verifies, installs, launches and health-checks it. It will not overwrite or upgrade an existing installation. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
+        "description": "Testing only: this is a release candidate, not a stable release, and may contain bugs.\n\nThe panel has no installed or retained ha-paneld package. Check the device and verified release candidate:\n\n- Address: {address}\n- Model: {model}\n- Serial: {serial}\n- ABI: {abi}\n- Android SDK: {sdk}\n- Version: {version}\n- Tag: {tag}\n- SHA-256: {sha256}\n\nSubmit to authorize this exact candidate and recheck the panel, then download, verify, install, launch and health-check this exact release. An existing installation will not be overwritten or upgraded.\n\nAfter Home Assistant adds the device, select Set up on the panel to complete ha-paneld's guided setup. Installation does not configure the dashboard."
       },
       "release_preview_only": {
         "title": "Release cannot be installed automatically",
@@ -54,7 +54,7 @@
       },
       "install_result": {
         "title": "Finish panel setup",
-        "description": "ha-paneld {version} was installed at {address}. Submit to retry the final read-only identity and health checks. No installation step will be repeated. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
+        "description": "ha-paneld {version} was installed at {address}.\n\nSubmit to retry only the final read-only identity and health checks. No installation step will be repeated.\n\nAfter Home Assistant adds the device, select Set up on the panel to connect ha-paneld to Home Assistant and configure the dashboard."
       }
     },
     "progress": {

@@ -270,6 +270,33 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
                     assert _literal_count(target_text, token) >= required_count
 
 
+@pytest.mark.parametrize(
+    "catalogue", ["strings.json", "translations/en.json", "translations/de.json"]
+)
+@pytest.mark.parametrize("step", ["confirm_install_candidate", "confirm_install_rc"])
+def test_install_confirmation_keeps_each_fact_on_its_own_line(
+    catalogue: str, step: str
+) -> None:
+    """A readable native confirmation must not collapse into one paragraph."""
+    description = _load_translation_catalogue(INTEGRATION / catalogue)["config"][
+        "step"
+    ][step]["description"]
+    fact_lines = [line for line in description.splitlines() if line.startswith("- ")]
+    assert [_placeholders(line) for line in fact_lines] == [
+        Counter({"{" + field + "}": 1})
+        for field in (
+            "address",
+            "model",
+            "serial",
+            "abi",
+            "sdk",
+            "version",
+            "tag",
+            "sha256",
+        )
+    ]
+
+
 def test_rc_selection_and_confirmation_are_keyed_and_explicit() -> None:
     strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
     steps = strings["config"]["step"]

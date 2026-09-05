@@ -23,7 +23,10 @@ from custom_components.ha_paneld.client import (
     PanelAddress,
     PanelHealth,
 )
-from custom_components.ha_paneld.config_flow import HaPaneldConfigFlow
+from custom_components.ha_paneld.config_flow import (
+    HaPaneldConfigFlow,
+    _install_candidate_placeholders,
+)
 from custom_components.ha_paneld.const import DOMAIN
 from custom_components.ha_paneld.install_adb import (
     InstallAdbError,
@@ -858,6 +861,37 @@ async def test_install_authorization_revalidates_pin_before_loading_key(
     signer_mock.assert_not_awaited()
     assert probe_mock.await_count == 1
     assert not hass.config_entries.async_entries(DOMAIN)
+
+
+@pytest.mark.parametrize(
+    ("model", "display"),
+    [
+        ("WF1589T", "WF1589T"),
+        (
+            "![Panel](https://example.invalid) <img> &amp; `x` \\ *_{}",
+            "&#33;&#91;Panel&#93;&#40;https&#58;&#47;&#47;example&#46;invalid&#41; "
+            "&#60;img&#62; &#38;amp; &#96;x&#96; &#92; &#42;&#95;&#123;&#125;",
+        ),
+    ],
+)
+def test_install_confirmation_device_facts_are_literal(
+    model: str, display: str
+) -> None:
+    """Escape only presentation, including entities and Markdown metacharacters."""
+    probe = _probe(
+        "install_candidate",
+        model=model,
+        serial="serial_123",
+        primary_abi="arm64-v8a",
+        android_sdk=31,
+    )
+    assert _install_candidate_placeholders(probe) == {
+        "model": display,
+        "serial": "serial&#95;123",
+        "abi": "arm64-v8a",
+        "sdk": "31",
+    }
+    assert probe.model == model and probe.serial == "serial_123"
 
 
 async def test_install_authorization_approval_reaches_release_preview(
