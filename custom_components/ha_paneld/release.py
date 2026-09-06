@@ -131,6 +131,24 @@ class ReleaseArtifact:
     descriptor: InstallDescriptor | None = None
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class SignedReleaseMetadata:
+    """Original authenticated bytes for independent browser verification."""
+
+    checksum: bytes
+    checksum_signature: bytes
+    descriptor_bytes: bytes
+    descriptor_signature: bytes
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class InstallReleaseBundle:
+    """A descriptor-bearing release and its exact signed metadata, not APK bytes."""
+
+    artifact: ReleaseArtifact
+    metadata: SignedReleaseMetadata
+
+
 def is_rc_release_tag(value: object) -> bool:
     """Accept only a bounded canonical exact release-candidate tag."""
     return (
@@ -484,7 +502,8 @@ async def async_resolve_stable_release(session: ClientSession) -> ReleaseArtifac
     The APK itself is deliberately not downloaded. The returned digest is trusted
     only after the exact checksum bytes have passed detached RSA verification.
     """
-    return await _async_resolve_release(session, _LATEST_RELEASE_URL)
+    artifact, _ = await _async_resolve_release(session, _LATEST_RELEASE_URL)
+    return artifact
 
 
 async def async_resolve_rc_release(session: ClientSession, tag: str) -> ReleaseArtifact:
@@ -492,12 +511,36 @@ async def async_resolve_rc_release(session: ClientSession, tag: str) -> ReleaseA
     if not is_rc_release_tag(tag):
         raise ReleaseResolutionError
     url = URL(f"https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/{tag}")
-    return await _async_resolve_release(session, url, expected_rc_tag=tag)
+    artifact, _ = await _async_resolve_release(session, url, expected_rc_tag=tag)
+    return artifact
+
+
+async def async_resolve_install_bundle(
+    session: ClientSession, *, rc_tag: str | None = None
+) -> InstallReleaseBundle:
+    """Retain signed bytes for a stable or explicitly selected RC installation.
+
+    This only resolves metadata; it neither downloads the APK nor creates a job.
+    Unlike legacy release inspection, browser installation requires a descriptor.
+    """
+    url = _LATEST_RELEASE_URL
+    if rc_tag is not None:
+        if not is_rc_release_tag(rc_tag):
+            raise ReleaseResolutionError
+        url = URL(
+            f"https://api.github.com/repos/maxlyth/ha-paneld/releases/tags/{rc_tag}"
+        )
+    artifact, metadata = await _async_resolve_release(
+        session, url, expected_rc_tag=rc_tag
+    )
+    if metadata is None:
+        raise ReleaseResolutionError
+    return InstallReleaseBundle(artifact=artifact, metadata=metadata)
 
 
 async def _async_resolve_release(
     session: ClientSession, url: URL, *, expected_rc_tag: str | None = None
-) -> ReleaseArtifact:
+) -> tuple[ReleaseArtifact, SignedReleaseMetadata | None]:
     """Share identical byte bounds, signatures and descriptor binding for both paths."""
     release_body = await _async_fetch_bounded(
         session,
@@ -531,6 +574,7 @@ async def _async_resolve_release(
 
     descriptor_name = f"ha-paneld-{tag}-install.json"
     descriptor: InstallDescriptor | None = None
+    metadata: SignedReleaseMetadata | None = None
     if descriptor_name in assets:
         descriptor_body = await _async_fetch_bounded(
             session,
@@ -553,8 +597,14 @@ async def _async_resolve_release(
             apk_name=apk_name,
             apk_sha256=sha256,
         )
+        metadata = SignedReleaseMetadata(
+            checksum=checksum,
+            checksum_signature=signature,
+            descriptor_bytes=descriptor_body,
+            descriptor_signature=descriptor_signature,
+        )
 
-    return ReleaseArtifact(
+    artifact = ReleaseArtifact(
         tag=tag,
         version=tag.removeprefix("v"),
         apk_name=apk_name,
@@ -562,3 +612,4 @@ async def _async_resolve_release(
         sha256=sha256,
         descriptor=descriptor,
     )
+    return artifact, metadata
