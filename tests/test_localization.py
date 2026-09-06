@@ -33,11 +33,32 @@ from custom_components.ha_paneld.sensor import HaPaneldStatusSensor
             "Der Funktionsstatus des Panels konnte nicht gelesen werden",
         ),
         (
-            "zh-Hans",
-            "Set up a panel",
-            "Status",
+            "es",
+            "Configurar un panel",
+            "Estado",
+            "En línea",
+            "No se puede leer el estado del panel",
+        ),
+        (
+            "fr",
+            "Configurer un panneau",
+            "État",
+            "En ligne",
+            "Impossible de lire l'état du panneau",
+        ),
+        (
+            "it",
+            "Configura un pannello",
+            "Stato",
             "Online",
-            "Unable to read panel health",
+            "Impossibile leggere lo stato di funzionamento del pannello",
+        ),
+        (
+            "zh-Hans",
+            "设置面板",
+            "状态",
+            "在线",
+            "无法读取面板健康状态",
         ),
     ],
 )
@@ -49,7 +70,7 @@ async def test_native_status_and_exception_translations(
     online_state: str,
     health_error: str,
 ) -> None:
-    """Native German loads while a missing locale uses HA's English fallback."""
+    """Every shipped locale loads rather than using Home Assistant fallback."""
     hass.config.language = language
     assert await async_setup_component(hass, DOMAIN, {})
     config_strings = await async_get_translations(hass, language, "config", {DOMAIN})
