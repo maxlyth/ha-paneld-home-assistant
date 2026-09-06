@@ -1,6 +1,7 @@
 """Browser artifact namespaces remain independent from native job custody."""
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -106,3 +107,62 @@ async def test_browser_identifiers_cannot_select_paths(
     assert session.requests == []
     directory = Path(fake_hass.config.path(".storage"))
     assert await asyncio.to_thread(lambda: list(directory.iterdir())) == []
+
+
+async def test_browser_read_returns_verified_bytes_without_reopening_download(
+    fake_hass: _FakeHass,
+) -> None:
+    session = _FakeSession([_FakeResponse()])
+    artifact = await browser.async_download_browser_artifact(
+        fake_hass,
+        session,
+        _release(),
+        _JOB_ID,  # type: ignore[arg-type]
+    )
+    body = await browser.async_read_browser_artifact(fake_hass, _JOB_ID, artifact)  # type: ignore[arg-type]
+    assert body == _BODY
+    assert isinstance(body, bytes)
+    assert len(session.requests) == 1
+    for changed in (
+        replace(artifact, path="/unrelated/file.apk"),
+        replace(artifact, job_id="a" * 32),
+        replace(artifact, size=0),
+        replace(artifact, size=64 * 1024 * 1024 + 1),
+        replace(artifact, sha256="0" * 64),
+    ):
+        with pytest.raises(native.ArtifactCustodyError):
+            await browser.async_read_browser_artifact(fake_hass, _JOB_ID, changed)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("fault", ["bytes", "symlink", "hardlink", "fifo"])
+async def test_browser_read_refuses_changed_or_linked_custody(
+    fake_hass: _FakeHass, fault: str
+) -> None:
+    artifact = await browser.async_download_browser_artifact(
+        fake_hass,
+        _FakeSession([_FakeResponse()]),
+        _release(),
+        _JOB_ID,  # type: ignore[arg-type]
+    )
+
+    def alter() -> None:
+        import os
+
+        path = Path(artifact.path)
+        if fault == "bytes":
+            path.write_bytes(b"x" * len(_BODY))
+        elif fault == "hardlink":
+            os.link(path, path.parent / "extra.apk")
+        else:
+            path.unlink()
+            if fault == "symlink":
+                other = path.parent / "private.txt"
+                other.write_bytes(_BODY)
+                other.chmod(0o600)
+                path.symlink_to(other)
+            else:
+                os.mkfifo(path, 0o600)
+
+    await asyncio.to_thread(alter)
+    with pytest.raises(native.ArtifactCustodyError):
+        await browser.async_read_browser_artifact(fake_hass, _JOB_ID, artifact)  # type: ignore[arg-type]

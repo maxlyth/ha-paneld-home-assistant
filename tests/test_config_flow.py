@@ -16,6 +16,10 @@ from custom_components.ha_paneld.adb_credentials import (
     AdbCredential,
     AdbCredentialError,
 )
+from custom_components.ha_paneld.browser_delivery import (
+    DATA_BROWSER_DELIVERY,
+    async_register_browser_delivery,
+)
 from custom_components.ha_paneld.client import (
     CannotConnectError,
     InvalidAddressError,
@@ -147,6 +151,25 @@ async def test_user_starts_with_install_first_menu(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "user"
     assert result["menu_options"] == ["install_or_upgrade", "connect_existing"]
+
+
+async def test_first_user_flow_registers_browser_delivery_before_any_panel(
+    hass: HomeAssistant, hass_client
+) -> None:
+    """First-panel delivery cannot depend on successful entry creation."""
+    assert not hass.config_entries.async_entries(DOMAIN)
+    await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    assert DATA_BROWSER_DELIVERY in hass.data.get(DOMAIN, {})
+    service = hass.data[DOMAIN][DATA_BROWSER_DELIVERY]
+    async_register_browser_delivery(hass)
+    assert hass.data[DOMAIN][DATA_BROWSER_DELIVERY] is service
+    client = await hass_client()
+    response = await client.get(f"/api/ha_paneld/usb/release/{'a' * 32}/apk")
+    assert response.status == 404
+    assert await response.json() == {"error": "browser_release_not_found"}
+    assert not hass.config_entries.async_entries(DOMAIN)
 
 
 async def test_connect_existing_starts_with_address_form(

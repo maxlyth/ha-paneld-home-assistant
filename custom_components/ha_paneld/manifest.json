@@ -3,7 +3,7 @@
   "name": "ha-paneld",
   "codeowners": ["@maxlyth"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http"],
   "documentation": "https://github.com/maxlyth/ha-paneld-home-assistant",
   "integration_type": "device",
   "iot_class": "local_polling",

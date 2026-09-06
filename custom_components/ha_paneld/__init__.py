@@ -9,9 +9,13 @@ from dataclasses import dataclass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
+from .browser_delivery import async_register_browser_delivery
 from .client import HaPaneldClient, normalize_address
+from .const import DOMAIN
 from .coordinator import HaPaneldDataUpdateCoordinator
 from .install_executor import (
     InstallExecutor,
@@ -25,7 +29,14 @@ from .install_jobs import (
 )
 
 PLATFORMS = [Platform.SENSOR]
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register browser delivery independently of panel config entries."""
+    async_register_browser_delivery(hass)
+    return True
 
 
 @dataclass(slots=True)

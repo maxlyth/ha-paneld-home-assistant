@@ -137,7 +137,7 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
     assert manifest == {
         "codeowners": ["@maxlyth"],
         "config_flow": True,
-        "dependencies": [],
+        "dependencies": ["http"],
         "documentation": "https://github.com/maxlyth/ha-paneld-home-assistant",
         "domain": "ha_paneld",
         "integration_type": "device",

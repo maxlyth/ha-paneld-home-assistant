@@ -18,6 +18,7 @@ from .adb_credentials import (
     async_get_adb_signer,
     async_get_durable_adb_credential,
 )
+from .browser_delivery import async_register_browser_delivery
 from .client import (
     CannotConnectError,
     HaPaneldClient,
@@ -119,6 +120,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Let the user choose whether to bootstrap or connect a panel."""
+        # HA loads dependencies before the first flow, but domain async_setup
+        # need not run until an entry exists. USB delivery must be ready now.
+        async_register_browser_delivery(self.hass)
         return self.async_show_menu(
             step_id="user",
             menu_options=["install_or_upgrade", "connect_existing"],
