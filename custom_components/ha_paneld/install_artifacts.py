@@ -952,9 +952,21 @@ async def async_download_install_artifact(
     job_id: str,
 ) -> InstallArtifact:
     """Download, verify, and privately publish one exact signed APK."""
+    return await _async_download_artifact(
+        hass, session, artifact, job_id, _artifact_directory(hass)
+    )
+
+
+async def _async_download_artifact(
+    hass: HomeAssistant,
+    session: ClientSession,
+    artifact: ReleaseArtifact,
+    job_id: str,
+    directory: str,
+) -> InstallArtifact:
+    """Shared custody implementation; directory comes only from internal callers."""
     validated_job_id = _validate_job_id(job_id)
     expected_size, expected_sha256, initial_url = _validate_contract(artifact)
-    directory = _artifact_directory(hass)
     ready_path = str(Path(directory, _ready_name(validated_job_id)))
     file_fd = await _async_prepare_destination(
         hass,
@@ -1059,6 +1071,17 @@ async def async_reconcile_install_artifacts(
     retained_execution_ids: Collection[str],
 ) -> None:
     """Remove local artifacts not retained by durable executor state."""
+    await _async_reconcile_artifacts(
+        hass, retained_execution_ids, _artifact_directory(hass)
+    )
+
+
+async def _async_reconcile_artifacts(
+    hass: HomeAssistant,
+    retained_execution_ids: Collection[str],
+    directory: str,
+) -> None:
+    """Reconcile one internally selected custody namespace."""
     if not isinstance(retained_execution_ids, Collection) or isinstance(
         retained_execution_ids, (str, bytes)
     ):
@@ -1072,7 +1095,7 @@ async def async_reconcile_install_artifacts(
     await _async_executor(
         hass,
         _reconcile_install_artifacts,
-        _artifact_directory(hass),
+        directory,
         retained,
     )
 
