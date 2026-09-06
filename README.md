@@ -2,7 +2,7 @@
 
 This repository contains the HACS custom integration for [ha-paneld](https://github.com/maxlyth/ha-paneld), the Home Assistant dashboard application for Android wall panels.
 
-The initial `0.1.0` integration can install ha-paneld on a clean Android panel over network Android Debug Bridge (ADB), or connect a panel that is already running it. A configured panel creates one Home Assistant device with a diagnostic status sensor and a bounded, privacy-safe projection of the panel's status endpoint in downloadable diagnostics. The installer defaults to the latest stable release carrying ha-paneld's signed installation descriptor, with an explicit option to test one exact release candidate. It does not upgrade or overwrite an existing installation. Existing MQTT entities remain authoritative.
+The initial `0.1.0` integration can install ha-paneld on a clean Android panel over network Android Debug Bridge (ADB), or connect a panel that is already running it. A configured panel creates one Home Assistant device with a diagnostic status sensor and a bounded, privacy-safe projection of the panel's status endpoint in downloadable diagnostics. The installer defaults to the latest stable release and requires its signed installation descriptor before installation, with an explicit option to test one exact release candidate. It does not upgrade or overwrite an existing installation. Existing MQTT entities remain authoritative.
 
 ## Requirements
 
