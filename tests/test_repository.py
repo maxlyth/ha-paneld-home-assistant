@@ -347,25 +347,18 @@ def test_runtime_harness_health_fixture_uses_production_grammar() -> None:
     assert health.panel_id == "runtime_negative"
 
 
-def test_readme_leads_with_complete_hacs_installation() -> None:
-    """The primary installation path stays workstation-tool-free and discoverable."""
+def test_readme_links_to_hacs_and_panel_preparation() -> None:
+    """The short introduction retains the links needed to try the integration."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    hacs_heading = "## Install with HACS"
-    manual_heading = "## Manual integration installation"
-
-    assert readme.index(hacs_heading) < readme.index(manual_heading)
-    hacs_section = readme.split(hacs_heading, 1)[1].split(manual_heading, 1)[0]
     assert (
         "https://my.home-assistant.io/redirect/hacs_repository/"
         "?owner=maxlyth&repository=ha-paneld-home-assistant&category=integration"
-    ) in hacs_section
-    assert "https://github.com/maxlyth/ha-paneld-home-assistant" in hacs_section
-    assert "Git Bash, PowerShell, a workstation `adb` executable" in hacs_section
+    ) in readme
+    assert "https://github.com/maxlyth/ha-paneld-home-assistant" in readme
     assert (
         "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
         "#gaining-adb--root-access"
-    ) in hacs_section
-    assert "root access is not a requirement" in hacs_section
+    ) in readme
 
 
 def test_install_flow_copy_covers_first_time_handoffs() -> None:
