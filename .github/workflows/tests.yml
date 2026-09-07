@@ -38,17 +38,17 @@ jobs:
         run: |
           python -m pip check
           python -c "import importlib.metadata as m; assert m.version('homeassistant') == '${{ matrix.home-assistant }}'"
+      - name: Install the Core runtime frontend
+        run: |
+          frontend_requirement=$(python -c 'import json, pathlib, homeassistant; path = pathlib.Path(homeassistant.__file__).parent / "components/frontend/manifest.json"; print(json.loads(path.read_text())["requirements"][0])')
+          python -m pip install "$frontend_requirement"
+          python -m pip check
       - name: Run lint and formatting checks
         run: ruff check . && ruff format --check .
       - name: Run type checks
         run: mypy custom_components/ha_paneld
       - name: Run tests
         run: python -m pytest
-      - name: Install the Core runtime frontend
-        run: |
-          frontend_requirement=$(python -c 'import json, pathlib, homeassistant; path = pathlib.Path(homeassistant.__file__).parent / "components/frontend/manifest.json"; print(json.loads(path.read_text())["requirements"][0])')
-          python -m pip install "$frontend_requirement"
-          python -m pip check
       - name: Prove restart and replay safety in real Core processes
         run: >-
           python tests/runtime/core_negative_harness.py
