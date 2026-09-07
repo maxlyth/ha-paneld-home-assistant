@@ -247,7 +247,14 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
     english = _translation_leaves(english_catalogue)
     translations = INTEGRATION / "translations"
     locale_paths = sorted(translations.glob("*.json"))
-    assert [path.name for path in locale_paths] == ["de.json", "en.json"]
+    assert [path.name for path in locale_paths] == [
+        "de.json",
+        "en.json",
+        "es.json",
+        "fr.json",
+        "it.json",
+        "zh-Hans.json",
+    ]
     assert len(english) == 78
 
     for locale_path in locale_paths:
@@ -271,7 +278,16 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
 
 
 @pytest.mark.parametrize(
-    "catalogue", ["strings.json", "translations/en.json", "translations/de.json"]
+    "catalogue",
+    [
+        "strings.json",
+        "translations/en.json",
+        "translations/de.json",
+        "translations/es.json",
+        "translations/fr.json",
+        "translations/it.json",
+        "translations/zh-Hans.json",
+    ],
 )
 @pytest.mark.parametrize("step", ["confirm_install_candidate", "confirm_install_rc"])
 def test_install_confirmation_keeps_each_fact_on_its_own_line(

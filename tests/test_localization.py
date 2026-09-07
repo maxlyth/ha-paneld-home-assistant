@@ -1,5 +1,6 @@
 """Native translation loading without changing machine state or entity identity."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,32 +15,75 @@ from custom_components.ha_paneld.const import DOMAIN
 from custom_components.ha_paneld.coordinator import HaPaneldDataUpdateCoordinator
 from custom_components.ha_paneld.sensor import HaPaneldStatusSensor
 
+TRANSLATIONS = (
+    Path(__file__).parents[1] / "custom_components" / "ha_paneld" / "translations"
+)
+TRANSLATION_SAMPLES = {
+    "en": (
+        "Set up a panel",
+        "Status",
+        "Online",
+        "Unable to read panel health",
+    ),
+    "de": (
+        "Panel einrichten",
+        "Status",
+        "Online",
+        "Der Funktionsstatus des Panels konnte nicht gelesen werden",
+    ),
+    "es": (
+        "Configurar un panel",
+        "Estado",
+        "En línea",
+        "No se puede leer el estado del panel",
+    ),
+    "fr": (
+        "Configurer un panneau",
+        "État",
+        "En ligne",
+        "Impossible de lire l'état du panneau",
+    ),
+    "it": (
+        "Configura un pannello",
+        "Stato",
+        "Online",
+        "Impossibile leggere lo stato di funzionamento del pannello",
+    ),
+    "zh-Hans": (
+        "设置面板",
+        "状态",
+        "在线",
+        "无法读取面板健康状态",
+    ),
+}
+
+
+def _translation_cases(
+    translations: Path = TRANSLATIONS,
+    samples: dict[str, tuple[str, str, str, str]] = TRANSLATION_SAMPLES,
+) -> list[tuple[str, str, str, str, str]]:
+    shipped = sorted(path.stem for path in translations.glob("*.json"))
+    assert set(samples) == set(shipped), (
+        "runtime translation samples must exactly cover shipped locale files"
+    )
+    return [(language, *samples[language]) for language in shipped]
+
+
+def test_runtime_translation_cases_reject_locale_coverage_drift(tmp_path: Path) -> None:
+    """A catalogue or sample cannot be added without extending runtime coverage."""
+    (tmp_path / "en.json").touch()
+    (tmp_path / "de.json").touch()
+    sample = ("setup", "status", "online", "error")
+
+    with pytest.raises(AssertionError, match="exactly cover"):
+        _translation_cases(tmp_path, {"en": sample})
+    with pytest.raises(AssertionError, match="exactly cover"):
+        _translation_cases(tmp_path, {"en": sample, "de": sample, "fr": sample})
+
 
 @pytest.mark.parametrize(
     ("language", "setup_title", "status_name", "online_state", "health_error"),
-    [
-        (
-            "en",
-            "Set up a panel",
-            "Status",
-            "Online",
-            "Unable to read panel health",
-        ),
-        (
-            "de",
-            "Panel einrichten",
-            "Status",
-            "Online",
-            "Der Funktionsstatus des Panels konnte nicht gelesen werden",
-        ),
-        (
-            "zh-Hans",
-            "Set up a panel",
-            "Status",
-            "Online",
-            "Unable to read panel health",
-        ),
-    ],
+    _translation_cases(),
 )
 async def test_native_status_and_exception_translations(
     hass: HomeAssistant,
@@ -49,7 +93,7 @@ async def test_native_status_and_exception_translations(
     online_state: str,
     health_error: str,
 ) -> None:
-    """Native German loads while a missing locale uses HA's English fallback."""
+    """Every shipped locale loads rather than using Home Assistant fallback."""
     hass.config.language = language
     assert await async_setup_component(hass, DOMAIN, {})
     config_strings = await async_get_translations(hass, language, "config", {DOMAIN})
