@@ -143,14 +143,18 @@ async def _start_step(hass: HomeAssistant, step_id: str) -> dict:
 
 
 async def test_user_starts_with_install_first_menu(hass: HomeAssistant) -> None:
-    """The primary user path is installation, with existing attach second."""
+    """Offer browser USB, network installation and existing attachment."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "user"
-    assert result["menu_options"] == ["install_or_upgrade", "connect_existing"]
+    assert result["menu_options"] == [
+        "install_usb",
+        "install_or_upgrade",
+        "connect_existing",
+    ]
 
 
 async def test_first_user_flow_registers_browser_delivery_before_any_panel(
@@ -169,6 +173,26 @@ async def test_first_user_flow_registers_browser_delivery_before_any_panel(
     response = await client.get(f"/api/ha_paneld/usb/release/{'a' * 32}/apk")
     assert response.status == 404
     assert await response.json() == {"error": "browser_release_not_found"}
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_usb_step_links_local_admin_panel_without_creating_entry(
+    hass: HomeAssistant,
+) -> None:
+    """The installer opens through HA so credentials stay at the HA origin."""
+    from homeassistant.components import frontend
+
+    result = await _start_step(hass, "install_usb")
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "install_usb"
+    assert result["description_placeholders"] == {"usb_install_url": "/ha-paneld-usb"}
+    panel = hass.data[frontend.DATA_PANELS]["ha-paneld-usb"]
+    assert panel.require_admin is True
+    assert panel.config["installer_url"] == "https://install.ha-paneld.com/"
+    assert not hass.config_entries.async_entries(DOMAIN)
+    returned = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert returned["type"] is FlowResultType.MENU
+    assert returned["step_id"] == "user"
     assert not hass.config_entries.async_entries(DOMAIN)
 
 

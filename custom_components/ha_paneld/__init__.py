@@ -14,6 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .browser_delivery import async_register_browser_delivery
+from .browser_panel import async_register_browser_panel
 from .client import HaPaneldClient, normalize_address
 from .const import DOMAIN
 from .coordinator import HaPaneldDataUpdateCoordinator
@@ -36,6 +37,7 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register browser delivery independently of panel config entries."""
     async_register_browser_delivery(hass)
+    await async_register_browser_panel(hass)
     return True
 
 

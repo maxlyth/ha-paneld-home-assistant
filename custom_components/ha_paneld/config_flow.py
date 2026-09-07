@@ -19,6 +19,7 @@ from .adb_credentials import (
     async_get_durable_adb_credential,
 )
 from .browser_delivery import async_register_browser_delivery
+from .browser_panel import PANEL_PATH, async_register_browser_panel
 from .client import (
     CannotConnectError,
     HaPaneldClient,
@@ -123,9 +124,22 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         # HA loads dependencies before the first flow, but domain async_setup
         # need not run until an entry exists. USB delivery must be ready now.
         async_register_browser_delivery(self.hass)
+        await async_register_browser_panel(self.hass)
         return self.async_show_menu(
             step_id="user",
-            menu_options=["install_or_upgrade", "connect_existing"],
+            menu_options=["install_usb", "install_or_upgrade", "connect_existing"],
+        )
+
+    async def async_step_install_usb(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Link to browser-owned USB installation without creating an entry."""
+        if user_input is not None:
+            return await self.async_step_user()
+        return self.async_show_form(
+            step_id="install_usb",
+            data_schema=vol.Schema({}),
+            description_placeholders={"usb_install_url": f"/{PANEL_PATH}"},
         )
 
     async def async_step_connect_existing(

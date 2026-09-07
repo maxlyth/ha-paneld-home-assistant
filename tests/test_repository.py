@@ -137,7 +137,7 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
     assert manifest == {
         "codeowners": ["@maxlyth"],
         "config_flow": True,
-        "dependencies": ["http"],
+        "dependencies": ["http", "panel_custom"],
         "documentation": "https://github.com/maxlyth/ha-paneld-home-assistant",
         "domain": "ha_paneld",
         "integration_type": "device",
@@ -248,7 +248,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
     translations = INTEGRATION / "translations"
     locale_paths = sorted(translations.glob("*.json"))
     assert [path.name for path in locale_paths] == ["de.json", "en.json"]
-    assert len(english) == 74
+    assert len(english) == 78
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)

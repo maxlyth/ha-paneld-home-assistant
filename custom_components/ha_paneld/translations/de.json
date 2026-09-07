@@ -6,13 +6,19 @@
         "title": "Panel einrichten",
         "description": "Installiere ha-paneld auf einem neuen Panel oder verbinde ein Panel, auf dem es bereits ausgeführt wird.",
         "menu_options": {
+          "install_usb": "Über USB an diesem Browser installieren",
           "install_or_upgrade": "ha-paneld auf einem Panel installieren",
           "connect_existing": "Vorhandene ha-paneld-Installation verbinden"
         },
         "menu_option_descriptions": {
+          "install_usb": "Verbinden Sie das Panel per USB mit diesem Computer, nicht mit dem Server von Home Assistant.",
           "install_or_upgrade": "Lasse Home Assistant ein sauberes Panel per Android Debug Bridge (ADB) prüfen und installieren.",
           "connect_existing": "Füge eine funktionsfähige Installation hinzu. Eine spätere Integrationsversion verwaltet nach der Verbindung Updates."
         }
+      },
+      "install_usb": {
+        "title": "Über USB installieren",
+        "description": "[USB-Installer öffnen]({usb_install_url}). Verbinden Sie das Panel mit dem Gerät, auf dem dieser Browser läuft, nicht mit dem Server von Home Assistant. Verwenden Sie einen Browser mit WebUSB-Unterstützung und aktivieren Sie USB-Debugging am Panel.\n\nDer experimentelle Installer unterstützt nur Neuinstallationen. Bestehende Installationen werden nicht überschrieben. Schließen Sie anschließend die Einrichtung am Panel ab und wählen Sie hier die Verbindung mit einer bestehenden Installation. Absenden kehrt zur Auswahl zurück."
       },
       "install_or_upgrade": {
         "title": "ha-paneld installieren",

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title data-screen-message="title"></title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+    body { margin: 0; padding: 2rem 1rem; }
+    main { max-width: 48rem; margin: auto; }
+    section { border: 1px solid #8886; border-radius: .75rem; padding: 1.25rem; margin-block: 1.25rem; }
+    h1, h2 { line-height: 1.2; } p { line-height: 1.5; }
+    label { display: block; margin-block: 1rem; }
+    input[type=text] { display: block; width: min(100%, 22rem); box-sizing: border-box; margin-top: .5rem; }
+    button, input { font: inherit; } button { padding: .6rem 1rem; margin: .25rem .5rem .25rem 0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body><main>
+  <h1 data-screen-message="title"></h1>
+  <p data-screen-message="scope"></p>
+  <p data-message="installUsbBoundary"></p>
+  <p data-message="installMqttBoundary"></p>
+  <section aria-labelledby="release-heading">
+    <h2 id="release-heading" data-screen-message="releaseHeading"></h2>
+    <p data-screen-message="releaseAdapter"></p>
+    <label><span data-screen-message="releaseFiles"></span> <input id="bundle-files" type="file" multiple accept=".apk,.sha256,.sig,.json"></label>
+    <label><span data-screen-message="releaseRc"></span> <input id="bundle-rc" type="text" maxlength="64" autocomplete="off" spellcheck="false" data-screen-placeholder="releaseRcExample"></label>
+    <p data-screen-message="releaseRcHelp"></p>
+    <button id="verify-bundle" data-screen-message="verifyRelease"></button>
+    <p id="bundle-status" role="status" aria-live="polite"></p>
+    <pre id="bundle-result"></pre>
+  </section>
+  <section aria-labelledby="connection-heading">
+    <h2 id="connection-heading" data-screen-message="connectionHeading"></h2>
+    <p data-screen-message="connectionHelp"></p>
+    <button id="connect" data-screen-message="connect" disabled></button>
+    <button id="cancel" data-screen-message="cancel" disabled></button>
+    <p id="status" role="status" aria-live="polite"></p>
+    <pre id="target-result"></pre>
+  </section>
+  <section id="installation" aria-labelledby="install-title" hidden>
+    <h2 id="install-title"></h2>
+    <p id="install-body"></p>
+    <label id="confirmation-label"><input id="confirmation" type="checkbox"> <span data-message="installConfirmation"></span></label>
+    <button id="install-action" disabled></button>
+    <pre id="receipt-result"></pre>
+    <p data-screen-message="progressHelp"></p>
+    <div id="setup-observation" hidden>
+      <h3 data-screen-message="setupHeading"></h3>
+      <p data-screen-message="setupHelp"></p>
+      <button id="setup-check" data-screen-message="setupCheck" disabled></button>
+      <p id="setup-summary" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+  <p><a href="./THIRD_PARTY_NOTICES.txt">Third-party licenses</a></p>
+</main><script type="module" src="/src/install-main.mjs"></script></body>
+</html>
