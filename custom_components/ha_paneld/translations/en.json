@@ -1,5 +1,5 @@
 {
-  "title": "ha-paneld",
+  "title": "Panel Assistant",
   "config": {
     "step": {
       "user": {
@@ -25,10 +25,10 @@
         "description": "Before continuing, find the panel's IP address, keep physical access to its screen and enable network ADB on port 5555 using the [model-specific panel access guide]({panel_access_url}). Root access is not required. Enter the hostname or IP address below. Home Assistant first checks for an existing installation, then uses ADB only for a clean first installation whose exact release can be verified.",
         "data": {
           "address": "Panel hostname or IP address",
-          "release_candidate": "Exact release candidate tag (testing only)"
+          "release_candidate": "Release"
         },
         "data_description": {
-          "release_candidate": "Leave blank for the latest stable release. For testing only, enter an exact published tag such as v0.9.7-rc3. Release candidates may contain bugs. This does not upgrade an installed panel. To resume an existing job, leave blank or enter its original RC tag."
+          "release_candidate": "Choose the latest stable release or a published release candidate (RC) for testing. RCs may contain bugs. The default also resumes an existing job with its original release. When only resume is offered, no new stable installation is available. This does not upgrade an installed panel."
         }
       },
       "connect_existing": {
@@ -64,7 +64,7 @@
       }
     },
     "progress": {
-      "installing": "Installing and verifying ha-paneld at {address}. Leave this dialog open to finish automatically. You may close it and Home Assistant will keep the installation job running, but it cannot add the device until you reopen Settings → Devices & services → Add integration, select ha-paneld, choose Install ha-paneld on a panel and enter the same address. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
+      "installing": "Installing and verifying ha-paneld at {address}. Leave this dialog open to finish automatically. You may close it and Home Assistant will keep the installation job running, but it cannot add the device until you reopen Settings → Devices & services → Add integration, select Panel Assistant, choose Install ha-paneld on a panel and enter the same address. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
     },
     "error": {
       "cannot_connect": "Unable to connect to a valid ha-paneld health endpoint.",
@@ -83,22 +83,25 @@
       "retained_or_ambiguous": "The panel may contain a retained ha-paneld package record or its package state could not be proven absent. No panel change was made. Retry once if the connection was unstable; otherwise follow the provisioning safety and recovery guide linked from the integration documentation. Do not uninstall or reset the app without a verified backup.",
       "incompatible": "The ha-paneld package was not found, but the panel's Android SDK or processor architecture is not supported. No APK was downloaded or installed.",
       "cannot_resolve_release": "An install candidate was found, but Home Assistant could not resolve and verify the selected ha-paneld release. No APK was downloaded or installed. Check internet access and, if testing a release candidate, that the exact tag is published with its signed assets. No other release will be substituted.",
-      "invalid_release_candidate": "Enter an exact tag in the form v0.9.7-rc3, with no spaces, leading zeroes or extra suffixes. Leave blank for the latest stable release.",
-      "install_release_conflict": "An existing installation job owns this panel with a different release. Its version cannot be changed here. Leave the candidate field blank to resume that job, or enter its original RC tag.",
+      "invalid_release_candidate": "Select an available release candidate from the list, or use the default stable/resume option.",
+      "install_release_conflict": "An existing installation job owns this panel with a different release. Its version cannot be changed here. Select the default option to resume that job.",
       "install_candidate_changed": "The panel identity or clean package state changed after the preview. No installation job was created. Start again after checking the panel.",
       "install_plan_rejected": "The panel and signed release could not be bound into a safe installation plan. No installation job was created.",
       "install_job_conflict": "A different installation job already owns this panel identity. No second job was created.",
       "install_receipt_error": "Home Assistant could not safely load or persist the installation receipt. No new panel action was authorized.",
       "install_finalization_busy": "Another setup dialog is completing this panel. Wait for it to finish, then retry if needed.",
       "install_finalization_retry": "The installation completed, but a final read-only network, ADB, or health check is temporarily unavailable. Check the panel and retry; the installation will not run again.",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "release_catalog_unavailable": "Home Assistant could not load published releases. Check internet access, then submit to retry or resume a saved job. You can also return to connect an existing installation.",
+      "release_catalog_empty": "No eligible installation releases are currently published. Submit to check again or resume a saved job, or return to connect an existing installation.",
+      "release_selection_required": "Release choices have been refreshed. Select an available release to continue; the resume-only option cannot start a new installation."
     },
     "abort": {
       "already_configured": "This panel is already configured.",
       "preview_only_release": "The authenticated release has no signed installation descriptor. No ADB credential was created, no APK was downloaded, and no panel state changed.",
-      "install_cancelled": "The installation was cancelled before an APK was installed. No Home Assistant entry was created. To try again, add the ha-paneld integration and enter the same panel address.",
-      "install_cancelled_after_staging_cleanup": "The installation was cancelled and the staged APK was removed before installation. No Home Assistant entry was created. To try again, add the ha-paneld integration and enter the same panel address.",
-      "install_authorization_failed": "Home Assistant could not safely load or validate its stored ADB credential. No APK was installed. Check Home Assistant's storage and logs, then add the ha-paneld integration and enter the same address to try again.",
+      "install_cancelled": "The installation was cancelled before an APK was installed. No Home Assistant entry was created. To try again, add the Panel Assistant integration and enter the same panel address.",
+      "install_cancelled_after_staging_cleanup": "The installation was cancelled and the staged APK was removed before installation. No Home Assistant entry was created. To try again, add the Panel Assistant integration and enter the same panel address.",
+      "install_authorization_failed": "Home Assistant could not safely load or validate its stored ADB credential. No APK was installed. Check Home Assistant's storage and logs, then add the Panel Assistant integration and enter the same address to try again.",
       "install_preflight_rejected": "The panel no longer proved to be a clean, compatible installation target. No APK was installed. Correct the panel state described in the integration documentation before starting again with the same address.",
       "install_artifact_rejected": "Home Assistant rejected the release download or staging operation before package installation. No APK was installed. Check Home Assistant's internet access, storage and logs, then start again with the same address.",
       "install_transport_failed": "Home Assistant could not complete the pre-install connection, download or staging step. No APK was installed. Check the panel, network, Home Assistant internet access and logs, then start again with the same address.",
@@ -127,6 +130,13 @@
   "exceptions": {
     "health_update_failed": {
       "message": "Unable to read panel health"
+    }
+  },
+  "selector": {
+    "release_channel": {
+      "options": {
+        "resume_existing": "Resume existing job only"
+      }
     }
   }
 }

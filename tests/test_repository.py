@@ -143,11 +143,11 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "integration_type": "device",
         "iot_class": "local_polling",
         "issue_tracker": "https://github.com/maxlyth/ha-paneld-home-assistant/issues",
-        "name": "ha-paneld",
+        "name": "Panel Assistant",
         "requirements": ["adb-shell[async]==0.4.4"],
         "version": "0.1.0",
     }
-    assert hacs == {"homeassistant": "2026.8.3", "name": "ha-paneld"}
+    assert hacs == {"homeassistant": "2026.8.3", "name": "Panel Assistant"}
 
 
 def test_release_version_guard_accepts_current_and_prerelease_versions(
@@ -255,7 +255,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
         "it.json",
         "zh-Hans.json",
     ]
-    assert len(english) == 78
+    assert len(english) == 82
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)
@@ -318,8 +318,8 @@ def test_rc_selection_and_confirmation_are_keyed_and_explicit() -> None:
     steps = strings["config"]["step"]
     help_text = steps["install_or_upgrade"]["data_description"]["release_candidate"]
     warning = steps["confirm_install_rc"]["description"]
-    assert "Leave blank for the latest stable release" in help_text
-    assert "exact published tag" in help_text
+    assert "Choose the latest stable release" in help_text
+    assert "published release candidate (RC)" in help_text
     assert "not a stable release" in warning
     assert "may contain bugs" in warning
     assert "{version}" in warning and "{tag}" in warning and "{sha256}" in warning

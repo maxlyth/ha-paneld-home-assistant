@@ -99,6 +99,22 @@ async def test_native_status_and_exception_translations(
     config_strings = await async_get_translations(hass, language, "config", {DOMAIN})
     entity_strings = await async_get_translations(hass, language, "entity", {DOMAIN})
     error_strings = await async_get_translations(hass, language, "exceptions", {DOMAIN})
+    selector_strings = await async_get_translations(
+        hass, language, "selector", {DOMAIN}
+    )
+    assert (
+        selector_strings.get(
+            f"component.{DOMAIN}.selector.release_channel.options.resume_existing"
+        )
+        == {
+            "en": "Resume existing job only",
+            "de": "Nur bestehenden Auftrag fortsetzen",
+            "es": "Solo reanudar un trabajo existente",
+            "fr": "Reprendre une tâche existante uniquement",
+            "it": "Riprendi solo un’attività esistente",  # noqa: RUF001
+            "zh-Hans": "仅继续现有任务",
+        }[language]
+    )
     sensor = HaPaneldStatusSensor(
         "stable-entry-id", HaPaneldDataUpdateCoordinator(hass, AsyncMock())
     )

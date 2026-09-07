@@ -100,6 +100,22 @@ LEGACY_RELEASE = replace(RELEASE, descriptor=None)
 
 
 @pytest.fixture(autouse=True)
+def install_release_catalog():
+    """Keep native setup discovery offline with published stable and RC choices."""
+    with patch(
+        "custom_components.ha_paneld.config_flow.async_list_install_releases",
+        AsyncMock(
+            return_value=[
+                {"tag": "v0.9.7", "prerelease": False},
+                {"tag": "v0.9.7-rc3", "prerelease": True},
+                {"tag": "v0.9.7-rc4", "prerelease": True},
+            ]
+        ),
+    ) as catalog:
+        yield catalog
+
+
+@pytest.fixture(autouse=True)
 def install_network_pin() -> SimpleNamespace:
     """Keep config-flow tests off DNS while exposing the pinned target calls."""
 

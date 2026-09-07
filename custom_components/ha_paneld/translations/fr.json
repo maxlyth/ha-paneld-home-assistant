@@ -1,5 +1,5 @@
 {
-  "title": "ha-paneld",
+  "title": "Panel Assistant",
   "config": {
     "step": {
       "user": {
@@ -25,10 +25,10 @@
         "description": "Avant de continuer, trouvez l'adresse IP du panneau, conservez un accès physique à son écran et activez ADB en réseau sur le port 5555 à l'aide du [guide d'accès propre au modèle du panneau]({panel_access_url}). L'accès root n'est pas nécessaire. Saisissez ci-dessous le nom d'hôte ou l'adresse IP. Home Assistant recherche d'abord une installation existante, puis utilise ADB uniquement pour une première installation lorsque l'absence de tout paquet ha-paneld installé ou conservé peut être vérifiée.",
         "data": {
           "address": "Nom d'hôte ou adresse IP du panneau",
-          "release_candidate": "Tag exact de la version candidate (tests uniquement)"
+          "release_candidate": "Version"
         },
         "data_description": {
-          "release_candidate": "Laissez ce champ vide pour utiliser la dernière version stable. Pour les tests uniquement, saisissez un tag publié exact tel que v0.9.7-rc3. Les versions candidates peuvent contenir des bugs. Cela ne met pas à niveau un panneau déjà installé. Pour reprendre une tâche existante, laissez ce champ vide ou saisissez son tag RC d'origine."
+          "release_candidate": "Choisissez la dernière version stable ou une version candidate (RC) publiée pour les tests. Les RC peuvent contenir des bugs. Le choix par défaut reprend aussi une tâche existante avec sa version d’origine. Si seule la reprise est proposée, aucune nouvelle installation stable n’est disponible. Cela ne met pas à jour un panneau déjà installé."
         }
       },
       "connect_existing": {
@@ -64,7 +64,7 @@
       }
     },
     "progress": {
-      "installing": "Installation et vérification de ha-paneld à l'adresse {address}. Laissez cette boîte de dialogue ouverte pour terminer automatiquement. Vous pouvez la fermer : Home Assistant poursuivra la tâche d'installation, mais ne pourra pas ajouter l'appareil avant que vous ne rouvriez Paramètres → Appareils et services → Ajouter une intégration, sélectionniez ha-paneld, choisissiez Installer ha-paneld sur un panneau et saisissiez la même adresse. Une fois l'appareil ajouté par Home Assistant, terminez la configuration guidée de ha-paneld sur le panneau."
+      "installing": "Installation et vérification de ha-paneld à l'adresse {address}. Laissez cette boîte de dialogue ouverte pour terminer automatiquement. Vous pouvez la fermer : Home Assistant poursuivra la tâche d'installation, mais ne pourra pas ajouter l'appareil avant que vous ne rouvriez Paramètres → Appareils et services → Ajouter une intégration, sélectionniez Panel Assistant, choisissiez Installer ha-paneld sur un panneau et saisissiez la même adresse. Une fois l'appareil ajouté par Home Assistant, terminez la configuration guidée de ha-paneld sur le panneau."
     },
     "error": {
       "cannot_connect": "Impossible de se connecter à un point de terminaison d'état ha-paneld valide.",
@@ -83,22 +83,25 @@
       "retained_or_ambiguous": "Le panneau peut contenir un enregistrement conservé du paquet ha-paneld, ou il n'a pas été possible de confirmer qu'aucune trace de ce paquet n'y subsiste. Le panneau n'a pas été modifié. Réessayez une fois si la connexion était instable ; sinon, suivez le guide de sécurité et de récupération du provisionnement indiqué dans la documentation de l'intégration. Ne désinstallez pas et ne réinitialisez pas l'application sans disposer d'une sauvegarde vérifiée.",
       "incompatible": "Le paquet ha-paneld n'a pas été trouvé, mais le panneau n'est pas pris en charge en raison de sa version du SDK Android ou de l'architecture de son processeur. Aucun APK n'a été téléchargé ni installé.",
       "cannot_resolve_release": "Une version à installer a été trouvée, mais Home Assistant n'a pas pu identifier et vérifier la version ha-paneld sélectionnée. Aucun APK n'a été téléchargé ni installé. Vérifiez l'accès à Internet et, si vous testez une version candidate, que le tag exact est publié avec ses ressources signées. Aucune autre version ne lui sera substituée.",
-      "invalid_release_candidate": "Saisissez un tag exact au format v0.9.7-rc3, sans espace, zéro initial ni suffixe supplémentaire. Laissez ce champ vide pour utiliser la dernière version stable.",
-      "install_release_conflict": "Une tâche d'installation existante est déjà associée à ce panneau pour une autre version. Sa version ne peut pas être modifiée ici. Laissez le champ de version candidate vide pour reprendre cette tâche, ou saisissez son tag RC d'origine.",
+      "invalid_release_candidate": "Sélectionnez une version candidate disponible dans la liste ou utilisez l’option stable/reprise par défaut.",
+      "install_release_conflict": "Une tâche d’installation existante utilise ce panneau avec une autre version. Elle ne peut pas être modifiée ici. Sélectionnez l’option par défaut pour reprendre cette tâche.",
       "install_candidate_changed": "Après l'aperçu, l'identité du panneau a changé ou l'absence de tout paquet ha-paneld installé ou conservé ne peut plus être confirmée. Aucune tâche d'installation n'a été créée. Vérifiez le panneau, puis recommencez.",
       "install_plan_rejected": "Le panneau et la version signée n'ont pas pu être intégrés à un plan d'installation sûr. Aucune tâche d'installation n'a été créée.",
       "install_job_conflict": "Une autre tâche d'installation est déjà associée à l'identité de ce panneau. Aucune seconde tâche n'a été créée.",
       "install_receipt_error": "Home Assistant n'a pas pu charger ou conserver de façon sûre le reçu d'installation. Aucune nouvelle action sur le panneau n'a été autorisée.",
       "install_finalization_busy": "Une autre boîte de dialogue de configuration finalise ce panneau. Attendez qu'elle ait terminé, puis réessayez si nécessaire.",
       "install_finalization_retry": "L'installation est terminée, mais une dernière vérification en lecture seule du réseau, d'ADB ou de l'état est temporairement indisponible. Vérifiez le panneau et réessayez ; l'installation ne sera pas relancée.",
-      "unknown": "Erreur inattendue"
+      "unknown": "Erreur inattendue",
+      "release_catalog_unavailable": "Home Assistant n’a pas pu charger les versions publiées. Vérifiez l’accès Internet, puis validez pour réessayer ou reprendre une tâche enregistrée. Vous pouvez aussi revenir pour connecter une installation existante.",
+      "release_catalog_empty": "Aucune version admissible à l’installation n’est actuellement publiée. Validez pour vérifier à nouveau ou reprendre une tâche, ou revenez pour connecter une installation existante.",
+      "release_selection_required": "Les versions disponibles ont été actualisées. Sélectionnez une version pour continuer ; l’option de reprise ne peut pas démarrer une nouvelle installation."
     },
     "abort": {
       "already_configured": "Ce panneau est déjà configuré.",
       "preview_only_release": "La version authentifiée ne possède aucun descripteur d'installation signé. Aucun identifiant ADB n'a été créé, aucun APK n'a été téléchargé et l'état du panneau n'a pas changé.",
-      "install_cancelled": "L'installation a été annulée avant l'installation d'un APK. Aucune entrée Home Assistant n'a été créée. Pour réessayer, ajoutez l'intégration ha-paneld et saisissez la même adresse de panneau.",
-      "install_cancelled_after_staging_cleanup": "L'installation a été annulée et l'APK préparé a été supprimé avant son installation. Aucune entrée Home Assistant n'a été créée. Pour réessayer, ajoutez l'intégration ha-paneld et saisissez la même adresse de panneau.",
-      "install_authorization_failed": "Home Assistant n'a pas pu charger ou valider de façon sûre son identifiant ADB enregistré. Aucun APK n'a été installé. Vérifiez le stockage et les journaux de Home Assistant, puis ajoutez l'intégration ha-paneld et saisissez la même adresse pour réessayer.",
+      "install_cancelled": "L'installation a été annulée avant l'installation d'un APK. Aucune entrée Home Assistant n'a été créée. Pour réessayer, ajoutez l'intégration Panel Assistant et saisissez la même adresse de panneau.",
+      "install_cancelled_after_staging_cleanup": "L'installation a été annulée et l'APK préparé a été supprimé avant son installation. Aucune entrée Home Assistant n'a été créée. Pour réessayer, ajoutez l'intégration Panel Assistant et saisissez la même adresse de panneau.",
+      "install_authorization_failed": "Home Assistant n'a pas pu charger ou valider de façon sûre son identifiant ADB enregistré. Aucun APK n'a été installé. Vérifiez le stockage et les journaux de Home Assistant, puis ajoutez l'intégration Panel Assistant et saisissez la même adresse pour réessayer.",
       "install_preflight_rejected": "Il n'est plus possible de confirmer que le panneau est une cible compatible sur laquelle aucun paquet ha-paneld n'est installé ou conservé. Aucun APK n'a été installé. Corrigez l'état du panneau décrit dans la documentation de l'intégration avant de recommencer avec la même adresse.",
       "install_artifact_rejected": "Home Assistant a rejeté le téléchargement de la version ou l'opération de préparation avant l'installation du paquet. Aucun APK n'a été installé. Vérifiez l'accès à Internet, le stockage et les journaux de Home Assistant, puis recommencez avec la même adresse.",
       "install_transport_failed": "Home Assistant n'a pas pu terminer la connexion préalable, le téléchargement ou l'étape de préparation. Aucun APK n'a été installé. Vérifiez le panneau, le réseau, l'accès à Internet et les journaux de Home Assistant, puis recommencez avec la même adresse.",
@@ -127,6 +130,13 @@
   "exceptions": {
     "health_update_failed": {
       "message": "Impossible de lire l'état du panneau"
+    }
+  },
+  "selector": {
+    "release_channel": {
+      "options": {
+        "resume_existing": "Reprendre une tâche existante uniquement"
+      }
     }
   }
 }

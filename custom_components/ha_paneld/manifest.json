@@ -1,6 +1,6 @@
 {
   "domain": "ha_paneld",
-  "name": "ha-paneld",
+  "name": "Panel Assistant",
   "codeowners": ["@maxlyth"],
   "config_flow": true,
   "dependencies": ["http", "panel_custom"],

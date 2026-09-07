@@ -10,7 +10,14 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+)
 
 from .adb_credentials import (
     AdbCredentialError,
@@ -63,6 +70,7 @@ from .release import (
     async_resolve_stable_release,
     is_rc_release_tag,
 )
+from .release_catalog import async_list_install_releases
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -116,6 +124,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _finalizer_release_task: asyncio.Task[None] | None = None
     _removed_release_retry_started = False
     _flow_removed = False
+    _install_releases: list[dict[str, Any]] | None = None
+    _release_catalog_error: str | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -175,9 +185,38 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str],
     ) -> ConfigFlowResult:
         """Show the install form with its fixed trusted documentation link."""
-        schema = _DATA_SCHEMA.extend(
-            {vol.Optional(_CONF_RELEASE_CANDIDATE): TextSelector(TextSelectorConfig())}
+        releases = self._install_releases or []
+        stable = next(
+            (release for release in releases if not release["prerelease"]), None
         )
+        options: list[SelectOptionDict] = [
+            {
+                "value": "",
+                "label": (
+                    f"{stable['tag']} (stable)"
+                    if stable is not None
+                    else "resume_existing"
+                ),
+            },
+            *[
+                SelectOptionDict(value=release["tag"], label=f"{release['tag']} (RC)")
+                for release in releases
+                if release["prerelease"]
+            ],
+        ]
+        schema = _DATA_SCHEMA.extend(
+            {
+                vol.Optional(_CONF_RELEASE_CANDIDATE, default=""): SelectSelector(
+                    SelectSelectorConfig(
+                        options=options,
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="release_channel",
+                    )
+                )
+            }
+        )
+        if self._release_catalog_error and not errors:
+            errors = {"base": self._release_catalog_error}
         return self.async_show_form(
             step_id="install_or_upgrade",
             data_schema=self.add_suggested_values_to_schema(schema, user_input),
@@ -185,11 +224,28 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"panel_access_url": _PANEL_ACCESS_GUIDE_URL},
         )
 
+    async def _async_load_install_releases(self) -> None:
+        """Cache the bounded published catalogue for this setup flow."""
+        try:
+            self._install_releases = await async_list_install_releases(
+                async_get_clientsession(self.hass)
+            )
+        except ReleaseResolutionError:
+            self._install_releases = []
+            self._release_catalog_error = "release_catalog_unavailable"
+        else:
+            self._release_catalog_error = (
+                None if self._install_releases else "release_catalog_empty"
+            )
+
     async def async_step_install_or_upgrade(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Classify a panel before any installation or repair is attempted."""
         errors: dict[str, str] = {}
+
+        if user_input is None and self._install_releases is None:
+            await self._async_load_install_releases()
 
         if user_input is not None:
             self._pending_address = None
@@ -262,6 +318,23 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                     try:
                         health = await client.async_get_health()
                     except CannotConnectError, InvalidResponseError:
+                        if self._install_releases is not None and (
+                            self._release_catalog_error
+                            or (
+                                self._pending_rc_tag is None
+                                and not any(
+                                    not release["prerelease"]
+                                    for release in self._install_releases
+                                )
+                            )
+                        ):
+                            await self._async_load_install_releases()
+                            return self._show_install_address_form(
+                                user_input,
+                                {}
+                                if self._release_catalog_error
+                                else {"base": "release_selection_required"},
+                            )
                         try:
                             # The first probe deliberately has no key. Discovering an
                             # authorization requirement must remain read-only; only the

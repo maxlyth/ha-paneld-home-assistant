@@ -26,6 +26,7 @@ from .browser_release_cache import (
 )
 from .const import DOMAIN
 from .release import is_rc_release_tag
+from .release_catalog import async_list_install_releases
 
 DATA_BROWSER_DELIVERY = "browser_delivery"
 _BODY_LIMIT = 1024
@@ -111,6 +112,32 @@ class BrowserDelivery:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.cache.async_close()
+
+
+class BrowserReleaseCatalogView(HomeAssistantView):
+    """List fixed-repository installation choices for an authenticated admin."""
+
+    url = "/api/ha_paneld/usb/releases"
+    name = "api:ha_paneld:usb:releases"
+    requires_auth = True
+
+    def __init__(self, service: BrowserDelivery) -> None:
+        self.service = service
+
+    @require_admin
+    async def get(self, request: web.Request) -> web.Response:
+        if request.query:
+            return _error("browser_release_invalid_request", 400)
+        try:
+            async with self.service.async_admit():
+                releases = await async_list_install_releases(
+                    async_get_clientsession(self.service.hass)
+                )
+                return web.json_response({"releases": releases}, headers=_HEADERS)
+        except BrowserReleaseCacheError as error:
+            return _cache_error(error)
+        except Exception:
+            return _error("browser_release_catalog_failed", 503)
 
 
 class BrowserReleaseView(HomeAssistantView):
@@ -222,6 +249,7 @@ def async_register_browser_delivery(hass: HomeAssistant) -> None:
     if DATA_BROWSER_DELIVERY in data:
         return
     service = BrowserDelivery(hass)
+    hass.http.register_view(BrowserReleaseCatalogView(service))
     hass.http.register_view(BrowserReleaseView(service))
     hass.http.register_view(BrowserApkView(service))
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, service.async_stop)
