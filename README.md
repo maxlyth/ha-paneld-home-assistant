@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="custom_components/ha_paneld/static/icon.svg" width="216" height="216" alt="Panel Assistant">
+  <img src="custom_components/panel_assistant/static/icon.svg" width="216" height="216" alt="Panel Assistant">
 </p>
 
 <h1 align="center">Panel Assistant</h1>
@@ -12,15 +12,19 @@ This is a proof of concept, not a finished installer. It can connect to an exist
 
 Requires Home Assistant 2026.8.3 or later and HACS.
 
-1. Add `https://github.com/maxlyth/ha-paneld-home-assistant` as a custom repository in HACS, with category **Integration**.
+1. Add `https://github.com/panel-assistant/ha-integration` as a custom repository in HACS, with category **Integration**.
 2. Download **Panel Assistant** and restart Home Assistant.
 3. Open **Settings → Devices & services → Add integration**, select **Panel Assistant**, and follow the prompts.
 
-[Open in HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=maxlyth&repository=ha-paneld-home-assistant&category=integration)
+[Open in HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=panel-assistant&repository=ha-integration&category=integration)
 
 For a network installation, [enable ADB on your panel](https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware#gaining-adb--root-access) first. Choose an available ha-paneld release in the installer; release candidates are marked for testing. After installation, finish setup on the panel.
 
 If installation stops, see the [recovery guide](https://github.com/maxlyth/ha-paneld/blob/main/docs/provisioning-safety.md).
+
+## Updating from 0.1.0
+
+Remove the old integration entry in **Settings → Devices & services**, then remove its download from HACS. Add this repository in HACS, enable beta releases and download Panel Assistant. Restart Home Assistant and add the integration again using your panel's hostname or IP. This replaces the integration's Status entity; it does not change ha-paneld's MQTT entities, topics or panel settings.
 
 ## License
 

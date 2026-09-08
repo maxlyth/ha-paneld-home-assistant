@@ -33,7 +33,7 @@ test('fetches authenticated fixed route and parses catalogue', async () => {
   let args;
   const result = await fetchReleaseCatalog({ fetchWithAuth: async (...input) => { args = input; return json({ releases: [stable, rc] }); } });
   assert.deepEqual(result, [stable, rc]);
-  assert.equal(args[0], '/api/ha_paneld/usb/releases');
+  assert.equal(args[0], '/api/panel_assistant/usb/releases');
   assert.equal(args[1].method, 'GET');
   assert.equal(args[1].redirect, 'error');
   assert.ok(args[1].signal instanceof AbortSignal);

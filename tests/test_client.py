@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from aiohttp import ClientConnectionError
 
-from custom_components.ha_paneld.client import (
+from custom_components.panel_assistant.client import (
     CannotConnectError,
     HaPaneldClient,
     InvalidAddressError,
@@ -19,13 +19,13 @@ from custom_components.ha_paneld.client import (
     normalize_address,
     parse_health_response,
 )
-from custom_components.ha_paneld.const import (
+from custom_components.panel_assistant.const import (
     MAX_STATUS_CAPABILITIES,
     MAX_STATUS_RESPONSE_BYTES,
     MAX_STATUS_WARNING_LENGTH,
     MAX_STATUS_WARNINGS,
 )
-from custom_components.ha_paneld.status import parse_status_response
+from custom_components.panel_assistant.status import parse_status_response
 
 FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures"
 HEALTH_FIXTURE = FIXTURE_DIRECTORY / "health.txt"

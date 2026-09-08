@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-DOMAIN = "ha_paneld"
+DOMAIN = "panel_assistant"
 
 DEFAULT_PORT = 8888
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)

@@ -22,9 +22,9 @@ from adb_shell.exceptions import (
 )
 from adb_shell.transport.tcp_transport_async import TcpTransportAsync
 
-from custom_components.ha_paneld import install_adb
-from custom_components.ha_paneld.client import PanelAddress
-from custom_components.ha_paneld.install_adb import (
+from custom_components.panel_assistant import install_adb
+from custom_components.panel_assistant.client import PanelAddress
+from custom_components.panel_assistant.install_adb import (
     AdbInstallTarget,
     AdbRootMode,
     DefiniteCleanupReason,
@@ -40,7 +40,7 @@ from custom_components.ha_paneld.install_adb import (
     async_stage_apk,
     async_verify_installed_target,
 )
-from custom_components.ha_paneld.release import InstallDescriptor
+from custom_components.panel_assistant.release import InstallDescriptor
 
 NONCES = tuple(f"{number:032x}" for number in range(1, 20))
 JOB_ID = "a" * 32

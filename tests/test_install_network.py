@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from custom_components.ha_paneld.client import PanelAddress, normalize_address
-from custom_components.ha_paneld.install_network import (
+from custom_components.panel_assistant.client import PanelAddress, normalize_address
+from custom_components.panel_assistant.install_network import (
     MAX_INSTALL_RESOLVER_RESULTS,
     InstallNetworkError,
     InstallNetworkErrorCode,
@@ -241,7 +241,7 @@ async def test_resolver_timeout_is_fixed_and_redacted(
         await asyncio.sleep(1)
 
     monkeypatch.setattr(
-        "custom_components.ha_paneld.install_network.INSTALL_RESOLVE_TIMEOUT_SECONDS",
+        "custom_components.panel_assistant.install_network.INSTALL_RESOLVE_TIMEOUT_SECONDS",
         0.001,
     )
     with pytest.raises(InstallNetworkError) as raised:

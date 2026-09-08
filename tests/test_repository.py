@@ -12,10 +12,10 @@ from typing import Any
 
 import pytest
 
-from custom_components.ha_paneld.client import parse_health_response
+from custom_components.panel_assistant.client import parse_health_response
 
 ROOT = Path(__file__).parents[1]
-INTEGRATION = ROOT / "custom_components" / "ha_paneld"
+INTEGRATION = ROOT / "custom_components" / "panel_assistant"
 RELEASE_VERSION_SCRIPT = ROOT / ".github" / "scripts" / "verify_release_version.py"
 PLACEHOLDER = re.compile(r"\{[a-z][a-z0-9_]*\}")
 MARKDOWN_LINK = re.compile(
@@ -138,14 +138,14 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "codeowners": ["@maxlyth"],
         "config_flow": True,
         "dependencies": ["http", "panel_custom"],
-        "documentation": "https://github.com/maxlyth/ha-paneld-home-assistant",
-        "domain": "ha_paneld",
+        "documentation": "https://github.com/panel-assistant/ha-integration",
+        "domain": "panel_assistant",
         "integration_type": "device",
         "iot_class": "local_polling",
-        "issue_tracker": "https://github.com/maxlyth/ha-paneld-home-assistant/issues",
+        "issue_tracker": "https://github.com/panel-assistant/ha-integration/issues",
         "name": "Panel Assistant",
         "requirements": ["adb-shell[async]==0.4.4"],
-        "version": "0.1.0",
+        "version": "2026.9.0b0",
     }
     assert hacs == {"homeassistant": "2026.8.3", "name": "Panel Assistant"}
 
@@ -156,21 +156,58 @@ def test_release_version_guard_accepts_current_and_prerelease_versions(
     """Tag admission uses exact raw equality for stable and prerelease versions."""
     verifier = _load_release_version_module()
 
-    verifier.verify_release_version("0.1.0", INTEGRATION / "manifest.json")
+    verifier.verify_release_version("2026.9.0b0", INTEGRATION / "manifest.json")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text('{"version":"0.2.0-rc.1"}', encoding="utf-8")
-    verifier.verify_release_version("0.2.0-rc.1", manifest)
+    manifest.write_text('{"version":"2026.10.0b1"}', encoding="utf-8")
+    verifier.verify_release_version("2026.10.0b1", manifest)
+
+
+@pytest.mark.parametrize(
+    "version", ["2026.9.0", "2026.9.1", "2026.12.0b0", "2027.1.0b12"]
+)
+def test_release_version_guard_accepts_calendar_versions(
+    tmp_path: Path, version: str
+) -> None:
+    """Stable and beta releases share unpadded calendar numbering."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
+    _load_release_version_module().verify_release_version(version, manifest)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.1.0",
+        "2026.0.0",
+        "2026.13.0",
+        "2026.09.0",
+        "2026.9.00",
+        "2026.9.0b",
+        "2026.9.0b01",
+        "2026.9.0-rc.1",
+        "2026.9.0.dev0",
+        "2026.9.0\n",
+    ],
+)
+def test_release_version_guard_rejects_nonrelease_calendar_versions(
+    tmp_path: Path, version: str
+) -> None:
+    """Exact equality alone must not admit malformed or development tags."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"year\.month\.sequence"):
+        _load_release_version_module().verify_release_version(version, manifest)
 
 
 @pytest.mark.parametrize(
     ("tag", "version", "message"),
     [
-        ("v0.1.0", "0.1.0", "must not use a v prefix"),
-        ("V0.1.0", "0.1.0", "must not use a v prefix"),
-        ("0.1.1", "0.1.0", "does not match manifest version"),
-        ("", "0.1.0", "release tag must be non-empty"),
-        ("0.1.0", "", "manifest version must be a non-empty string"),
-        ("0.1.0", 1, "manifest version must be a non-empty string"),
+        ("v2026.9.0b0", "2026.9.0b0", "must not use a v prefix"),
+        ("V2026.9.0b0", "2026.9.0b0", "must not use a v prefix"),
+        ("0.1.1", "2026.9.0b0", "does not match manifest version"),
+        ("", "2026.9.0b0", "release tag must be non-empty"),
+        ("2026.9.0b0", "", "manifest version must be a non-empty string"),
+        ("2026.9.0b0", 1, "manifest version must be a non-empty string"),
     ],
 )
 def test_release_version_guard_rejects_invalid_pairs(
@@ -200,7 +237,7 @@ def test_release_version_guard_cli_does_not_parse_tag_as_option(tag: str) -> Non
     )
 
     assert result.returncode != 0
-    assert "does not match manifest version '0.1.0'" in result.stderr
+    assert "does not match manifest version '2026.9.0b0'" in result.stderr
 
 
 def test_hacs_workflow_runs_release_version_guard_for_tags() -> None:
@@ -219,7 +256,7 @@ def test_hacs_repository_foundation() -> None:
         path.name for path in (ROOT / "custom_components").iterdir() if path.is_dir()
     )
 
-    assert integration_directories == ["ha_paneld"]
+    assert integration_directories == ["panel_assistant"]
     assert (ROOT / "README.md").is_file()
     assert (
         (ROOT / "LICENSE")
@@ -352,9 +389,9 @@ def test_readme_links_to_hacs_and_panel_preparation() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert (
         "https://my.home-assistant.io/redirect/hacs_repository/"
-        "?owner=maxlyth&repository=ha-paneld-home-assistant&category=integration"
+        "?owner=panel-assistant&repository=ha-integration&category=integration"
     ) in readme
-    assert "https://github.com/maxlyth/ha-paneld-home-assistant" in readme
+    assert "https://github.com/panel-assistant/ha-integration" in readme
     assert (
         "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
         "#gaining-adb--root-access"

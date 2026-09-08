@@ -9,14 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.ha_paneld.client import (
+from custom_components.panel_assistant.client import (
     CannotConnectError,
     HaPaneldClient,
     InvalidResponseError,
     PanelAddress,
 )
-from custom_components.ha_paneld.const import MAX_STATUS_RESPONSE_BYTES
-from custom_components.ha_paneld.upgrade_observation import (
+from custom_components.panel_assistant.const import MAX_STATUS_RESPONSE_BYTES
+from custom_components.panel_assistant.upgrade_observation import (
     async_observe_database,
     parse_database_observation,
 )
@@ -164,7 +164,7 @@ async def test_request_is_bounded_fresh_and_does_not_refresh_updates() -> None:
     with (
         patch.object(client, "_async_get_bounded", transport),
         patch(
-            "custom_components.ha_paneld.upgrade_observation.secrets.token_hex",
+            "custom_components.panel_assistant.upgrade_observation.secrets.token_hex",
             side_effect=[NONCE, second],
         ) as generate,
     ):

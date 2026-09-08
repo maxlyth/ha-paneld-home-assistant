@@ -21,8 +21,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
 from homeassistant.core import CoreState, HomeAssistant
 
-from custom_components.ha_paneld import adb_credentials
-from custom_components.ha_paneld.adb_credentials import (
+from custom_components.panel_assistant import adb_credentials
+from custom_components.panel_assistant.adb_credentials import (
     AdbCredentialError,
     AdbCredentialManager,
     _generate_credential,
@@ -32,7 +32,7 @@ from custom_components.ha_paneld.adb_credentials import (
     async_get_adb_signer,
     async_get_durable_adb_credential,
 )
-from custom_components.ha_paneld.const import DOMAIN
+from custom_components.panel_assistant.const import DOMAIN
 
 
 def _serialized(credential: _StoredCredential) -> dict[str, str]:
@@ -856,7 +856,7 @@ def test_store_privacy_check_requires_regular_owner_only_file(tmp_path: Path) ->
 def test_durable_reader_binds_exact_private_store_file(tmp_path: Path) -> None:
     """The returned key is parsed from the same bounded inode that was checked."""
     credential = _generate_credential()
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     _write_store(store_path, credential)
 
     assert adb_credentials._read_durable_credential(str(store_path)) == credential
@@ -864,7 +864,7 @@ def test_durable_reader_binds_exact_private_store_file(tmp_path: Path) -> None:
 
 def test_durable_reader_rejects_hardlinked_store_file(tmp_path: Path) -> None:
     """An alias cannot retain usable ADB key authority after Store replacement."""
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     _write_store(store_path, _generate_credential())
     os.link(store_path, tmp_path / "credential-hardlink")
 
@@ -876,7 +876,7 @@ def test_durable_reader_rejects_link_count_drift_during_read(
     tmp_path: Path,
 ) -> None:
     """A new alias invalidates the opened credential even without other drift."""
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     credential = _generate_credential()
     _write_store(store_path, credential)
     actual = os.stat(store_path)
@@ -916,7 +916,7 @@ def test_durable_reader_rejects_link_count_drift_during_read(
 )
 def test_durable_reader_rejects_invalid_store_wrapper(tmp_path: Path, mutation) -> None:
     """Direct reads retain Home Assistant Store identity and schema checks."""
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     document = _stored_document(_generate_credential())
     mutation(document)
     store_path.write_text(json.dumps(document), encoding="utf-8")
@@ -929,7 +929,7 @@ def test_durable_reader_rejects_invalid_store_wrapper(tmp_path: Path, mutation) 
 def test_durable_reader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     """A duplicate wrapper or credential field cannot override trusted bytes."""
     credential = _generate_credential()
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     body = json.dumps(_stored_document(credential))
     body = body.replace('"version": 1,', '"version": 1, "version": 1,', 1)
     store_path.write_text(body, encoding="utf-8")
@@ -943,7 +943,7 @@ def test_durable_reader_rejects_path_replacement_during_read(tmp_path: Path) -> 
     """An atomic path replacement cannot authorize bytes from a stale inode."""
     original = _generate_credential()
     replacement = _generate_credential()
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     replacement_path = tmp_path / "replacement"
     _write_store(store_path, original)
     _write_store(replacement_path, replacement)
@@ -1011,7 +1011,7 @@ def test_durable_reader_rejects_same_inode_overwrite_during_read(
     replacement_document["minor_version"] = 2
     replacement_body = json.dumps(replacement_document).encode()
     assert len(original_body) == len(replacement_body)
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     store_path.write_bytes(original_body)
     store_path.chmod(0o600)
     real_read = os.read
@@ -1044,7 +1044,7 @@ def test_durable_reader_rejects_malformed_or_empty_json(
     tmp_path: Path, body: bytes
 ) -> None:
     """Invalid on-disk serialization never reaches the credential parser."""
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     store_path.write_bytes(body)
     store_path.chmod(0o600)
 
@@ -1054,7 +1054,7 @@ def test_durable_reader_rejects_malformed_or_empty_json(
 
 def test_durable_reader_rejects_foreign_owner(tmp_path: Path) -> None:
     """Owner-only mode does not authorize a Store file owned by another uid."""
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     _write_store(store_path, _generate_credential())
 
     with (
@@ -1069,7 +1069,7 @@ def test_durable_reader_rejects_non_private_or_missing_file(
     tmp_path: Path, mode: int
 ) -> None:
     """Direct mutation authority requires one present owner-readable 0600 file."""
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     _write_store(store_path, _generate_credential())
     store_path.chmod(mode)
 
@@ -1085,7 +1085,7 @@ def test_durable_reader_rejects_symlink_and_excessive_file(tmp_path: Path) -> No
     """No link or unbounded JSON body can become ADB mutation authority."""
     target_path = tmp_path / "target"
     _write_store(target_path, _generate_credential())
-    store_path = tmp_path / "ha_paneld.adb_key"
+    store_path = tmp_path / "panel_assistant.adb_key"
     store_path.symlink_to(target_path)
     with pytest.raises(AdbCredentialError):
         adb_credentials._read_durable_credential(str(store_path))
@@ -1111,14 +1111,14 @@ def test_store_privacy_check_rejects_symlink(tmp_path: Path) -> None:
 
 def test_store_presence_detects_exact_and_quarantined_files(tmp_path: Path) -> None:
     """Store evidence survives a missing current file and blocks key replacement."""
-    storage_path = tmp_path / "ha_paneld.adb_credentials"
+    storage_path = tmp_path / "panel_assistant.adb_credentials"
     assert adb_credentials._store_presence(str(storage_path)) == (False, False)
 
     storage_path.write_text("current", encoding="ascii")
     assert adb_credentials._store_presence(str(storage_path)) == (True, False)
 
     storage_path.unlink()
-    (tmp_path / "ha_paneld.adb_credentials.corrupt.2026-09-02").write_text(
+    (tmp_path / "panel_assistant.adb_credentials.corrupt.2026-09-02").write_text(
         "quarantined", encoding="ascii"
     )
     assert adb_credentials._store_presence(str(storage_path)) == (False, True)

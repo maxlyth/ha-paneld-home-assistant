@@ -11,12 +11,12 @@ from homeassistant.helpers.translation import (
 )
 from homeassistant.setup import async_setup_component
 
-from custom_components.ha_paneld.const import DOMAIN
-from custom_components.ha_paneld.coordinator import HaPaneldDataUpdateCoordinator
-from custom_components.ha_paneld.sensor import HaPaneldStatusSensor
+from custom_components.panel_assistant.const import DOMAIN
+from custom_components.panel_assistant.coordinator import HaPaneldDataUpdateCoordinator
+from custom_components.panel_assistant.sensor import HaPaneldStatusSensor
 
 TRANSLATIONS = (
-    Path(__file__).parents[1] / "custom_components" / "ha_paneld" / "translations"
+    Path(__file__).parents[1] / "custom_components" / "panel_assistant" / "translations"
 )
 TRANSLATION_SAMPLES = {
     "en": (

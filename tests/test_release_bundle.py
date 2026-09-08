@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from custom_components.ha_paneld import release
+from custom_components.panel_assistant import release
 
 from .test_release import (
     _CHECKSUM_URL,

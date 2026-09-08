@@ -46,9 +46,9 @@ test('opens synchronously, selects stable, sends only bounded bytes and waits fo
   f.send('ready'); f.send('ready');
   await tick();
   assert.equal(f.calls.length, 2);
-  assert.equal(f.calls[0][0], '/api/ha_paneld/usb/release');
+  assert.equal(f.calls[0][0], '/api/panel_assistant/usb/release');
   assert.equal(f.calls[0][1].body, '{}');
-  assert.equal(f.calls[1][0], `/api/ha_paneld/usb/release/${'a'.repeat(32)}/apk`);
+  assert.equal(f.calls[1][0], `/api/panel_assistant/usb/release/${'a'.repeat(32)}/apk`);
   assert.ok(f.calls.every(([, init]) => init.redirect === 'error' && init.signal instanceof AbortSignal));
   assert.equal(f.posts.length, 1);
   const [message, target] = f.posts[0];

@@ -1,13 +1,13 @@
 {
-  "domain": "ha_paneld",
+  "domain": "panel_assistant",
   "name": "Panel Assistant",
   "codeowners": ["@maxlyth"],
   "config_flow": true,
   "dependencies": ["http", "panel_custom"],
-  "documentation": "https://github.com/maxlyth/ha-paneld-home-assistant",
+  "documentation": "https://github.com/panel-assistant/ha-integration",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/maxlyth/ha-paneld-home-assistant/issues",
+  "issue_tracker": "https://github.com/panel-assistant/ha-integration/issues",
   "requirements": ["adb-shell[async]==0.4.4"],
-  "version": "0.1.0"
+  "version": "2026.9.0b0"
 }

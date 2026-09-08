@@ -9,20 +9,20 @@ from unittest.mock import patch
 
 import pytest
 
-from custom_components.ha_paneld import install_plan
-from custom_components.ha_paneld.client import PanelAddress
-from custom_components.ha_paneld.install_jobs import InstallJobStoreError
-from custom_components.ha_paneld.install_network import PinnedPanelTarget
-from custom_components.ha_paneld.install_plan import (
+from custom_components.panel_assistant import install_plan
+from custom_components.panel_assistant.client import PanelAddress
+from custom_components.panel_assistant.install_jobs import InstallJobStoreError
+from custom_components.panel_assistant.install_network import PinnedPanelTarget
+from custom_components.panel_assistant.install_plan import (
     InstallPlanError,
     InstallPlanErrorCode,
     build_install_plan,
 )
-from custom_components.ha_paneld.provisioning import (
+from custom_components.panel_assistant.provisioning import (
     InstallTargetProbe,
     InstallTargetState,
 )
-from custom_components.ha_paneld.release import InstallDescriptor, ReleaseArtifact
+from custom_components.panel_assistant.release import InstallDescriptor, ReleaseArtifact
 
 APK_SHA256 = "a" * 64
 CREDENTIAL_ID = "b" * 64

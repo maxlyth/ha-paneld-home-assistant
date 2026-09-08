@@ -46,7 +46,7 @@ jobs:
       - name: Run lint and formatting checks
         run: ruff check . && ruff format --check .
       - name: Run type checks
-        run: mypy custom_components/ha_paneld
+        run: mypy custom_components/panel_assistant
       - name: Run tests
         run: python -m pytest
       - name: Prove restart and replay safety in real Core processes

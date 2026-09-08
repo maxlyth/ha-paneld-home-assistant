@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.ha_paneld import browser_release_cache as cache_module
-from custom_components.ha_paneld.browser_release_cache import (
+from custom_components.panel_assistant import browser_release_cache as cache_module
+from custom_components.panel_assistant.browser_release_cache import (
     BrowserReleaseCache,
     BrowserReleaseCacheError,
 )
-from custom_components.ha_paneld.install_artifacts import InstallArtifact
-from custom_components.ha_paneld.release import (
+from custom_components.panel_assistant.install_artifacts import InstallArtifact
+from custom_components.panel_assistant.release import (
     InstallReleaseBundle,
     ReleaseArtifact,
     SignedReleaseMetadata,

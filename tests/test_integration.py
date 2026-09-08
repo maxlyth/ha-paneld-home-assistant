@@ -17,30 +17,32 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ha_paneld import (
+from custom_components.panel_assistant import (
     _async_reconcile_install_receipt,
     _async_resume_install_jobs,
     async_reload_entry,
 )
-from custom_components.ha_paneld.client import (
+from custom_components.panel_assistant.client import (
     CannotConnectError,
     InvalidResponseError,
     PanelHealth,
 )
-from custom_components.ha_paneld.const import DOMAIN
-from custom_components.ha_paneld.diagnostics import async_get_config_entry_diagnostics
-from custom_components.ha_paneld.install_artifacts import (
+from custom_components.panel_assistant.const import DOMAIN
+from custom_components.panel_assistant.diagnostics import (
+    async_get_config_entry_diagnostics,
+)
+from custom_components.panel_assistant.install_artifacts import (
     ArtifactCustodyError,
     ArtifactErrorCode,
 )
-from custom_components.ha_paneld.install_executor import InstallExecutor
-from custom_components.ha_paneld.install_jobs import (
+from custom_components.panel_assistant.install_executor import InstallExecutor
+from custom_components.panel_assistant.install_jobs import (
     InstallJobRevisionError,
     InstallJobStoreError,
     InstallPhase,
     InstallResultCode,
 )
-from custom_components.ha_paneld.status import PanelStatus, parse_status_response
+from custom_components.panel_assistant.status import PanelStatus, parse_status_response
 
 HEALTH = PanelHealth(
     version="0.9.0",
@@ -135,23 +137,23 @@ async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> Non
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             status_mock,
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             resume_mock,
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -226,23 +228,23 @@ async def test_diagnostics_download_uses_privacy_safe_entry_filename(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=health),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -254,7 +256,7 @@ async def test_diagnostics_download_uses_privacy_safe_entry_filename(
         response = await client.get(f"/api/diagnostics/config_entry/{entry.entry_id}")
         assert response.status == HTTPStatus.OK
         assert response.headers["Content-Disposition"] == (
-            f'attachment; filename="config_entry-ha_paneld-{entry.entry_id}.json"'
+            f'attachment; filename="config_entry-panel_assistant-{entry.entry_id}.json"'
         )
         assert private_panel_id not in response.headers["Content-Disposition"]
         payload = await response.json()
@@ -281,23 +283,23 @@ async def test_setup_survives_install_job_resume_failure(
     with (
         caplog.at_level(logging.WARNING),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(side_effect=InstallJobStoreError(private_detail)),
         ) as resume_mock,
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -321,19 +323,19 @@ async def test_setup_contains_unexpected_install_resume_failure(
     with (
         caplog.at_level(logging.WARNING),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(side_effect=RuntimeError(private_detail)),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(side_effect=RuntimeError(private_detail)),
         ),
     ):
@@ -352,7 +354,7 @@ async def test_setup_propagates_cancelled_install_resume(
     """Best-effort containment must not consume task cancellation."""
     with (
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(side_effect=asyncio.CancelledError),
         ),
         pytest.raises(asyncio.CancelledError),
@@ -368,19 +370,19 @@ async def test_setup_propagates_cancelled_install_reconciliation(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(side_effect=asyncio.CancelledError),
         ),
     ):
@@ -400,23 +402,23 @@ async def test_setup_survives_install_artifact_resume_failure(
     with (
         caplog.at_level(logging.WARNING),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(side_effect=error),
         ) as resume_mock,
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -441,23 +443,23 @@ async def test_setup_survives_install_receipt_store_failure(
     with (
         caplog.at_level(logging.WARNING),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(side_effect=InstallJobStoreError(private_detail)),
         ),
     ):
@@ -485,23 +487,23 @@ async def test_setup_survives_install_artifact_reconciliation_failure(
     with (
         caplog.at_level(logging.WARNING),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(side_effect=error),
         ) as executor_mock,
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(),
         ) as manager_mock,
     ):
@@ -524,15 +526,15 @@ async def test_artifact_resume_failure_does_not_hide_health_setup_failure(
 
     with (
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(side_effect=ArtifactCustodyError(ArtifactErrorCode.PATH_INVALID)),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             status_mock,
         ),
     ):
@@ -553,23 +555,23 @@ async def test_setup_consumes_matching_healthy_install_receipt(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -602,23 +604,23 @@ async def test_setup_leaves_flow_owned_healthy_receipt_unconsumed(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -642,23 +644,23 @@ async def test_setup_quarantines_matching_receipt_on_version_mismatch(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -709,23 +711,23 @@ async def test_setup_holds_finalizer_lease_through_receipt_transition(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=observed_health),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -759,23 +761,23 @@ async def test_setup_survives_install_receipt_revision_failure(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -807,23 +809,23 @@ async def test_setup_contains_unexpected_finalizer_release_failure(
     with (
         caplog.at_level(logging.WARNING),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -852,23 +854,23 @@ async def test_setup_propagates_cancelled_finalizer_release(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -903,11 +905,11 @@ async def test_setup_reconciliation_drains_finalizer_release_before_cancellation
 
     with (
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -953,23 +955,23 @@ async def test_setup_ignores_unrelated_or_terminal_install_receipts(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -989,11 +991,11 @@ async def test_setup_retries_when_panel_is_offline(hass: HomeAssistant) -> None:
     status_mock = AsyncMock(return_value=STATUS)
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             status_mock,
         ),
     ):
@@ -1013,11 +1015,11 @@ async def test_coordinator_translates_client_failure(
     status_mock = AsyncMock(return_value=STATUS)
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             status_mock,
         ),
     ):
@@ -1046,23 +1048,23 @@ async def test_diagnostics_marks_cached_snapshot_after_health_failure(
     executor, manager = _installer_doubles()
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(return_value=STATUS),
         ),
         patch(
-            "custom_components.ha_paneld.async_resume_loaded_install_jobs",
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
             AsyncMock(return_value=()),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_executor",
+            "custom_components.panel_assistant.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.async_get_install_job_manager",
+            "custom_components.panel_assistant.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -1094,11 +1096,11 @@ async def test_status_failure_does_not_override_health_authority(
     entry = _entry(hass)
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(side_effect=status_error),
         ),
     ):
@@ -1140,11 +1142,11 @@ async def test_huge_status_integer_does_not_override_health_authority(
 
     with (
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.client.HaPaneldClient.async_get_status",
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             AsyncMock(side_effect=_get_invalid_status),
         ),
     ):

@@ -20,9 +20,9 @@ from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from custom_components.ha_paneld import install_jobs
-from custom_components.ha_paneld.const import DOMAIN
-from custom_components.ha_paneld.install_jobs import (
+from custom_components.panel_assistant import install_jobs
+from custom_components.panel_assistant.const import DOMAIN
+from custom_components.panel_assistant.install_jobs import (
     InstallArtifact,
     InstallJobCapacityError,
     InstallJobCleanupRequiredError,
@@ -2709,7 +2709,7 @@ def test_durable_job_reader_repeatedly_binds_one_private_store_inode(
 ) -> None:
     """Repeated reads return only the exact validated Store receipt bytes."""
     receipt = durable_receipt()
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path, durable_store_document(receipt))
 
     for _ in range(3):
@@ -2718,7 +2718,7 @@ def test_durable_job_reader_repeatedly_binds_one_private_store_inode(
 
 def test_durable_job_reader_rejects_hardlinked_store_file(tmp_path: Path) -> None:
     """An alias cannot retain usable receipt authority after Store replacement."""
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path)
     os.link(store_path, tmp_path / "install-jobs-hardlink")
 
@@ -2730,7 +2730,7 @@ def test_durable_job_reader_rejects_link_count_drift_during_read(
     tmp_path: Path,
 ) -> None:
     """A new alias invalidates the opened receipt file without other drift."""
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path)
     actual = os.stat(store_path)
 
@@ -2774,7 +2774,7 @@ def test_durable_job_reader_rejects_invalid_store_wrapper(
     """Direct reads preserve Home Assistant Store identity and version checks."""
     document = durable_store_document()
     mutation(document)
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path, document)
 
     with pytest.raises(InstallJobStoreError):
@@ -2798,7 +2798,7 @@ def test_durable_job_reader_rejects_duplicate_json_keys(
             ),
             1,
         )
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     store_path.write_text(body, encoding="utf-8")
     store_path.chmod(0o600)
 
@@ -2810,7 +2810,7 @@ def test_durable_job_reader_rejects_path_replacement_during_read(
     tmp_path: Path,
 ) -> None:
     """An atomic same-content replacement cannot authorize a stale inode."""
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     replacement_path = tmp_path / "replacement"
     write_durable_store(store_path)
     write_durable_store(replacement_path)
@@ -2844,7 +2844,7 @@ def test_durable_job_reader_rejects_same_inode_overwrite_during_read(
     replacement["minor_version"] = 2
     replacement_body = json.dumps(replacement).encode("utf-8")
     assert len(original_body) == len(replacement_body)
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     store_path.write_bytes(original_body)
     store_path.chmod(0o600)
     real_read = os.read
@@ -2876,7 +2876,7 @@ def test_durable_job_reader_rejects_metadata_drift_after_parse(
     tmp_path: Path,
 ) -> None:
     """The descriptor and path metadata must remain stable through parsing."""
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path)
     parsed = False
 
@@ -2904,7 +2904,7 @@ def test_durable_job_reader_rejects_foreign_or_nonregular_files(
     tmp_path: Path,
 ) -> None:
     """Only a current-UID regular file can supply mutation authority."""
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path)
     with (
         patch.object(install_jobs.os, "geteuid", return_value=os.geteuid() + 1),
@@ -2923,7 +2923,7 @@ def test_durable_job_reader_rejects_nonprivate_or_missing_file(
     tmp_path: Path, mode: int
 ) -> None:
     """Mutation authority requires one present owner-readable 0600 file."""
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     write_durable_store(store_path)
     store_path.chmod(mode)
     with pytest.raises(InstallJobStoreError):
@@ -2940,7 +2940,7 @@ def test_durable_job_reader_rejects_symlink_and_excessive_file(
     """Links and unbounded JSON cannot become receipt mutation authority."""
     target_path = tmp_path / "target"
     write_durable_store(target_path)
-    store_path = tmp_path / "ha_paneld.install_jobs"
+    store_path = tmp_path / "panel_assistant.install_jobs"
     store_path.symlink_to(target_path)
     with pytest.raises(InstallJobStoreError):
         _REAL_DURABLE_JOBS_READER(str(store_path))

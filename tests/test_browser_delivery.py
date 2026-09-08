@@ -11,20 +11,20 @@ from aiohttp import ClientPayloadError
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.setup import async_setup_component
 
-from custom_components.ha_paneld import browser_delivery as delivery
-from custom_components.ha_paneld.browser_release_cache import (
+from custom_components.panel_assistant import browser_delivery as delivery
+from custom_components.panel_assistant.browser_release_cache import (
     BrowserReleaseCacheError,
     BrowserReleaseCacheErrorCode,
     BrowserReleaseRecord,
 )
-from custom_components.ha_paneld.install_artifacts import InstallArtifact
-from custom_components.ha_paneld.release import (
+from custom_components.panel_assistant.install_artifacts import InstallArtifact
+from custom_components.panel_assistant.release import (
     InstallReleaseBundle,
     ReleaseArtifact,
     SignedReleaseMetadata,
 )
 
-URL = "/api/ha_paneld/usb/release"
+URL = "/api/panel_assistant/usb/release"
 BUNDLE_ID = "a" * 32
 
 
@@ -32,7 +32,7 @@ BUNDLE_ID = "a" * 32
 async def endpoint(hass, hass_client, monkeypatch):
     assert await async_setup_component(hass, "http", {})
     delivery.async_register_browser_delivery(hass)
-    service = hass.data["ha_paneld"][delivery.DATA_BROWSER_DELIVERY]
+    service = hass.data["panel_assistant"][delivery.DATA_BROWSER_DELIVERY]
     record = BrowserReleaseRecord(
         BUNDLE_ID,
         InstallReleaseBundle(
@@ -72,8 +72,10 @@ async def endpoint(hass, hass_client, monkeypatch):
 
 async def test_idempotent_no_entries_and_exact_public_bytes(endpoint, hass):
     delivery.async_register_browser_delivery(hass)
-    assert hass.data["ha_paneld"][delivery.DATA_BROWSER_DELIVERY] is endpoint.service
-    assert not hass.config_entries.async_entries("ha_paneld")
+    assert (
+        hass.data["panel_assistant"][delivery.DATA_BROWSER_DELIVERY] is endpoint.service
+    )
+    assert not hass.config_entries.async_entries("panel_assistant")
     response = await endpoint.client.post(URL, json={})
     assert response.status == 200
     assert await response.json() == {

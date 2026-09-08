@@ -7,8 +7,8 @@ import voluptuous as vol
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.ha_paneld.config_flow import HaPaneldConfigFlow
-from custom_components.ha_paneld.release import ReleaseResolutionError
+from custom_components.panel_assistant.config_flow import HaPaneldConfigFlow
+from custom_components.panel_assistant.release import ReleaseResolutionError
 
 from .test_config_flow import (
     HEALTH,
@@ -27,7 +27,7 @@ async def test_real_catalog_populates_selector_and_caches(hass):
     flow = HaPaneldConfigFlow()
     flow.hass = hass
     with patch(
-        "custom_components.ha_paneld.config_flow.async_get_clientsession",
+        "custom_components.panel_assistant.config_flow.async_get_clientsession",
         return_value=client,
     ):
         form = await flow.async_step_install_or_upgrade()
@@ -68,19 +68,19 @@ async def test_unavailable_catalog_preserves_attach_and_resume(hass, failed, sta
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_list_install_releases",
+            "custom_components.panel_assistant.config_flow.async_list_install_releases",
             catalog,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(),
         ) as adb,
         patch.object(
@@ -113,7 +113,7 @@ async def test_connect_existing_never_loads_catalog(hass):
     flow = HaPaneldConfigFlow()
     flow.hass = hass
     with patch(
-        "custom_components.ha_paneld.config_flow.async_list_install_releases",
+        "custom_components.panel_assistant.config_flow.async_list_install_releases",
         AsyncMock(),
     ) as catalog:
         result = await flow.async_step_connect_existing()
@@ -130,19 +130,19 @@ async def test_retry_requires_fresh_selection_before_new_install(hass, initial):
     manager.async_find_active.return_value = None
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_list_install_releases",
+            "custom_components.panel_assistant.config_flow.async_list_install_releases",
             AsyncMock(side_effect=[initial, [{"tag": "v1.2.3", "prerelease": False}]]),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(),
         ) as adb,
     ):

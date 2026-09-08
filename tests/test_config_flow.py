@@ -12,31 +12,31 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ha_paneld.adb_credentials import (
+from custom_components.panel_assistant.adb_credentials import (
     AdbCredential,
     AdbCredentialError,
 )
-from custom_components.ha_paneld.browser_delivery import (
+from custom_components.panel_assistant.browser_delivery import (
     DATA_BROWSER_DELIVERY,
     async_register_browser_delivery,
 )
-from custom_components.ha_paneld.client import (
+from custom_components.panel_assistant.client import (
     CannotConnectError,
     InvalidAddressError,
     InvalidResponseError,
     PanelAddress,
     PanelHealth,
 )
-from custom_components.ha_paneld.config_flow import (
+from custom_components.panel_assistant.config_flow import (
     HaPaneldConfigFlow,
     _install_candidate_placeholders,
 )
-from custom_components.ha_paneld.const import DOMAIN
-from custom_components.ha_paneld.install_adb import (
+from custom_components.panel_assistant.const import DOMAIN
+from custom_components.panel_assistant.install_adb import (
     InstallAdbError,
     InstallAdbErrorCode,
 )
-from custom_components.ha_paneld.install_jobs import (
+from custom_components.panel_assistant.install_jobs import (
     InstallArtifact,
     InstallJobReceipt,
     InstallJobStoreError,
@@ -44,16 +44,16 @@ from custom_components.ha_paneld.install_jobs import (
     InstallResultCode,
     InstallTarget,
 )
-from custom_components.ha_paneld.install_network import (
+from custom_components.panel_assistant.install_network import (
     InstallNetworkError,
     InstallNetworkErrorCode,
     PinnedPanelTarget,
 )
-from custom_components.ha_paneld.provisioning import (
+from custom_components.panel_assistant.provisioning import (
     InstallTargetProbe,
     InstallTargetState,
 )
-from custom_components.ha_paneld.release import (
+from custom_components.panel_assistant.release import (
     InstallDescriptor,
     ReleaseArtifact,
     ReleaseResolutionError,
@@ -103,7 +103,7 @@ LEGACY_RELEASE = replace(RELEASE, descriptor=None)
 def install_release_catalog():
     """Keep native setup discovery offline with published stable and RC choices."""
     with patch(
-        "custom_components.ha_paneld.config_flow.async_list_install_releases",
+        "custom_components.panel_assistant.config_flow.async_list_install_releases",
         AsyncMock(
             return_value=[
                 {"tag": "v0.9.7", "prerelease": False},
@@ -132,11 +132,11 @@ def install_network_pin() -> SimpleNamespace:
 
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_pin_install_target",
+            "custom_components.panel_assistant.config_flow.async_pin_install_target",
             AsyncMock(side_effect=_pin),
         ) as pin_mock,
         patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             AsyncMock(side_effect=_revalidate),
         ) as revalidate_mock,
     ):
@@ -186,7 +186,7 @@ async def test_first_user_flow_registers_browser_delivery_before_any_panel(
     async_register_browser_delivery(hass)
     assert hass.data[DOMAIN][DATA_BROWSER_DELIVERY] is service
     client = await hass_client()
-    response = await client.get(f"/api/ha_paneld/usb/release/{'a' * 32}/apk")
+    response = await client.get(f"/api/panel_assistant/usb/release/{'a' * 32}/apk")
     assert response.status == 404
     assert await response.json() == {"error": "browser_release_not_found"}
     assert not hass.config_entries.async_entries(DOMAIN)
@@ -225,7 +225,7 @@ async def test_connect_existing_starts_with_address_form(
 async def test_connect_existing_success(hass: HomeAssistant) -> None:
     """Existing attach keeps its normalized endpoint identity and display title."""
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         AsyncMock(return_value=HEALTH),
     ):
         form = await _start_step(hass, "connect_existing")
@@ -245,7 +245,7 @@ async def test_connect_existing_duplicate_address_is_rejected(
     """The address remains identity when the mutable panel name changes."""
     health_mock = AsyncMock(side_effect=[HEALTH, HEALTH, BETA_HEALTH])
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
         first_form = await _start_step(hass, "connect_existing")
@@ -270,7 +270,7 @@ async def test_connect_existing_expected_errors(hass: HomeAssistant) -> None:
     """Address and health failures remain actionable connect-form errors."""
     invalid_form = await _start_step(hass, "connect_existing")
     with patch(
-        "custom_components.ha_paneld.config_flow.normalize_address",
+        "custom_components.panel_assistant.config_flow.normalize_address",
         side_effect=InvalidAddressError,
     ):
         invalid = await hass.config_entries.flow.async_configure(
@@ -279,7 +279,7 @@ async def test_connect_existing_expected_errors(hass: HomeAssistant) -> None:
 
     unavailable_form = await _start_step(hass, "connect_existing")
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         AsyncMock(side_effect=CannotConnectError),
     ):
         unavailable = await hass.config_entries.flow.async_configure(
@@ -296,7 +296,7 @@ async def test_connect_existing_unexpected_error(hass: HomeAssistant) -> None:
     """Unexpected attach failures do not escape the flow."""
     form = await _start_step(hass, "connect_existing")
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         AsyncMock(side_effect=RuntimeError("unexpected")),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -315,15 +315,15 @@ async def test_install_rejects_invalid_address_before_network_calls(
     form = await _start_step(hass, "install_or_upgrade")
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.normalize_address",
+            "custom_components.panel_assistant.config_flow.normalize_address",
             side_effect=InvalidAddressError,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -364,15 +364,15 @@ async def test_install_network_refusal_precedes_all_panel_contact(
     probe_mock = AsyncMock()
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_pin_install_target",
+            "custom_components.panel_assistant.config_flow.async_pin_install_target",
             AsyncMock(side_effect=InstallNetworkError(code)),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -395,9 +395,11 @@ async def test_install_uses_pinned_address_for_health_and_adb(
     health_mock = AsyncMock(side_effect=CannotConnectError)
     probe_mock = AsyncMock(return_value=_probe("adb_unreachable"))
     with (
-        patch("custom_components.ha_paneld.config_flow.HaPaneldClient") as client_class,
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient"
+        ) as client_class,
+        patch(
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -423,11 +425,11 @@ async def test_install_existing_panel_requires_confirmation(
     health_mock = AsyncMock(return_value=HEALTH)
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -461,7 +463,7 @@ async def test_install_existing_panel_rechecks_health_before_create(
     """Confirmation refuses an installation that stopped answering meanwhile."""
     health_mock = AsyncMock(side_effect=[HEALTH, CannotConnectError])
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
         form = await _start_step(hass, "install_or_upgrade")
@@ -483,7 +485,7 @@ async def test_install_existing_panel_revalidates_pin_before_confirmation(
     """A healthy endpoint cannot be connected through a changed DNS target."""
     health_mock = AsyncMock(return_value=HEALTH)
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
         form = await _start_step(hass, "install_or_upgrade")
@@ -491,7 +493,7 @@ async def test_install_existing_panel_revalidates_pin_before_confirmation(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
         with patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             AsyncMock(
                 side_effect=InstallNetworkError(
                     InstallNetworkErrorCode.PINNED_TARGET_REMOVED
@@ -515,7 +517,7 @@ async def test_install_existing_panel_handles_unexpected_confirmation_failure(
     """An unexpected revalidation failure creates no entry."""
     health_mock = AsyncMock(side_effect=[HEALTH, RuntimeError("unexpected")])
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
         form = await _start_step(hass, "install_or_upgrade")
@@ -537,11 +539,11 @@ async def test_install_rejects_an_http_port_as_an_adb_port(
     probe_mock = AsyncMock()
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -562,7 +564,7 @@ async def test_install_existing_duplicate_address_is_rejected(
     """The install path shares the exact existing endpoint identity."""
     health_mock = AsyncMock(side_effect=[HEALTH, HEALTH, BETA_HEALTH])
     with patch(
-        "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
         connect = await _start_step(hass, "connect_existing")
@@ -592,11 +594,11 @@ async def test_install_unavailable_duplicate_address_is_rejected_before_probe(
     probe_mock = AsyncMock()
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -629,15 +631,15 @@ async def test_install_candidate_readiness_is_non_mutating_until_confirmation(
     release_mock = AsyncMock(return_value=RELEASE)
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=health_error),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -695,15 +697,15 @@ async def test_install_classification_error_can_retry_to_candidate(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -735,15 +737,15 @@ async def test_install_candidate_without_identity_fails_closed(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(return_value=incomplete),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -772,11 +774,11 @@ async def test_install_classification_refusals_return_to_address_form(
     """Every unsafe target state is specific, actionable, and retryable."""
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(return_value=_probe(state)),
         ),
     ):
@@ -799,19 +801,19 @@ async def test_install_unauthorized_requires_physical_approval_without_creating_
     probe_mock = AsyncMock(return_value=_probe("adb_unauthorized"))
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             signer_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -842,19 +844,19 @@ async def test_install_authorization_retry_uses_persistent_signer(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             signer_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -885,19 +887,19 @@ async def test_install_authorization_revalidates_pin_before_loading_key(
     probe_mock = AsyncMock(return_value=_probe("adb_unauthorized"))
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             signer_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -906,7 +908,7 @@ async def test_install_authorization_revalidates_pin_before_loading_key(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
         with patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             AsyncMock(
                 side_effect=InstallNetworkError(
                     InstallNetworkErrorCode.PINNED_TARGET_REMOVED
@@ -974,19 +976,19 @@ async def test_install_authorization_approval_reaches_release_preview(
     release_mock = AsyncMock(return_value=RELEASE)
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             signer_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -1025,19 +1027,19 @@ async def test_install_authorization_credential_storage_error_is_actionable(
     probe_mock = AsyncMock(return_value=_probe("adb_unauthorized"))
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             AsyncMock(side_effect=AdbCredentialError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -1087,19 +1089,19 @@ async def test_install_authorization_failures_create_no_config_entry(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             signer_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -1123,11 +1125,11 @@ async def test_install_candidate_release_resolution_failure_is_non_mutating(
     """An install candidate is not presented without an exact verified release."""
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(
                 return_value=_probe(
                     "install_candidate",
@@ -1139,7 +1141,7 @@ async def test_install_candidate_release_resolution_failure_is_non_mutating(
             ),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(side_effect=ReleaseResolutionError),
         ),
     ):
@@ -1167,15 +1169,15 @@ async def test_unexpected_release_failure_is_not_misclassified(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(return_value=clean),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(side_effect=RuntimeError("unexpected")),
         ),
     ):
@@ -1210,11 +1212,11 @@ async def test_install_unexpected_failures_are_safe(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=health_error),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
     ):
@@ -1315,7 +1317,8 @@ async def test_invalid_rc_selection_precedes_all_contact(
     flow = HaPaneldConfigFlow()
     flow.hass = hass
     with patch(
-        "custom_components.ha_paneld.config_flow.async_pin_install_target", AsyncMock()
+        "custom_components.panel_assistant.config_flow.async_pin_install_target",
+        AsyncMock(),
     ) as pin:
         result = await flow.async_step_install_or_upgrade(
             {CONF_ADDRESS: "panel.local", "release_candidate": tag}
@@ -1339,28 +1342,30 @@ async def test_rc_selection_requires_exact_translated_consent_and_frozen_plan(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(return_value=CANDIDATE),
         ) as probe,
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             stable,
         ),
-        patch("custom_components.ha_paneld.config_flow.async_resolve_rc_release", rc),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_resolve_rc_release", rc
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             credential,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
@@ -1393,23 +1398,23 @@ async def test_rc_resolution_failure_never_falls_back_or_creates_credential(
 ) -> None:
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(return_value=CANDIDATE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
             AsyncMock(side_effect=ReleaseResolutionError),
         ) as rc,
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             AsyncMock(),
         ) as credential,
     ):
@@ -1429,19 +1434,19 @@ async def test_rc_requested_on_installed_panel_only_connects(
 ) -> None:
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(return_value=HEALTH),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(),
         ) as adb,
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
             AsyncMock(),
         ) as rc,
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
     ):
@@ -1480,23 +1485,23 @@ async def test_active_job_does_not_switch_release(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(),
         ) as health,
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(),
         ) as adb,
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
             AsyncMock(),
         ) as rc,
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
         patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
@@ -1624,35 +1629,35 @@ async def test_descriptorless_unauthorized_release_never_loads_a_credential(
     probe_mock = AsyncMock(return_value=_probe("adb_unauthorized"))
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=LEGACY_RELEASE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             credential_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             durable_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_signer",
+            "custom_components.panel_assistant.config_flow.async_get_adb_signer",
             signer_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             verify_mock,
         ),
     ):
@@ -1698,27 +1703,27 @@ async def test_signed_confirmation_rejects_every_target_identity_drift(
     probe_mock = AsyncMock(side_effect=[CANDIDATE, changed_probe])
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
     ):
@@ -1744,27 +1749,27 @@ async def test_confirmation_late_duplicate_guard_precedes_all_contact(
     probe_mock = AsyncMock(return_value=CANDIDATE)
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             revalidate_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             credential_mock,
         ),
     ):
@@ -1792,23 +1797,23 @@ async def test_signed_confirmation_pin_drift_precedes_credentials_and_job(
     credential_mock = AsyncMock()
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(return_value=CANDIDATE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             credential_mock,
         ),
     ):
@@ -1817,7 +1822,7 @@ async def test_signed_confirmation_pin_drift_precedes_credentials_and_job(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
         with patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             AsyncMock(
                 side_effect=InstallNetworkError(
                     InstallNetworkErrorCode.PINNED_TARGET_REMOVED
@@ -1852,31 +1857,31 @@ async def test_install_progress_removal_detaches_without_cancelling_worker(
     executor.async_wait.side_effect = _wait
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_executor",
+            "custom_components.panel_assistant.config_flow.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=CannotConnectError),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             AsyncMock(side_effect=[CANDIDATE, CANDIDATE]),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
     ):
@@ -1927,11 +1932,11 @@ async def test_nonrestartable_worker_does_not_create_progress_callback_loop(
     flow.flow_id = "flow-stopped-worker"
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_executor",
+            "custom_components.panel_assistant.config_flow.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -1956,11 +1961,11 @@ async def test_nonrestartable_worker_refresh_failure_is_privacy_safe(
     flow.flow_id = "flow-stopped-worker-refresh"
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_executor",
+            "custom_components.panel_assistant.config_flow.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
     ):
@@ -2008,27 +2013,27 @@ async def test_existing_job_reattaches_before_any_panel_or_release_contact(
     credential_mock = AsyncMock()
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_executor",
+            "custom_components.panel_assistant.config_flow.async_get_install_executor",
             AsyncMock(return_value=executor),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_probe_install_target",
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
             release_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
             credential_mock,
         ),
     ):
@@ -2129,7 +2134,7 @@ async def test_every_terminal_install_result_is_privacy_safe_and_creates_no_entr
     manager = _manager_for(receipt)
     flow = _direct_result_flow(hass, receipt, _executor_for())
     with patch(
-        "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+        "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
         AsyncMock(return_value=manager),
     ):
         result = await flow.async_step_install_result()
@@ -2199,23 +2204,23 @@ async def test_final_verification_retry_and_recovery_boundaries(
 
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             revalidate,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             durable,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             verify,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             health,
         ),
     ):
@@ -2275,19 +2280,19 @@ async def test_two_finalizers_produce_only_one_create_result(
 
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             verify_mock,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(return_value=replace(HEALTH, version=ARTIFACT.version_name)),
         ),
     ):
@@ -2346,19 +2351,19 @@ async def test_removal_during_verification_defers_finalizer_release(
 
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             AsyncMock(side_effect=_verify),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(return_value=replace(HEALTH, version=ARTIFACT.version_name)),
         ),
     ):
@@ -2402,15 +2407,15 @@ async def test_removal_during_lease_acquisition_cannot_leak_finalizer(
     verify = AsyncMock()
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             durable,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             verify,
         ),
     ):
@@ -2468,11 +2473,11 @@ async def test_cancellation_at_release_lock_keeps_lease_retryable(
     )
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             revalidate,
         ),
     ):
@@ -2520,11 +2525,11 @@ async def test_completed_owner_retries_a_failed_finalizer_release(
 
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             revalidate,
         ),
     ):
@@ -2589,11 +2594,11 @@ async def test_removed_active_owner_shares_background_release_retry_budget(
     executor.async_release_finalizer.side_effect = _release
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_revalidate_install_target",
+            "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
             AsyncMock(
                 side_effect=InstallNetworkError(
                     InstallNetworkErrorCode.RESOLUTION_FAILED
@@ -2635,19 +2640,19 @@ async def test_same_flow_double_submit_runs_one_finalizer(
     verify.side_effect = _verify
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             verify,
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(return_value=replace(HEALTH, version=ARTIFACT.version_name)),
         ),
     ):
@@ -2685,19 +2690,19 @@ async def test_final_duplicate_guard_rechecks_after_health_contact(
 
     with (
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
             AsyncMock(return_value=manager),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_get_durable_adb_credential",
+            "custom_components.panel_assistant.config_flow.async_get_durable_adb_credential",
             AsyncMock(return_value=CREDENTIAL),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.async_verify_installed_target",
+            "custom_components.panel_assistant.config_flow.async_verify_installed_target",
             AsyncMock(),
         ),
         patch(
-            "custom_components.ha_paneld.config_flow.HaPaneldClient.async_get_health",
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
             AsyncMock(side_effect=_health_then_duplicate),
         ),
     ):
@@ -2728,7 +2733,7 @@ async def test_on_create_uses_actual_entry_id_and_never_fails_existing_entry(
     result: dict = {"result": entry}
 
     with patch(
-        "custom_components.ha_paneld.config_flow.async_get_install_job_manager",
+        "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
         AsyncMock(return_value=manager),
     ):
         returned = await flow.async_on_create_entry(result)  # type: ignore[arg-type]

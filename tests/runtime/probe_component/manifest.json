@@ -1,9 +1,9 @@
 {
-  "domain": "ha_paneld_runtime_probe",
+  "domain": "panel_assistant_runtime_probe",
   "name": "ha-paneld runtime probe",
   "codeowners": [],
   "dependencies": [],
-  "documentation": "https://github.com/maxlyth/ha-paneld-home-assistant",
+  "documentation": "https://github.com/panel-assistant/ha-integration",
   "iot_class": "local_push",
   "version": "0.0.0"
 }

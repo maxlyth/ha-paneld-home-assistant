@@ -18,11 +18,11 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.ha_paneld.diagnostics import (
+from custom_components.panel_assistant.diagnostics import (
     async_get_config_entry_diagnostics,
 )
-from custom_components.ha_paneld.install_executor import _execution_id
-from custom_components.ha_paneld.install_jobs import (
+from custom_components.panel_assistant.install_executor import _execution_id
+from custom_components.panel_assistant.install_jobs import (
     InstallArtifact,
     InstallJobManager,
     InstallJobReceipt,
@@ -33,7 +33,7 @@ from custom_components.ha_paneld.install_jobs import (
     install_plan_sha256,
 )
 
-DOMAIN = "ha_paneld_runtime_probe"
+DOMAIN = "panel_assistant_runtime_probe"
 ENTRY_ID = "01M1K000000000000000000001"
 VERSION = "0.1.0"
 APK_BYTES = b"crash-held-apk"
@@ -176,7 +176,7 @@ def _registry_snapshot(hass: HomeAssistant, entry_id: str) -> dict[str, str]:
     entities = [
         entity
         for entity in er.async_get(hass).entities.values()
-        if entity.config_entry_id == entry_id and entity.platform == "ha_paneld"
+        if entity.config_entry_id == entry_id and entity.platform == "panel_assistant"
     ]
     _require(len(devices) == 1, "expected exactly one runtime device")
     _require(len(entities) == 1, "expected exactly one runtime entity")
@@ -204,7 +204,7 @@ async def _seed(hass: HomeAssistant) -> dict[str, Any]:
     entry = ConfigEntry(
         data={CONF_ADDRESS: _panel_address()},
         discovery_keys=MappingProxyType({}),
-        domain="ha_paneld",
+        domain="panel_assistant",
         entry_id=ENTRY_ID,
         minor_version=1,
         options={},
@@ -233,7 +233,7 @@ async def _seed(hass: HomeAssistant) -> dict[str, Any]:
     custody_path = Path(
         hass.config.path(
             ".storage",
-            "ha_paneld.install_artifacts",
+            "panel_assistant.install_artifacts",
             f"{_execution_id(ambiguous)}.apk",
         )
     )

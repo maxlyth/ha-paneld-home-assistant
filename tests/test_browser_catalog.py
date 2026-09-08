@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.setup import async_setup_component
 
-from custom_components.ha_paneld import browser_delivery as delivery
+from custom_components.panel_assistant import browser_delivery as delivery
 
-URL = "/api/ha_paneld/usb/releases"
+URL = "/api/panel_assistant/usb/releases"
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ async def test_catalog_rejects_query_and_redacts_failures(catalog_endpoint):
 
 async def test_closed_service_refuses_discovery(catalog_endpoint, hass):
     client, listing = catalog_endpoint
-    service = hass.data["ha_paneld"][delivery.DATA_BROWSER_DELIVERY]
+    service = hass.data["panel_assistant"][delivery.DATA_BROWSER_DELIVERY]
     service._closed = True
     response = await client.get(URL)
     assert response.status == 503

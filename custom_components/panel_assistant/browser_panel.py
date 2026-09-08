@@ -15,7 +15,7 @@ from .fleet import FleetView
 
 DATA_BROWSER_PANEL = "browser_panel"
 STATIC_PATH = Path(__file__).parent / "static"
-STATIC_URL = "/ha_paneld/usb"
+STATIC_URL = "/panel_assistant/usb"
 PANEL_PATH = "ha-paneld-usb"
 FLEET_PANEL_PATH = "panel-assistant"
 INSTALLER_URL = "https://install.panel-assistant.io/"

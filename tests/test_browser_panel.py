@@ -8,7 +8,7 @@ import pytest
 from homeassistant.components import frontend
 from homeassistant.setup import async_setup_component
 
-from custom_components.ha_paneld import browser_panel
+from custom_components.panel_assistant import browser_panel
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ async def panel_http(hass, tmp_path, monkeypatch):
 async def test_real_panel_registration_and_admin_visibility(hass):
     await browser_panel.async_register_browser_panel(hass)
     await browser_panel.async_register_browser_panel(hass)
-    assert not hass.config_entries.async_entries("ha_paneld")
+    assert not hass.config_entries.async_entries("panel_assistant")
     panel = hass.data[frontend.DATA_PANELS][browser_panel.PANEL_PATH]
     assert panel.sidebar_title is None
     assert panel.require_admin is True
@@ -40,7 +40,7 @@ async def test_real_panel_registration_and_admin_visibility(hass):
             "embed_iframe": False,
             "trust_external": False,
             "handle_safe_area": False,
-            "module_url": "/ha_paneld/usb/ha-panel.js",
+            "module_url": "/panel_assistant/usb/ha-panel.js",
         },
     }
     hass.data[frontend.DATA_PANELS_CONFIG] = {}
@@ -58,12 +58,12 @@ async def test_real_panel_registration_and_admin_visibility(hass):
 async def test_actual_static_scope_and_cache(hass, hass_client_no_auth):
     await browser_panel.async_register_browser_panel(hass)
     client = await hass_client_no_auth()
-    response = await client.get("/ha_paneld/usb/ha-panel.js")
+    response = await client.get("/panel_assistant/usb/ha-panel.js")
     assert response.status == 200
     assert await response.text() == "export const testModule = true;\n"
     assert "max-age" not in response.headers.get("Cache-Control", "")
     for path in ("private.txt", "manifest.json", "browser_panel.py"):
-        response = await client.get(f"/ha_paneld/usb/{path}")
+        response = await client.get(f"/panel_assistant/usb/{path}")
         assert response.status == 404
 
 
@@ -73,7 +73,7 @@ async def test_concurrent_registration_is_awaited_once(hass, monkeypatch):
 
     async def static_paths(paths):
         assert len(paths) == 1
-        assert paths[0].url_path == "/ha_paneld/usb"
+        assert paths[0].url_path == "/panel_assistant/usb"
         assert paths[0].path == str(browser_panel.STATIC_PATH)
         assert paths[0].cache_headers is False
         entered.set()
@@ -101,14 +101,14 @@ async def test_actual_shipped_module_is_served(hass, hass_client_no_auth):
     assert await async_setup_component(hass, "http", {})
     await browser_panel.async_register_browser_panel(hass)
     client = await hass_client_no_auth()
-    response = await client.get("/ha_paneld/usb/ha-panel.js")
+    response = await client.get("/panel_assistant/usb/ha-panel.js")
     assert response.status == 200
     expected = (browser_panel.STATIC_PATH / "ha-panel.js").read_bytes()
     assert await response.read() == expected
     assert b"ha-paneld-usb-install" in expected
     assert b"sourceMappingURL" not in expected
     for path in ("index.html", "package.json", "src/ha-install-panel.mjs"):
-        assert (await client.get(f"/ha_paneld/usb/{path}")).status == 404
+        assert (await client.get(f"/panel_assistant/usb/{path}")).status == 404
 
 
 @pytest.mark.parametrize("failure_step", ["static", "panel"])

@@ -7,7 +7,7 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.setup import async_setup_component
 
-from custom_components.ha_paneld.fleet import FleetView
+from custom_components.panel_assistant.fleet import FleetView
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ async def test_projection(endpoint, hass, monkeypatch, available, has_status):
         ],
         "truncated": False,
     }
-    listing.assert_called_once_with("ha_paneld")
+    listing.assert_called_once_with("panel_assistant")
     monkeypatch.undo()
 
 

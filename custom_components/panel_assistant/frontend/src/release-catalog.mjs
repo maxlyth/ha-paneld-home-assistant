@@ -34,7 +34,7 @@ export async function fetchReleaseCatalog(hass, { signal, timeoutMs = 15000 } = 
   try {
     requireValid(!controller.signal.aborted);
     return await Promise.race([aborted, (async () => {
-      const response = await hass.fetchWithAuth('/api/ha_paneld/usb/releases', {
+      const response = await hass.fetchWithAuth('/api/panel_assistant/usb/releases', {
         method: 'GET', redirect: 'error', signal: controller.signal,
       });
       requireValid(!controller.signal.aborted && response.status === 200 && !response.redirected && response.body &&

@@ -33,7 +33,7 @@ export async function fetchFleet(hass, signal) {
   try {
     if (signal.aborted) throw Error('cancelled');
     return await Promise.race([aborted, (async () => {
-      const response = await hass.fetchWithAuth('/api/ha_paneld/fleet', { signal, cache: 'no-store', redirect: 'error' });
+      const response = await hass.fetchWithAuth('/api/panel_assistant/fleet', { signal, cache: 'no-store', redirect: 'error' });
       if (signal.aborted || response.status !== 200 || response.redirected || response.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') throw Error('invalid response');
       reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8', { fatal: true }); let text = ''; let size = 0;
@@ -66,7 +66,7 @@ export class PanelAssistantFleet extends HTMLElement {
       #panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin-top:20px}
       article{background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#ddd);border-radius:var(--ha-card-border-radius,12px);padding:16px;overflow-wrap:anywhere}h2{font-size:1.1rem}article a{display:inline-block}
     </style><header><button id="menu" aria-label=""></button><h1 data-message="title"></h1></header><main>
-      <div class="brand"><img src="/ha_paneld/usb/icon.svg" width="108" height="108" alt=""><p data-message="introduction"></p></div><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=ha_paneld" data-message="connect"></a></nav>
+      <div class="brand"><img src="/panel_assistant/usb/icon.svg" width="108" height="108" alt=""><p data-message="introduction"></p></div><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=panel_assistant" data-message="connect"></a></nav>
       <p id="status" role="status" aria-live="polite"></p><section id="panels"></section></main>`;
     for (const element of this.shadowRoot.querySelectorAll('[data-message]')) element.textContent = FLEET_MESSAGES[element.dataset.message];
     const menu = this.shadowRoot.querySelector('#menu'); menu.textContent = '☰'; menu.setAttribute('aria-label', FLEET_MESSAGES.menu);
@@ -104,7 +104,7 @@ export class PanelAssistantFleet extends HTMLElement {
       if (row.version !== null) add('p', `${FLEET_MESSAGES.version}: ${row.version}`);
       if (row.status_available) add('p', `${FLEET_MESSAGES.warnings}: ${row.warning_count}`);
       else if (row.available) add('p', FLEET_MESSAGES.diagnostics);
-      add('a', FLEET_MESSAGES.settings).href = `/config/integrations/integration/ha_paneld#config_entry=${encodeURIComponent(row.entry_id)}`;
+      add('a', FLEET_MESSAGES.settings).href = `/config/integrations/integration/panel_assistant#config_entry=${encodeURIComponent(row.entry_id)}`;
       container.append(card);
     }
   }

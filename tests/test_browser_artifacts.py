@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.ha_paneld import browser_artifacts as browser
-from custom_components.ha_paneld import install_artifacts as native
+from custom_components.panel_assistant import browser_artifacts as browser
+from custom_components.panel_assistant import install_artifacts as native
 
 from .test_install_artifacts import (
     _BODY,
@@ -40,7 +40,7 @@ async def test_native_cleanup_cannot_delete_browser_artifact(
         _JOB_ID,  # type: ignore[arg-type]
     )
     assert Path(installed.path).parent != Path(downloaded.path).parent
-    assert Path(downloaded.path).parent.name == "ha_paneld.browser_artifacts"
+    assert Path(downloaded.path).parent.name == "panel_assistant.browser_artifacts"
     assert await asyncio.to_thread(Path(downloaded.path).read_bytes) == _BODY
     await native.async_cleanup_install_artifact(fake_hass, _JOB_ID)  # type: ignore[arg-type]
     await native.async_reconcile_install_artifacts(fake_hass, [])  # type: ignore[arg-type]
@@ -86,7 +86,9 @@ async def test_browser_custody_verifies_bytes_and_cleans_failed_download(
         )
     assert caught.value.code == native.ArtifactErrorCode.DIGEST_MISMATCH
     assert len(session.requests) == 1
-    directory = Path(fake_hass.config.path(".storage", "ha_paneld.browser_artifacts"))
+    directory = Path(
+        fake_hass.config.path(".storage", "panel_assistant.browser_artifacts")
+    )
     assert await asyncio.to_thread(lambda: list(directory.iterdir())) == []
 
 

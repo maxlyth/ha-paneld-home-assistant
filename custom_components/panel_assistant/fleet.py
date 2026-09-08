@@ -17,8 +17,8 @@ HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 class FleetView(HomeAssistantView):
     """Read cached inventory without triggering network activity or mutations."""
 
-    url = "/api/ha_paneld/fleet"
-    name = "api:ha_paneld:fleet"
+    url = "/api/panel_assistant/fleet"
+    name = "api:panel_assistant:fleet"
     requires_auth = True
 
     def __init__(self, hass: HomeAssistant) -> None:

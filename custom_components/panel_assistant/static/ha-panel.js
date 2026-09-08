@@ -36,7 +36,7 @@ async function j(n, e) {
   try {
     if (e.aborted) throw Error("cancelled");
     return await Promise.race([s, (async () => {
-      const r = await n.fetchWithAuth("/api/ha_paneld/fleet", { signal: e, cache: "no-store", redirect: "error" });
+      const r = await n.fetchWithAuth("/api/panel_assistant/fleet", { signal: e, cache: "no-store", redirect: "error" });
       if (e.aborted || r.status !== 200 || r.redirected || r.headers.get("content-type")?.split(";")[0].trim() !== "application/json") throw Error("invalid response");
       a = r.body.getReader();
       const l = new TextDecoder("utf-8", { fatal: !0 });
@@ -71,7 +71,7 @@ class U extends HTMLElement {
       #panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin-top:20px}
       article{background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#ddd);border-radius:var(--ha-card-border-radius,12px);padding:16px;overflow-wrap:anywhere}h2{font-size:1.1rem}article a{display:inline-block}
     </style><header><button id="menu" aria-label=""></button><h1 data-message="title"></h1></header><main>
-      <div class="brand"><img src="/ha_paneld/usb/icon.svg" width="108" height="108" alt=""><p data-message="introduction"></p></div><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=ha_paneld" data-message="connect"></a></nav>
+      <div class="brand"><img src="/panel_assistant/usb/icon.svg" width="108" height="108" alt=""><p data-message="introduction"></p></div><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=panel_assistant" data-message="connect"></a></nav>
       <p id="status" role="status" aria-live="polite"></p><section id="panels"></section></main>`;
     for (const a of this.shadowRoot.querySelectorAll("[data-message]")) a.textContent = g[a.dataset.message];
     const e = this.shadowRoot.querySelector("#menu");
@@ -111,12 +111,12 @@ class U extends HTMLElement {
         const u = document.createElement(r);
         return u.textContent = l, t.append(u), u;
       };
-      s("h2", a.name), s("p", g[a.available ? "available" : "unavailable"]), a.version !== null && s("p", `${g.version}: ${a.version}`), a.status_available ? s("p", `${g.warnings}: ${a.warning_count}`) : a.available && s("p", g.diagnostics), s("a", g.settings).href = `/config/integrations/integration/ha_paneld#config_entry=${encodeURIComponent(a.entry_id)}`, e.append(t);
+      s("h2", a.name), s("p", g[a.available ? "available" : "unavailable"]), a.version !== null && s("p", `${g.version}: ${a.version}`), a.status_available ? s("p", `${g.warnings}: ${a.warning_count}`) : a.available && s("p", g.diagnostics), s("a", g.settings).href = `/config/integrations/integration/panel_assistant#config_entry=${encodeURIComponent(a.entry_id)}`, e.append(t);
     }
   }
 }
 customElements.get("panel-assistant-fleet") || customElements.define("panel-assistant-fleet", U);
-const q = "/api/ha_paneld/usb/release", T = 64 * 1024 * 1024, M = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, W = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$/, F = [
+const q = "/api/panel_assistant/usb/release", T = 64 * 1024 * 1024, M = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, W = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$/, F = [
   "id",
   "tag",
   "checksum",
@@ -254,7 +254,7 @@ async function X(n, { signal: e, timeoutMs: a = 15e3 } = {}) {
   t.signal.addEventListener("abort", u, { once: !0 });
   try {
     return f(!t.signal.aborted), await Promise.race([p, (async () => {
-      const o = await n.fetchWithAuth("/api/ha_paneld/usb/releases", {
+      const o = await n.fetchWithAuth("/api/panel_assistant/usb/releases", {
         method: "GET",
         redirect: "error",
         signal: t.signal

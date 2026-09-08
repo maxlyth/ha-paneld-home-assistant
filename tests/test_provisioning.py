@@ -13,9 +13,9 @@ from adb_shell import constants as adb_constants
 from adb_shell.exceptions import AdbConnectionError, DeviceAuthError
 from adb_shell.transport.tcp_transport_async import TcpTransportAsync
 
-from custom_components.ha_paneld import provisioning
-from custom_components.ha_paneld.client import normalize_address
-from custom_components.ha_paneld.provisioning import (
+from custom_components.panel_assistant import provisioning
+from custom_components.panel_assistant.client import normalize_address
+from custom_components.panel_assistant.provisioning import (
     InstallTargetState,
     async_probe_install_target,
 )

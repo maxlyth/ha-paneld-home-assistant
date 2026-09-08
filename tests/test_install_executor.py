@@ -16,18 +16,18 @@ import pytest
 from adb_shell.auth.sign_pythonrsa import PythonRSASigner
 from homeassistant.core import HomeAssistant
 
-from custom_components.ha_paneld import install_executor, install_jobs
-from custom_components.ha_paneld.adb_credentials import (
+from custom_components.panel_assistant import install_executor, install_jobs
+from custom_components.panel_assistant.adb_credentials import (
     AdbCredential,
     AdbCredentialError,
 )
-from custom_components.ha_paneld.client import (
+from custom_components.panel_assistant.client import (
     CannotConnectError,
     PanelAddress,
     PanelHealth,
 )
-from custom_components.ha_paneld.const import DOMAIN
-from custom_components.ha_paneld.install_adb import (
+from custom_components.panel_assistant.const import DOMAIN
+from custom_components.panel_assistant.install_adb import (
     AdbInstallTarget,
     AdbPreflight,
     AdbRootMode,
@@ -38,18 +38,18 @@ from custom_components.ha_paneld.install_adb import (
     LaunchOutcome,
     StagedApk,
 )
-from custom_components.ha_paneld.install_artifacts import (
+from custom_components.panel_assistant.install_artifacts import (
     ArtifactCustodyError,
     ArtifactErrorCode,
 )
-from custom_components.ha_paneld.install_artifacts import (
+from custom_components.panel_assistant.install_artifacts import (
     InstallArtifact as CustodiedArtifact,
 )
-from custom_components.ha_paneld.install_executor import (
+from custom_components.panel_assistant.install_executor import (
     InstallExecutor,
     async_get_install_executor,
 )
-from custom_components.ha_paneld.install_jobs import (
+from custom_components.panel_assistant.install_jobs import (
     InstallArtifact,
     InstallJobManager,
     InstallJobReceipt,
@@ -59,8 +59,8 @@ from custom_components.ha_paneld.install_jobs import (
     InstallTarget,
     install_plan_sha256,
 )
-from custom_components.ha_paneld.install_network import PinnedPanelTarget
-from custom_components.ha_paneld.release import InstallDescriptor, ReleaseArtifact
+from custom_components.panel_assistant.install_network import PinnedPanelTarget
+from custom_components.panel_assistant.release import InstallDescriptor, ReleaseArtifact
 
 APK_SHA256 = "a" * 64
 CREDENTIAL_ID = "b" * 64
@@ -1083,7 +1083,7 @@ async def test_restart_removes_real_local_ready_before_ambiguous_quarantine(
     execution_id = install_executor._execution_id(receipt)
     ready = Path(
         hass.config.path(
-            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+            ".storage", "panel_assistant.install_artifacts", f"{execution_id}.apk"
         )
     )
     await hass.async_add_executor_job(seed_crash_partial, ready)
@@ -1121,7 +1121,7 @@ async def test_exhausted_safe_claim_cleans_real_custody_before_quarantine(
     execution_id = install_executor._execution_id(receipt)
     custody = Path(
         hass.config.path(
-            ".storage", "ha_paneld.install_artifacts", f"{execution_id}{suffix}"
+            ".storage", "panel_assistant.install_artifacts", f"{execution_id}{suffix}"
         )
     )
     await hass.async_add_executor_job(seed_crash_partial, custody)
@@ -1149,7 +1149,7 @@ async def test_exhausted_claim_cleanup_failure_stays_active_and_cannot_replay(
     execution_id = install_executor._execution_id(receipt)
     custody = Path(
         hass.config.path(
-            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+            ".storage", "panel_assistant.install_artifacts", f"{execution_id}.apk"
         )
     )
     await hass.async_add_executor_job(seed_crash_partial, custody)
@@ -1173,7 +1173,7 @@ async def test_exhausted_claim_cleanup_cancellation_stays_active_and_cannot_repl
     execution_id = install_executor._execution_id(receipt)
     custody = Path(
         hass.config.path(
-            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+            ".storage", "panel_assistant.install_artifacts", f"{execution_id}.apk"
         )
     )
     await hass.async_add_executor_job(seed_crash_partial, custody)
@@ -1204,7 +1204,7 @@ async def test_exhausted_claim_revision_drift_requires_fresh_cleanup_confirmatio
     execution_id = install_executor._execution_id(receipt)
     custody = Path(
         hass.config.path(
-            ".storage", "ha_paneld.install_artifacts", f"{execution_id}.apk"
+            ".storage", "panel_assistant.install_artifacts", f"{execution_id}.apk"
         )
     )
     await hass.async_add_executor_job(seed_crash_partial, custody)
@@ -1548,7 +1548,7 @@ async def test_new_process_cleans_one_stale_partial_then_resumes_download(
     execution_digest.update(bytes.fromhex(receipt.plan_sha256))
     execution_id = execution_digest.hexdigest()[:32]
     artifact_directory = Path(
-        hass.config.path(".storage", "ha_paneld.install_artifacts")
+        hass.config.path(".storage", "panel_assistant.install_artifacts")
     )
     partial = artifact_directory / f"{execution_id}.apk.part"
     await hass.async_add_executor_job(seed_crash_partial, partial)

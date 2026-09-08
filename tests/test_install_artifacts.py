@@ -20,15 +20,15 @@ from aiohttp import ClientConnectionError, ClientTimeout
 from multidict import CIMultiDict
 from yarl import URL
 
-from custom_components.ha_paneld import install_artifacts
-from custom_components.ha_paneld.install_artifacts import (
+from custom_components.panel_assistant import install_artifacts
+from custom_components.panel_assistant.install_artifacts import (
     ArtifactCustodyError,
     ArtifactErrorCode,
     async_cleanup_install_artifact,
     async_download_install_artifact,
     async_reconcile_install_artifacts,
 )
-from custom_components.ha_paneld.release import InstallDescriptor, ReleaseArtifact
+from custom_components.panel_assistant.release import InstallDescriptor, ReleaseArtifact
 
 _JOB_ID = "0123456789abcdef0123456789abcdef"
 _OTHER_JOB_ID = "fedcba9876543210fedcba9876543210"

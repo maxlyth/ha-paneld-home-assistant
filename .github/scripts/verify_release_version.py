@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
-DEFAULT_MANIFEST = Path("custom_components/ha_paneld/manifest.json")
+DEFAULT_MANIFEST = Path("custom_components/panel_assistant/manifest.json")
+RELEASE_VERSION = re.compile(
+    r"[2-9][0-9]{3}\.(?:[1-9]|1[0-2])\.(?:0|[1-9][0-9]*)(?:b(?:0|[1-9][0-9]*))?"
+)
 
 
 def verify_release_version(tag: str, manifest_path: Path) -> None:
@@ -26,6 +30,9 @@ def verify_release_version(tag: str, manifest_path: Path) -> None:
         raise ValueError(msg)
     if tag != version:
         msg = f"release tag {tag!r} does not match manifest version {version!r}"
+        raise ValueError(msg)
+    if RELEASE_VERSION.fullmatch(version) is None:
+        msg = "release version must use year.month.sequence with an optional bN suffix"
         raise ValueError(msg)
 
 

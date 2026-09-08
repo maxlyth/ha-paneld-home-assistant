@@ -1,4 +1,4 @@
-const API = '/api/ha_paneld/usb/release';
+const API = '/api/panel_assistant/usb/release';
 const MAX_APK = 64 * 1024 * 1024;
 const STABLE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const RC = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$/;

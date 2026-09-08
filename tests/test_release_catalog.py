@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from custom_components.ha_paneld import release_catalog as catalog
-from custom_components.ha_paneld.release import ReleaseResolutionError
+from custom_components.panel_assistant import release_catalog as catalog
+from custom_components.panel_assistant.release import ReleaseResolutionError
 
 from .test_release import _FakeResponse, _FakeSession
 

@@ -64,7 +64,7 @@ def _validate_candidate(repository: Path, expected_sha: str) -> None:
     actual = _run(["git", "rev-parse", "HEAD"], cwd=repository).stdout.strip()
     _require(actual == expected_sha, f"HEAD {actual} is not expected {expected_sha}")
     production_diff = _run(
-        ["git", "status", "--porcelain", "--", "custom_components/ha_paneld"],
+        ["git", "status", "--porcelain", "--", "custom_components/panel_assistant"],
         cwd=repository,
     ).stdout
     _require(not production_diff, "production integration has uncommitted changes")
@@ -265,10 +265,10 @@ def _write_configuration(config: Path) -> None:
 logger:
   default: warning
   logs:
-    custom_components.ha_paneld: debug
-    custom_components.ha_paneld_runtime_probe: debug
+    custom_components.panel_assistant: debug
+    custom_components.panel_assistant_runtime_probe: debug
 
-ha_paneld_runtime_probe:
+panel_assistant_runtime_probe:
 """,
         encoding="ascii",
     )
@@ -279,7 +279,7 @@ def _copy_candidate_component(
     destination: Path,
     expected_sha: str,
 ) -> None:
-    prefix = Path("custom_components/ha_paneld")
+    prefix = Path("custom_components/panel_assistant")
     listing = _run(
         [
             "git",
@@ -309,15 +309,15 @@ def _prepare_config(
     config = root / "config"
     components = config / "custom_components"
     components.mkdir(parents=True)
-    source = repository / "custom_components" / "ha_paneld"
-    destination = components / "ha_paneld"
+    source = repository / "custom_components" / "panel_assistant"
+    destination = components / "panel_assistant"
     destination.mkdir()
     _copy_candidate_component(repository, destination, expected_sha)
     ignored = shutil.ignore_patterns("__pycache__", "*.pyc")
     probe_source = repository / "tests" / "runtime" / "probe_component"
     shutil.copytree(
         probe_source,
-        components / "ha_paneld_runtime_probe",
+        components / "panel_assistant_runtime_probe",
         ignore=ignored,
     )
     _write_configuration(config)
@@ -402,7 +402,7 @@ def _validate_logs(root: Path) -> None:
             line
             for line in log.splitlines()
             if ("ERROR" in line or "CRITICAL" in line)
-            and "custom_components.ha_paneld" in line
+            and "custom_components.panel_assistant" in line
         ]
         _require(not bad_lines, f"ha-paneld logged an error in {stage}: {bad_lines}")
 

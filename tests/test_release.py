@@ -15,8 +15,8 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from multidict import CIMultiDict
 from yarl import URL
 
-from custom_components.ha_paneld import release
-from custom_components.ha_paneld.release import (
+from custom_components.panel_assistant import release
+from custom_components.panel_assistant.release import (
     ReleaseResolutionError,
     async_resolve_stable_release,
 )

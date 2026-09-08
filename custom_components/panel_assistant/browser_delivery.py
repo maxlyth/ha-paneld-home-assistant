@@ -117,8 +117,8 @@ class BrowserDelivery:
 class BrowserReleaseCatalogView(HomeAssistantView):
     """List fixed-repository installation choices for an authenticated admin."""
 
-    url = "/api/ha_paneld/usb/releases"
-    name = "api:ha_paneld:usb:releases"
+    url = "/api/panel_assistant/usb/releases"
+    name = "api:panel_assistant:usb:releases"
     requires_auth = True
 
     def __init__(self, service: BrowserDelivery) -> None:
@@ -143,8 +143,8 @@ class BrowserReleaseCatalogView(HomeAssistantView):
 class BrowserReleaseView(HomeAssistantView):
     """Prepare a fixed-repository signed release for the authenticated admin."""
 
-    url = "/api/ha_paneld/usb/release"
-    name = "api:ha_paneld:usb:release"
+    url = "/api/panel_assistant/usb/release"
+    name = "api:panel_assistant:usb:release"
     requires_auth = True
 
     def __init__(self, service: BrowserDelivery) -> None:
@@ -189,8 +189,8 @@ class BrowserReleaseView(HomeAssistantView):
 class BrowserApkView(HomeAssistantView):
     """Serve only the current admin's opaque, leased browser artifact."""
 
-    url = "/api/ha_paneld/usb/release/{bundle_id}/apk"
-    name = "api:ha_paneld:usb:apk"
+    url = "/api/panel_assistant/usb/release/{bundle_id}/apk"
+    name = "api:panel_assistant:usb:apk"
     requires_auth = True
 
     def __init__(self, service: BrowserDelivery) -> None:

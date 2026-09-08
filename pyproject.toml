@@ -3,9 +3,9 @@ requires = ["setuptools>=80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ha-paneld-home-assistant"
-version = "0.1.0"
-description = "Home Assistant custom integration for ha-paneld"
+name = "panel-assistant-ha-integration"
+version = "2026.9.0b0"
+description = "Panel Assistant integration for Home Assistant"
 readme = "README.md"
 requires-python = ">=3.14.2"
 license = "Apache-2.0"
@@ -27,7 +27,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = [
   "--strict-markers",
-  "--cov=custom_components.ha_paneld",
+  "--cov=custom_components.panel_assistant",
   "--cov-report=term-missing",
 ]
 
