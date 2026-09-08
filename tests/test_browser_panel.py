@@ -30,8 +30,11 @@ async def test_real_panel_registration_and_admin_visibility(hass):
     panel = hass.data[frontend.DATA_PANELS][browser_panel.PANEL_PATH]
     assert panel.sidebar_title is None
     assert panel.require_admin is True
+    fleet = hass.data[frontend.DATA_PANELS][browser_panel.FLEET_PANEL_PATH]
+    assert fleet.sidebar_title == "Panel Assistant"
+    assert fleet.require_admin is True
     assert panel.config == {
-        "installer_url": "https://install.ha-paneld.com/",
+        "installer_url": "https://panel-assistant.io/",
         "_panel_custom": {
             "name": "ha-paneld-usb-install",
             "embed_iframe": False,
@@ -48,6 +51,7 @@ async def test_real_panel_registration_and_admin_visibility(hass):
         frontend.websocket_get_panels(hass, connection, {"id": 1})
         result = connection.send_message.call_args.args[0]["result"]
         assert (browser_panel.PANEL_PATH in result) is is_admin
+        assert (browser_panel.FLEET_PANEL_PATH in result) is is_admin
 
 
 @pytest.mark.usefixtures("panel_http")
@@ -76,7 +80,9 @@ async def test_concurrent_registration_is_awaited_once(hass, monkeypatch):
         await release.wait()
 
     static = AsyncMock(side_effect=static_paths)
-    hass.http = SimpleNamespace(async_register_static_paths=static)
+    hass.http = SimpleNamespace(
+        async_register_static_paths=static, register_view=Mock()
+    )
     panel = AsyncMock()
     monkeypatch.setattr(browser_panel.panel_custom, "async_register_panel", panel)
     first = asyncio.create_task(browser_panel.async_register_browser_panel(hass))
@@ -87,7 +93,7 @@ async def test_concurrent_registration_is_awaited_once(hass, monkeypatch):
     release.set()
     await asyncio.gather(first, second)
     static.assert_awaited_once()
-    panel.assert_awaited_once()
+    assert panel.await_count == 2
 
 
 async def test_actual_shipped_module_is_served(hass, hass_client_no_auth):
@@ -109,10 +115,12 @@ async def test_actual_shipped_module_is_served(hass, hass_client_no_auth):
 async def test_retry_preserves_completed_steps(hass, monkeypatch, failure_step):
     static = AsyncMock()
     panel = AsyncMock()
-    hass.http = SimpleNamespace(async_register_static_paths=static)
+    hass.http = SimpleNamespace(
+        async_register_static_paths=static, register_view=Mock()
+    )
     monkeypatch.setattr(browser_panel.panel_custom, "async_register_panel", panel)
     failing = static if failure_step == "static" else panel
-    failing.side_effect = [RuntimeError("registration failed"), None]
+    failing.side_effect = [RuntimeError("registration failed"), None, None]
     with pytest.raises(RuntimeError, match="registration failed"):
         await browser_panel.async_register_browser_panel(hass)
     if failure_step == "static":
@@ -120,4 +128,4 @@ async def test_retry_preserves_completed_steps(hass, monkeypatch, failure_step):
     await browser_panel.async_register_browser_panel(hass)
     await browser_panel.async_register_browser_panel(hass)
     assert static.await_count == (2 if failure_step == "static" else 1)
-    assert panel.await_count == (2 if failure_step == "panel" else 1)
+    assert panel.await_count == (3 if failure_step == "panel" else 2)

@@ -9,7 +9,7 @@ export default defineConfig({
     emptyOutDir: false,
     sourcemap: false,
     lib: {
-      entry: fileURLToPath(new URL('./src/ha-install-panel.mjs', import.meta.url)),
+      entry: fileURLToPath(new URL('./src/ha-panels.mjs', import.meta.url)),
       formats: ['es'],
       fileName: () => 'ha-panel.js',
     },
