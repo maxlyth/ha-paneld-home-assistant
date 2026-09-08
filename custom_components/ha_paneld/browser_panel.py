@@ -18,7 +18,7 @@ STATIC_PATH = Path(__file__).parent / "static"
 STATIC_URL = "/ha_paneld/usb"
 PANEL_PATH = "ha-paneld-usb"
 FLEET_PANEL_PATH = "panel-assistant"
-INSTALLER_URL = "https://panel-assistant.io/"
+INSTALLER_URL = "https://install.panel-assistant.io/"
 
 
 @dataclass

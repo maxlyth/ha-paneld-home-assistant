@@ -34,7 +34,7 @@ async def test_real_panel_registration_and_admin_visibility(hass):
     assert fleet.sidebar_title == "Panel Assistant"
     assert fleet.require_admin is True
     assert panel.config == {
-        "installer_url": "https://panel-assistant.io/",
+        "installer_url": "https://install.panel-assistant.io/",
         "_panel_custom": {
             "name": "ha-paneld-usb-install",
             "embed_iframe": False,

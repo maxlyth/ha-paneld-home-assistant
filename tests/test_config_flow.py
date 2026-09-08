@@ -204,7 +204,7 @@ async def test_usb_step_links_local_admin_panel_without_creating_entry(
     assert result["description_placeholders"] == {"usb_install_url": "/ha-paneld-usb"}
     panel = hass.data[frontend.DATA_PANELS]["ha-paneld-usb"]
     assert panel.require_admin is True
-    assert panel.config["installer_url"] == "https://panel-assistant.io/"
+    assert panel.config["installer_url"] == "https://install.panel-assistant.io/"
     assert not hass.config_entries.async_entries(DOMAIN)
     returned = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert returned["type"] is FlowResultType.MENU
