@@ -60,12 +60,13 @@ export class PanelAssistantFleet extends HTMLElement {
       :host{display:block;background:var(--primary-background-color,#fafafa);color:var(--primary-text-color,#212121);min-height:100%;font:inherit}
       header{display:flex;align-items:center;gap:12px;background:var(--app-header-background-color,var(--primary-color,#03a9f4));color:var(--app-header-text-color,#fff);padding:8px 16px}
       h1{font-size:1.25rem}main{max-width:1000px;margin:auto;padding:20px;box-sizing:border-box}
+      .brand{display:flex;align-items:center;gap:8px}.brand img{width:108px;height:108px;flex:none}.brand p{margin:0}
       nav{display:flex;gap:12px;flex-wrap:wrap;align-items:center}button,a{font:inherit;padding:12px;min-height:44px;box-sizing:border-box}
       button{cursor:pointer;color:inherit;background:transparent;border:1px solid var(--divider-color,#888);border-radius:6px}a{color:var(--primary-color,#0288d1)}
       #panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin-top:20px}
       article{background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#ddd);border-radius:var(--ha-card-border-radius,12px);padding:16px;overflow-wrap:anywhere}h2{font-size:1.1rem}article a{display:inline-block}
     </style><header><button id="menu" aria-label=""></button><h1 data-message="title"></h1></header><main>
-      <p data-message="introduction"></p><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=ha_paneld" data-message="connect"></a></nav>
+      <div class="brand"><img src="/ha_paneld/usb/icon.svg" width="108" height="108" alt=""><p data-message="introduction"></p></div><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=ha_paneld" data-message="connect"></a></nav>
       <p id="status" role="status" aria-live="polite"></p><section id="panels"></section></main>`;
     for (const element of this.shadowRoot.querySelectorAll('[data-message]')) element.textContent = FLEET_MESSAGES[element.dataset.message];
     const menu = this.shadowRoot.querySelector('#menu'); menu.textContent = '☰'; menu.setAttribute('aria-label', FLEET_MESSAGES.menu);

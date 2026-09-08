@@ -1,4 +1,8 @@
-# Panel Assistant
+<p align="center">
+  <img src="custom_components/ha_paneld/static/icon.svg" width="216" height="216" alt="Panel Assistant">
+</p>
+
+<h1 align="center">Panel Assistant</h1>
 
 A Home Assistant integration for [ha-paneld](https://github.com/maxlyth/ha-paneld), the dashboard app for Android wall panels.
 

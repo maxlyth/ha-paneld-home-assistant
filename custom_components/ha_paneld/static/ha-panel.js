@@ -29,16 +29,16 @@ function I(n) {
 }
 async function j(n, e) {
   let a, t;
-  const s = new Promise((i, l) => {
+  const s = new Promise((r, l) => {
     t = () => l(Error("cancelled"));
   });
   e.addEventListener("abort", t, { once: !0 });
   try {
     if (e.aborted) throw Error("cancelled");
     return await Promise.race([s, (async () => {
-      const i = await n.fetchWithAuth("/api/ha_paneld/fleet", { signal: e, cache: "no-store", redirect: "error" });
-      if (e.aborted || i.status !== 200 || i.redirected || i.headers.get("content-type")?.split(";")[0].trim() !== "application/json") throw Error("invalid response");
-      a = i.body.getReader();
+      const r = await n.fetchWithAuth("/api/ha_paneld/fleet", { signal: e, cache: "no-store", redirect: "error" });
+      if (e.aborted || r.status !== 200 || r.redirected || r.headers.get("content-type")?.split(";")[0].trim() !== "application/json") throw Error("invalid response");
+      a = r.body.getReader();
       const l = new TextDecoder("utf-8", { fatal: !0 });
       let u = "", p = 0;
       for (; ; ) {
@@ -59,18 +59,19 @@ class U extends HTMLElement {
   #t;
   #a;
   #e = "loading";
-  #i;
+  #r;
   constructor() {
     super(), this.attachShadow({ mode: "open" }), this.shadowRoot.innerHTML = `<style>
       :host{display:block;background:var(--primary-background-color,#fafafa);color:var(--primary-text-color,#212121);min-height:100%;font:inherit}
       header{display:flex;align-items:center;gap:12px;background:var(--app-header-background-color,var(--primary-color,#03a9f4));color:var(--app-header-text-color,#fff);padding:8px 16px}
       h1{font-size:1.25rem}main{max-width:1000px;margin:auto;padding:20px;box-sizing:border-box}
+      .brand{display:flex;align-items:center;gap:8px}.brand img{width:108px;height:108px;flex:none}.brand p{margin:0}
       nav{display:flex;gap:12px;flex-wrap:wrap;align-items:center}button,a{font:inherit;padding:12px;min-height:44px;box-sizing:border-box}
       button{cursor:pointer;color:inherit;background:transparent;border:1px solid var(--divider-color,#888);border-radius:6px}a{color:var(--primary-color,#0288d1)}
       #panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin-top:20px}
       article{background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#ddd);border-radius:var(--ha-card-border-radius,12px);padding:16px;overflow-wrap:anywhere}h2{font-size:1.1rem}article a{display:inline-block}
     </style><header><button id="menu" aria-label=""></button><h1 data-message="title"></h1></header><main>
-      <p data-message="introduction"></p><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=ha_paneld" data-message="connect"></a></nav>
+      <div class="brand"><img src="/ha_paneld/usb/icon.svg" width="108" height="108" alt=""><p data-message="introduction"></p></div><nav><button id="refresh" data-message="refresh"></button><a href="/ha-paneld-usb" data-message="install"></a><a href="/config/integrations/dashboard/add?domain=ha_paneld" data-message="connect"></a></nav>
       <p id="status" role="status" aria-live="polite"></p><section id="panels"></section></main>`;
     for (const a of this.shadowRoot.querySelectorAll("[data-message]")) a.textContent = g[a.dataset.message];
     const e = this.shadowRoot.querySelector("#menu");
@@ -87,14 +88,14 @@ class U extends HTMLElement {
     this.#a?.abort(), this.#a = void 0;
   }
   async #n() {
-    if (this.#a?.abort(), this.#a = void 0, this.#i = void 0, this.#e = this.#t?.user?.is_admin === !0 ? "loading" : "admin", this.#s(), !this.isConnected || this.#e === "admin") return;
+    if (this.#a?.abort(), this.#a = void 0, this.#r = void 0, this.#e = this.#t?.user?.is_admin === !0 ? "loading" : "admin", this.#s(), !this.isConnected || this.#e === "admin") return;
     const e = new AbortController();
     this.#a = e;
     const a = setTimeout(() => e.abort(), 15e3);
     try {
       const t = await j(this.#t, e.signal);
       if (e !== this.#a) return;
-      this.#i = t, this.#e = t.panels.length ? null : "empty";
+      this.#r = t, this.#e = t.panels.length ? null : "empty";
     } catch {
       e === this.#a && (this.#e = "failed");
     } finally {
@@ -102,12 +103,12 @@ class U extends HTMLElement {
     }
   }
   #s() {
-    this.shadowRoot.querySelector("#status").textContent = this.#e ? g[this.#e] : this.#i?.truncated ? g.truncated : "", this.shadowRoot.querySelector("#refresh").disabled = this.#e === "admin" || this.#e === "loading";
+    this.shadowRoot.querySelector("#status").textContent = this.#e ? g[this.#e] : this.#r?.truncated ? g.truncated : "", this.shadowRoot.querySelector("#refresh").disabled = this.#e === "admin" || this.#e === "loading";
     const e = this.shadowRoot.querySelector("#panels");
     e.replaceChildren();
-    for (const a of this.#i?.panels ?? []) {
-      const t = document.createElement("article"), s = (i, l) => {
-        const u = document.createElement(i);
+    for (const a of this.#r?.panels ?? []) {
+      const t = document.createElement("article"), s = (r, l) => {
+        const u = document.createElement(r);
         return u.textContent = l, t.append(u), u;
       };
       s("h2", a.name), s("p", g[a.available ? "available" : "unavailable"]), a.version !== null && s("p", `${g.version}: ${a.version}`), a.status_available ? s("p", `${g.warnings}: ${a.warning_count}`) : a.available && s("p", g.diagnostics), s("a", g.settings).href = `/config/integrations/integration/ha_paneld#config_entry=${encodeURIComponent(a.entry_id)}`, e.append(t);
@@ -146,8 +147,8 @@ async function $(n, e, a, t = null) {
     const o = Number(s);
     h(Number.isSafeInteger(o) && o <= e && (t === null || o === t));
   }
-  const i = n.body.getReader(), l = () => {
-    i.cancel().catch(() => {
+  const r = n.body.getReader(), l = () => {
+    r.cancel().catch(() => {
     });
   };
   a.addEventListener("abort", l, { once: !0 });
@@ -156,13 +157,13 @@ async function $(n, e, a, t = null) {
   try {
     for (; ; ) {
       h(!a.aborted, "cancelled");
-      const o = await i.read();
+      const o = await r.read();
       if (h(!a.aborted, "cancelled"), o.done) break;
       p += o.value.byteLength, h(p <= e && (t === null || p <= t)), u.push(o.value);
     }
     return h(p > 0 && (s === null || p === Number(s)) && (t === null || p === t)), new Blob(u);
   } finally {
-    a.removeEventListener("abort", l), l(), i.releaseLock();
+    a.removeEventListener("abort", l), l(), r.releaseLock();
   }
 }
 function D(n, e, {
@@ -170,33 +171,33 @@ function D(n, e, {
   onState: t = () => {
   },
   windowObject: s = window,
-  timeoutMs: i = 3e5
+  timeoutMs: r = 3e5
 } = {}) {
   let l, u;
-  const p = new Promise((r, d) => {
-    l = r, u = d;
+  const p = new Promise((i, d) => {
+    l = i, u = d;
   }), o = new AbortController();
   let c = !1, b, m, y, E, R = !1, C = !1;
-  const _ = (r) => {
+  const _ = (i) => {
     try {
-      t(r);
+      t(i);
     } catch {
     }
-  }, v = (r = null) => {
-    c || (c = !0, o.abort(), clearTimeout(m), s.removeEventListener("message", L), _(r ?? "verified"), r ? u(new S(r)) : l());
+  }, v = (i = null) => {
+    c || (c = !0, o.abort(), clearTimeout(m), s.removeEventListener("message", L), _(i ?? "verified"), i ? u(new S(i)) : l());
   };
   async function O() {
     try {
       _("preparing"), h(!c, "cancelled");
-      const r = await n.fetchWithAuth(q, {
+      const i = await n.fetchWithAuth(q, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(a === null ? {} : { release_candidate: a }),
         redirect: "error",
         signal: o.signal
       });
-      h(!c, "cancelled"), h(r.headers.get("content-type")?.split(";")[0].trim() === "application/json");
-      const d = JSON.parse(await (await $(r, 8192, o.signal)).text());
+      h(!c, "cancelled"), h(i.headers.get("content-type")?.split(";")[0].trim() === "application/json");
+      const d = JSON.parse(await (await $(i, 8192, o.signal)).text());
       h(!c, "cancelled"), h(z(d, F) && w(/[0-9a-f]{32}/, d.id) && typeof d.tag == "string" && d.tag.length <= 64 && (a === null ? w(M, d.tag) : d.tag === a) && w(/[0-9a-f]{64}/, d.apk_sha256) && Number.isSafeInteger(d.apk_size) && d.apk_size > 0 && d.apk_size <= T);
       const k = {
         tag: d.tag,
@@ -214,21 +215,21 @@ function D(n, e, {
       h(!c, "cancelled");
       const B = await $(P, T, o.signal, d.apk_size);
       h(!c && !b.closed, "window_closed"), C = !0, b.postMessage({ type: "ha-paneld/usb-bundle", nonce: E, bundle: k, apk: B }, y), _("verifying");
-    } catch (r) {
-      v(r instanceof S ? r.code : "delivery_failed");
+    } catch (i) {
+      v(i instanceof S ? i.code : "delivery_failed");
     }
   }
-  function L(r) {
-    c || r.source !== b || r.origin !== y || !z(r.data, ["type", "nonce"]) || r.data.nonce !== E || (r.data.type === "ha-paneld/usb-ready" && !R ? (R = !0, O()) : r.data.type === "ha-paneld/usb-verified" && C ? v() : r.data.type === "ha-paneld/usb-error" && v("verification_failed"));
+  function L(i) {
+    c || i.source !== b || i.origin !== y || !z(i.data, ["type", "nonce"]) || i.data.nonce !== E || (i.data.type === "ha-paneld/usb-ready" && !R ? (R = !0, O()) : i.data.type === "ha-paneld/usb-verified" && C ? v() : i.data.type === "ha-paneld/usb-error" && v("verification_failed"));
   }
   try {
-    h(n && typeof n.fetchWithAuth == "function" && (a === null || a.length <= 64 && w(W, a)) && Number.isSafeInteger(i) && i > 0 && i <= 3e5, "invalid_request");
-    const r = new URL(e);
-    h(!r.username && !r.password && !r.hash && (r.protocol === "https:" || r.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(r.hostname)), "invalid_destination"), y = r.origin;
+    h(n && typeof n.fetchWithAuth == "function" && (a === null || a.length <= 64 && w(W, a)) && Number.isSafeInteger(r) && r > 0 && r <= 3e5, "invalid_request");
+    const i = new URL(e);
+    h(!i.username && !i.password && !i.hash && (i.protocol === "https:" || i.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(i.hostname)), "invalid_destination"), y = i.origin;
     const d = new Uint8Array(16);
-    s.crypto.getRandomValues(d), E = Array.from(d, (k) => k.toString(16).padStart(2, "0")).join(""), r.hash = new URLSearchParams({ ha_origin: s.location.origin, nonce: E, rc: a ?? "" }).toString(), s.addEventListener("message", L), b = s.open(r.href, "_blank"), h(b, "popup_blocked"), m = setTimeout(() => v("timeout"), i), _("waiting");
-  } catch (r) {
-    v(r instanceof S ? r.code : "invalid_request");
+    s.crypto.getRandomValues(d), E = Array.from(d, (k) => k.toString(16).padStart(2, "0")).join(""), i.hash = new URLSearchParams({ ha_origin: s.location.origin, nonce: E, rc: a ?? "" }).toString(), s.addEventListener("message", L), b = s.open(i.href, "_blank"), h(b, "popup_blocked"), m = setTimeout(() => v("timeout"), r), _("waiting");
+  } catch (i) {
+    v(i instanceof S ? i.code : "invalid_request");
   }
   return { completion: p, cancel: () => v("cancelled") };
 }
@@ -245,7 +246,7 @@ function V(n) {
 async function X(n, { signal: e, timeoutMs: a = 15e3 } = {}) {
   const t = new AbortController(), s = () => t.abort();
   e?.addEventListener("abort", s, { once: !0 }), e?.aborted && s();
-  const i = setTimeout(s, a);
+  const r = setTimeout(s, a);
   let l, u;
   const p = new Promise((o, c) => {
     u = () => c(new Error("Release catalogue cancelled"));
@@ -271,7 +272,7 @@ async function X(n, { signal: e, timeoutMs: a = 15e3 } = {}) {
       return f(m > 0 && (c === null || m === Number(c))), V(JSON.parse(await new Blob(b).text()));
     })()]);
   } finally {
-    clearTimeout(i), e?.removeEventListener("abort", s), t.signal.removeEventListener("abort", u), t.abort(), l && l.cancel().catch(() => {
+    clearTimeout(r), e?.removeEventListener("abort", s), t.signal.removeEventListener("abort", u), t.abort(), l && l.cancel().catch(() => {
     });
   }
 }
@@ -305,7 +306,7 @@ class K extends HTMLElement {
   #t;
   #a;
   #e;
-  #i = "ready";
+  #r = "ready";
   #n;
   #s = "loading";
   #o = [];
@@ -330,15 +331,15 @@ class K extends HTMLElement {
     </main>`;
     for (const e of this.shadowRoot.querySelectorAll("[data-message]"))
       e.textContent = x[e.dataset.message];
-    this.shadowRoot.querySelector("#start").addEventListener("click", () => this.#d()), this.shadowRoot.querySelector("#cancel").addEventListener("click", () => this.#e?.cancel()), this.shadowRoot.querySelector("#retry").addEventListener("click", () => this.#l()), this.shadowRoot.querySelector("#release").addEventListener("change", () => this.#r()), this.#r();
+    this.shadowRoot.querySelector("#start").addEventListener("click", () => this.#d()), this.shadowRoot.querySelector("#cancel").addEventListener("click", () => this.#e?.cancel()), this.shadowRoot.querySelector("#retry").addEventListener("click", () => this.#l()), this.shadowRoot.querySelector("#release").addEventListener("change", () => this.#i()), this.#i();
   }
   set hass(e) {
     const a = this.#t?.user?.id !== e?.user?.id || this.#t?.user?.is_admin !== e?.user?.is_admin || this.#t?.connection !== e?.connection || this.#t?.auth !== e?.auth;
-    this.#t = e, a && (this.#e?.cancel(), this.#l()), this.#r();
+    this.#t = e, a && (this.#e?.cancel(), this.#l()), this.#i();
   }
   set panel(e) {
     const a = this.#a?.config?.installer_url !== e?.config?.installer_url;
-    a && this.#e?.cancel(), this.#a = e, a && this.#l(), this.#r();
+    a && this.#e?.cancel(), this.#a = e, a && this.#l(), this.#i();
   }
   connectedCallback() {
     this.#l();
@@ -347,7 +348,7 @@ class K extends HTMLElement {
     this.#e?.cancel(), this.#n?.abort(), this.#n = void 0;
   }
   async #l() {
-    if (this.#n?.abort(), this.#n = void 0, this.#o = [], this.#s = "loading", this.shadowRoot.querySelector("#release").replaceChildren(), this.#r(), !this.isConnected || this.#t?.user?.is_admin !== !0 || !this.#a?.config?.installer_url) return;
+    if (this.#n?.abort(), this.#n = void 0, this.#o = [], this.#s = "loading", this.shadowRoot.querySelector("#release").replaceChildren(), this.#i(), !this.isConnected || this.#t?.user?.is_admin !== !0 || !this.#a?.config?.installer_url) return;
     const e = new AbortController();
     this.#n = e;
     try {
@@ -356,22 +357,22 @@ class K extends HTMLElement {
       this.#o = a, this.#s = a.length ? "ready" : "empty";
       const t = this.shadowRoot.querySelector("#release"), s = document.createElement("option");
       s.value = "", s.textContent = x.choose, s.disabled = !0, t.append(s);
-      for (const i of a) {
+      for (const r of a) {
         const l = document.createElement("option");
-        l.value = i.tag, l.textContent = `${i.tag} — ${i.prerelease ? "Release candidate (testing)" : "Stable"}`, t.append(l);
+        l.value = r.tag, l.textContent = `${r.tag} — ${r.prerelease ? "Release candidate (testing)" : "Stable"}`, t.append(l);
       }
-      t.value = a.find((i) => !i.prerelease)?.tag ?? "";
+      t.value = a.find((r) => !r.prerelease)?.tag ?? "";
     } catch {
       if (this.#n !== e) return;
       this.#s = "catalogError";
     } finally {
-      this.#n === e && (this.#n = void 0, this.#r());
+      this.#n === e && (this.#n = void 0, this.#i());
     }
   }
-  #r() {
-    const e = this.#t?.user?.is_admin === !0, a = typeof this.#a?.config?.installer_url == "string" && this.#a.config.installer_url.length > 0, t = this.#o.find((i) => i.tag === this.shadowRoot.querySelector("#release").value);
+  #i() {
+    const e = this.#t?.user?.is_admin === !0, a = typeof this.#a?.config?.installer_url == "string" && this.#a.config.installer_url.length > 0, t = this.#o.find((r) => r.tag === this.shadowRoot.querySelector("#release").value);
     this.shadowRoot.querySelector("#start").disabled = !e || !a || !!this.#e || !t, this.shadowRoot.querySelector("#cancel").disabled = !this.#e, this.shadowRoot.querySelector("#release").disabled = !!this.#e || this.#s !== "ready", this.shadowRoot.querySelector("#catalog-status").textContent = e && a && this.#s !== "ready" ? x[this.#s] : "", this.shadowRoot.querySelector("#retry").hidden = !e || !a || !["catalogError", "empty"].includes(this.#s);
-    const s = e ? a ? this.#i : "unavailable" : "admin";
+    const s = e ? a ? this.#r : "unavailable" : "admin";
     this.shadowRoot.querySelector("#status").textContent = x[s] ?? x.failed;
   }
   #d() {
@@ -381,12 +382,12 @@ class K extends HTMLElement {
     const a = D(this.#t, this.#a?.config?.installer_url, {
       rcTag: e.prerelease ? e.tag : null,
       onState: (t) => {
-        this.#i = t, this.#r();
+        this.#r = t, this.#i();
       }
     });
-    this.#e = a, this.#r(), a.completion.catch(() => {
+    this.#e = a, this.#i(), a.completion.catch(() => {
     }).finally(() => {
-      this.#e === a && (this.#e = void 0), this.#r();
+      this.#e === a && (this.#e = void 0), this.#i();
     });
   }
 }
