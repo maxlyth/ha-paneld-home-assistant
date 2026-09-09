@@ -7,7 +7,14 @@ export const FLEET_MESSAGES = Object.freeze({
   available: 'Available', unavailable: 'Unavailable or not loaded',
   version: 'Installed version', warnings: 'Warnings', diagnostics: 'Diagnostics unavailable',
   settings: 'Panel settings', truncated: 'Only the first 200 panels are shown.',
+  checklist: 'Check setup', checklistLoading: 'Checking setup…',
+  checklistFailed: 'Setup checks are unavailable on this panel.',
+  checklistHelp: 'Helper, Shizuku and WebView guidance only. Complete Android permissions and guided setup separately.',
+  checklistNew: 'Some checks require a newer integration.',
 });
+
+const SETUP_LABELS = Object.freeze({ 'access.helper': 'Panel helper', 'access.shizuku': 'Shizuku', 'software.webview': 'WebView' });
+const SETUP_STATUS = Object.freeze({ satisfied: 'Ready', actionable: 'Action needed', manual: 'Manual setup needed', blocked: 'Cannot proceed', degraded: 'Needs attention', not_applicable: 'Not needed' });
 
 export function parseFleet(value) {
   if (!value || !Array.isArray(value.panels) || value.panels.length > 200 || typeof value.truncated !== 'boolean') throw Error('invalid fleet');
@@ -26,6 +33,10 @@ export function parseFleet(value) {
 }
 
 export async function fetchFleet(hass, signal) {
+  return parseFleet(await fetchDocument(hass, signal, '/api/panel_assistant/fleet'));
+}
+
+async function fetchDocument(hass, signal, path) {
   let reader;
   let onAbort;
   const aborted = new Promise((_, reject) => { onAbort = () => reject(Error('cancelled')); });
@@ -33,7 +44,7 @@ export async function fetchFleet(hass, signal) {
   try {
     if (signal.aborted) throw Error('cancelled');
     return await Promise.race([aborted, (async () => {
-      const response = await hass.fetchWithAuth('/api/panel_assistant/fleet', { signal, cache: 'no-store', redirect: 'error' });
+      const response = await hass.fetchWithAuth(path, { signal, cache: 'no-store', redirect: 'error' });
       if (signal.aborted || response.status !== 200 || response.redirected || response.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') throw Error('invalid response');
       reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8', { fatal: true }); let text = ''; let size = 0;
@@ -44,7 +55,7 @@ export async function fetchFleet(hass, signal) {
         size += value.byteLength; if (size > 524288) throw Error('excessive response');
         text += decoder.decode(value, { stream: true });
       }
-      return parseFleet(JSON.parse(text + decoder.decode()));
+      return JSON.parse(text + decoder.decode());
     })()]);
   } finally {
     signal.removeEventListener('abort', onAbort);
@@ -53,7 +64,7 @@ export async function fetchFleet(hass, signal) {
 }
 
 export class PanelAssistantFleet extends HTMLElement {
-  #hass; #request; #state = 'loading'; #inventory;
+  #hass; #request; #setupRequest; #setupOutput; #state = 'loading'; #inventory;
   constructor() {
     super(); this.attachShadow({ mode: 'open' });
     this.shadowRoot.innerHTML = `<style>
@@ -79,8 +90,9 @@ export class PanelAssistantFleet extends HTMLElement {
     this.#hass = value; if (changed) this.#load();
   }
   connectedCallback() { this.#load(); }
-  disconnectedCallback() { this.#request?.abort(); this.#request = undefined; }
+  disconnectedCallback() { this.#request?.abort(); this.#request = undefined; this.#setupRequest?.abort(); this.#setupRequest = undefined; }
   async #load() {
+    this.#setupRequest?.abort(); this.#setupRequest = undefined;
     this.#request?.abort(); this.#request = undefined; this.#inventory = undefined;
     this.#state = this.#hass?.user?.is_admin === true ? 'loading' : 'admin'; this.#render();
     if (!this.isConnected || this.#state === 'admin') return;
@@ -92,6 +104,25 @@ export class PanelAssistantFleet extends HTMLElement {
       this.#inventory = inventory; this.#state = inventory.panels.length ? null : 'empty';
     } catch { if (request === this.#request) this.#state = 'failed'; }
     finally { clearTimeout(timer); if (request === this.#request) { this.#request = undefined; this.#render(); } }
+  }
+  async #checkSetup(entryId, output) {
+    this.#setupRequest?.abort();
+    if (this.#setupOutput) this.#setupOutput.textContent = '';
+    this.#setupOutput = output;
+    const request = new AbortController(); this.#setupRequest = request;
+    const timer = setTimeout(() => request.abort(), 15000);
+    output.textContent = FLEET_MESSAGES.checklistLoading;
+    try {
+      const plan = await fetchDocument(this.#hass, request.signal, `/api/panel_assistant/fleet/${encodeURIComponent(entryId)}/provisioning`);
+      if (this.#setupRequest !== request) return;
+      if (!plan || !Array.isArray(plan.items) || plan.items.length > 32 || typeof plan.needs_updated_client !== 'boolean') throw Error('invalid plan');
+      const lines = plan.items.map(item => {
+        if (!Object.hasOwn(SETUP_LABELS, item.id) || !Object.hasOwn(SETUP_STATUS, item.status)) throw Error('invalid item');
+        return `${SETUP_LABELS[item.id]}: ${SETUP_STATUS[item.status]}`;
+      });
+      output.textContent = [...lines, plan.needs_updated_client ? FLEET_MESSAGES.checklistNew : '', FLEET_MESSAGES.checklistHelp].filter(Boolean).join('\n');
+    } catch { if (this.#setupRequest === request) output.textContent = FLEET_MESSAGES.checklistFailed; }
+    finally { clearTimeout(timer); if (this.#setupRequest === request) this.#setupRequest = undefined; }
   }
   #render() {
     this.shadowRoot.querySelector('#status').textContent = this.#state ? FLEET_MESSAGES[this.#state] : this.#inventory?.truncated ? FLEET_MESSAGES.truncated : '';
@@ -105,6 +136,10 @@ export class PanelAssistantFleet extends HTMLElement {
       if (row.status_available) add('p', `${FLEET_MESSAGES.warnings}: ${row.warning_count}`);
       else if (row.available) add('p', FLEET_MESSAGES.diagnostics);
       add('a', FLEET_MESSAGES.settings).href = `/config/integrations/integration/panel_assistant#config_entry=${encodeURIComponent(row.entry_id)}`;
+      const check = add('button', FLEET_MESSAGES.checklist);
+      check.disabled = !row.available;
+      const output = add('p', ''); output.setAttribute('role', 'status'); output.style.whiteSpace = 'pre-line';
+      check.addEventListener('click', () => this.#checkSetup(row.entry_id, output));
       container.append(card);
     }
   }

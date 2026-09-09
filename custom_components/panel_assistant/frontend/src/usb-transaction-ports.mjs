@@ -7,6 +7,8 @@ import { buildInstall, parseInstall, buildLaunch, parseLaunch } from './install-
 import { inspectInstalledApk } from './installed-observation.mjs';
 import { readUsbHealth } from './usb-health.mjs';
 import { readUsbSetup } from './usb-setup.mjs';
+import { buildPermissionRead, parsePermissionRead, buildPermissionGrant, parsePermissionGrant,
+  buildPermissionVerification, parsePermissionVerification } from './permission-contract.mjs';
 import { verifyStagedPrefix } from './staged-prefix.mjs';
 import { buildPrefixCleanup, parsePrefixCleanup } from './cleanup-contract.mjs';
 import { TransactionError } from './transaction.mjs';
@@ -152,6 +154,25 @@ export function createUsbTransactionPorts({ adb, usbDevice, authenticate,
       await posture(receipt, release);
       if (!await inspectInstalledApk(adb, release.descriptor, guard)) fail('installed_artifact_mismatch');
       const result = await readUsbSetup(adb, {ensureCurrent: guard, quarantine: stop});
+      binding(receipt, release);
+      return result;
+    }),
+    commissionPermissions: protect(async (receipt, release) => {
+      if (receipt.phase !== 'healthy') fail('transaction_invalid');
+      await posture(receipt, release);
+      if (!await inspectInstalledApk(adb, release.descriptor, guard)) fail('installed_artifact_mismatch');
+      binding(receipt, release);
+      let n = nonce();
+      const existing = parsePermissionRead(await readShell(adb, buildPermissionRead(n), {maximum: 8192}), n);
+      binding(receipt, release);
+      n = nonce();
+      parsePermissionGrant(await readShell(adb, buildPermissionGrant(n, receipt.target.androidSdk, existing),
+        {timeoutMs: 30000, maximum: 16384}), n);
+      binding(receipt, release);
+      n = nonce();
+      const result = parsePermissionVerification(await readShell(adb,
+        buildPermissionVerification(n, receipt.target.androidSdk), {timeoutMs: 30000, maximum: 16384}),
+      n, receipt.target.androidSdk, existing);
       binding(receipt, release);
       return result;
     }),

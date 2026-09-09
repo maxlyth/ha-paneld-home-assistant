@@ -10,8 +10,31 @@ const canonical = value => JSON.stringify(value, Object.keys(value).sort());
 // No jobs or mutations are created during preview. No receipt deletion exists.
 export function createInstallController({ store, ports, locks = globalThis.navigator?.locks,
   ensureCurrent = () => {}, onReceipt = () => {} }) {
-  let preview, busy = false;
+  let preview, expectedJobId, busy = false;
   const guard = () => { ensureCurrent(); };
+  const setupOperation = async operation => {
+    if (busy) fail('transaction_busy');
+    if (!preview) fail('confirmation_required');
+    busy = true;
+    try {
+      return await locks.request(`ha-paneld-usb:${preview.deviceKey}`,
+        {mode: 'exclusive', ifAvailable: true}, async lock => {
+          if (!lock) fail('transaction_busy');
+          guard();
+          const receipt = await store.load(preview.deviceKey);
+          if (!receipt || receipt.phase !== 'healthy' ||
+              canonical(receipt.artifact) !== canonical(preview.descriptor)) fail('transaction_invalid');
+          if (receipt.id !== expectedJobId) fail('job_conflict');
+          const release = await ports.authenticate();
+          guard();
+          if (release?.kind !== 'authenticated-apk-bytes' ||
+              canonical(release.descriptor) !== canonical(receipt.artifact)) fail('artifact_changed');
+          const result = await operation(receipt, release);
+          guard();
+          return result;
+        });
+    } finally { busy = false; }
+  };
   return Object.freeze({
     async preview(target) {
       if (busy) fail('transaction_busy');
@@ -33,6 +56,7 @@ export function createInstallController({ store, ports, locks = globalThis.navig
         else await ports.inspect(proposed, release);
         guard();
         preview = Object.freeze({ target: snapshot, descriptor: release.descriptor, deviceKey, receipt });
+        expectedJobId = receipt?.id;
         return preview;
       } finally { busy = false; }
     },
@@ -55,6 +79,7 @@ export function createInstallController({ store, ports, locks = globalThis.navig
           if (selected.receipt) fail('transaction_missing');
           receipt = await store.create(selected.target, release.descriptor);
         }
+        expectedJobId = receipt.id;
         onReceipt(receipt);
         // A reconciliation button promises observation only. Stop after that
         // transition; require a separate continue action before any mutation.
@@ -83,26 +108,11 @@ export function createInstallController({ store, ports, locks = globalThis.navig
       } finally {busy = false;}
     },
     async observeSetup() {
-      if (busy) fail('transaction_busy');
-      if (!preview) fail('confirmation_required');
-      busy = true;
-      try {
-        return await locks.request(`ha-paneld-usb:${preview.deviceKey}`,
-          {mode: 'exclusive', ifAvailable: true}, async lock => {
-            if (!lock) fail('transaction_busy');
-            guard();
-            const receipt = await store.load(preview.deviceKey);
-            if (!receipt || receipt.phase !== 'healthy' ||
-                canonical(receipt.artifact) !== canonical(preview.descriptor)) fail('transaction_invalid');
-            const release = await ports.authenticate();
-            guard();
-            if (release?.kind !== 'authenticated-apk-bytes' ||
-                canonical(release.descriptor) !== canonical(receipt.artifact)) fail('artifact_changed');
-            const result = await ports.setup(receipt, release);
-            guard();
-            return result;
-          });
-      } finally { busy = false; }
+      return setupOperation((receipt, release) => ports.setup(receipt, release));
+    },
+    async commissionPermissions(confirmed = false) {
+      if (confirmed !== true) fail('confirmation_required');
+      return setupOperation((receipt, release) => ports.commissionPermissions(receipt, release));
     },
     // Cancellation of active I/O belongs to the owning session's guard/close.
     invalidate() { if (busy) fail('transaction_busy'); preview = undefined; },

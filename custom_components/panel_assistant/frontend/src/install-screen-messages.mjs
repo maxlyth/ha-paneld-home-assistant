@@ -2,6 +2,13 @@
 // wording remains in install-view.mjs; no USB peer text enters either catalogue.
 export const INSTALL_SCREEN_MESSAGES = Object.freeze({
   title: 'Install ha-paneld over USB',
+  permissionsHeading: 'Grant Android permissions',
+  permissionsHelp: 'Allow ha-paneld to change system settings, display overlays and use its accessibility service for panel controls, plus notifications on Android 13 or later. Existing accessibility services and MQTT settings are preserved. This does not complete dashboard setup or Home Assistant registration.',
+  permissionsConfirmation: 'I want to grant these permissions to the verified ha-paneld app on this panel.',
+  permissionsGrant: 'Grant and verify permissions',
+  permissionsChecking: 'Verifying the app and granting Android permissions. Keep the USB cable connected.',
+  permissionsVerified: 'Android permission settings verified. Continue guided setup on the panel; dashboard operation and Home Assistant registration are not yet verified.',
+  permissionsUnverified: 'Permissions could not be verified. Some grants may have succeeded. Reload, reconnect the same panel and release, then retry; existing grants are safe to repeat. If Android refuses access, grant the permissions in its Settings app.',
   setupHeading: 'Continue guided setup on the panel',
   setupHelp: 'Use the panel’s guided setup for its name, dashboard, Home Assistant sign-in and optional MQTT configuration. This read-only check reports progress; it does not grant Android permissions, change configuration or register an HA integration device.',
   setupCheck: 'Check guided setup progress',

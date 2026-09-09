@@ -48,6 +48,11 @@
     <pre id="receipt-result"></pre>
     <p data-screen-message="progressHelp"></p>
     <div id="setup-observation" hidden>
+      <h3 data-screen-message="permissionsHeading"></h3>
+      <p data-screen-message="permissionsHelp"></p>
+      <label><input id="permissions-confirmation" type="checkbox"><span data-screen-message="permissionsConfirmation"></span></label>
+      <button id="permissions-grant" data-screen-message="permissionsGrant" disabled></button>
+      <p id="permissions-summary" role="status" aria-live="polite"></p>
       <h3 data-screen-message="setupHeading"></h3>
       <p data-screen-message="setupHelp"></p>
       <button id="setup-check" data-screen-message="setupCheck" disabled></button>

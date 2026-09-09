@@ -11,7 +11,7 @@ from homeassistant.components.http.server import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .fleet import FleetView
+from .fleet import FleetView, ProvisioningPlanView
 
 DATA_BROWSER_PANEL = "browser_panel"
 STATIC_PATH = Path(__file__).parent / "static"
@@ -39,6 +39,7 @@ async def async_register_browser_panel(hass: HomeAssistant) -> None:
     async with registration.lock:
         if not registration.fleet_view_registered:
             hass.http.register_view(FleetView(hass))
+            hass.http.register_view(ProvisioningPlanView(hass))
             registration.fleet_view_registered = True
         if not registration.static_registered:
             await hass.http.async_register_static_paths(

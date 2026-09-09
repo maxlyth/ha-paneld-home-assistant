@@ -61,6 +61,8 @@ function render() {
   element('receipt-result').textContent = receipt ? JSON.stringify(receipt, null, 2) : '';
   element('setup-observation').hidden = receipt?.phase !== 'healthy';
   element('setup-check').disabled = receipt?.phase !== 'healthy' || busy || !connected || quarantined;
+  element('permissions-confirmation').disabled = element('setup-check').disabled;
+  element('permissions-grant').disabled = element('setup-check').disabled || !element('permissions-confirmation').checked;
 }
 
 // Close each acquired resource independently. Late chooser/authentication
@@ -253,6 +255,25 @@ element('setup-check').addEventListener('click', async () => {
       result.actionRequired ? screen.setupAction : result.reportedComplete ? screen.setupComplete : screen.setupWaiting;
   } catch (error) { element('setup-summary').textContent = screen.setupWaiting; fail(error); }
   finally { busy = false; render(); }
+});
+
+element('permissions-confirmation').addEventListener('change', render);
+element('permissions-grant').addEventListener('click', async () => {
+  if (element('permissions-grant').disabled || !controller) return;
+  busy = true; render();
+  element('permissions-summary').textContent = screen.permissionsChecking;
+  try {
+    const result = await Promise.race([stopPromise,
+      controller.commissionPermissions(element('permissions-confirmation').checked)
+        .catch(error => { fail(error); throw error; })]);
+    ensureCurrent();
+    if (result?.permissionsVerified !== true) throw new Error('permissions_unverified');
+    element('permissions-summary').textContent = screen.permissionsVerified;
+    element('permissions-confirmation').checked = false;
+  } catch (error) {
+    element('permissions-summary').textContent = screen.permissionsUnverified;
+    fail(error);
+  } finally { busy = false; render(); }
 });
 
 status(supported ? screen.ready : screen.unsupported);

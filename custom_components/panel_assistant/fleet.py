@@ -2,16 +2,63 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import HomeAssistantView
 
+from .client import HaPaneldError
 from .const import DOMAIN
+from .provisioning_plan import async_get_provisioning_plan
 
 MAX_PANELS = 200
 HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+class ProvisioningPlanView(HomeAssistantView):
+    """Read a setup checklist only for an existing, loaded integration entry."""
+
+    url = "/api/panel_assistant/fleet/{entry_id}/provisioning"
+    name = "api:panel_assistant:provisioning"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    @require_admin
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        if request.query:
+            return web.json_response(
+                {"error": "invalid_request"}, status=400, headers=HEADERS
+            )
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            return web.json_response(
+                {"error": "not_found"}, status=404, headers=HEADERS
+            )
+        runtime = getattr(entry, "runtime_data", None)
+        coordinator = getattr(runtime, "coordinator", None)
+        if entry.state is not ConfigEntryState.LOADED or coordinator is None:
+            return web.json_response(
+                {"error": "unavailable"}, status=503, headers=HEADERS
+            )
+        try:
+            plan = await async_get_provisioning_plan(coordinator.client)
+        except HaPaneldError:
+            return web.json_response(
+                {"error": "unavailable"}, status=503, headers=HEADERS
+            )
+        if (
+            entry.state is not ConfigEntryState.LOADED
+            or getattr(entry, "runtime_data", None) is not runtime
+        ):
+            return web.json_response(
+                {"error": "unavailable"}, status=503, headers=HEADERS
+            )
+        return web.json_response(asdict(plan), headers=HEADERS)
 
 
 class FleetView(HomeAssistantView):
