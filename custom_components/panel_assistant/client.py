@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .status import PanelStatus
 
 _CONFIG_HASH_PATTERN = re.compile(r"^[0-9a-f]{8}$")
+_DISCOVERY_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _HEALTH_FIELD_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _PANEL_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9_]*[a-z0-9])?$")
 _VERSION_PATTERN = re.compile(
@@ -37,6 +38,7 @@ _KNOWN_HEALTH_FIELDS = frozenset(
         "panel",
         "build",
         "cfg",
+        "did",
         "ha",
         "ha_src",
         "ha_refused",
@@ -70,6 +72,11 @@ class InvalidResponseError(HaPaneldError):
     """Raised when a panel does not return the health contract."""
 
 
+def is_valid_discovery_id(value: str) -> bool:
+    """Return whether an mDNS/health discovery token has the Android contract shape."""
+    return _DISCOVERY_ID_PATTERN.fullmatch(value) is not None
+
+
 @dataclass(frozen=True, slots=True)
 class PanelHealth:
     """Parsed fields from the stable ha-paneld health line."""
@@ -81,6 +88,7 @@ class PanelHealth:
     ha_state: str | None = None
     ha_source: str | None = None
     ha_subscription_refused: bool = False
+    discovery_id: str | None = None
 
     def as_dict(self) -> dict[str, str | bool | None]:
         """Return a serializable diagnostics representation."""
@@ -192,6 +200,9 @@ def parse_health_response(body: str) -> PanelHealth:
     ha_source = fields.get("ha_src")
     if ha_source not in _LIFECYCLE_SOURCES:
         ha_source = None
+    discovery_id = fields.get("did")
+    if discovery_id is not None and not is_valid_discovery_id(discovery_id):
+        raise InvalidResponseError
 
     return PanelHealth(
         version=tokens[1],
@@ -201,6 +212,7 @@ def parse_health_response(body: str) -> PanelHealth:
         ha_state=ha_state,
         ha_source=ha_source,
         ha_subscription_refused=fields.get("ha_refused") == "1",
+        discovery_id=discovery_id,
     )
 
 

@@ -38,6 +38,10 @@
           "address": "Panel address"
         }
       },
+      "confirm_discovery": {
+        "title": "Confirm discovered panel",
+        "description": "Home Assistant found a ha-paneld installation at {address}. Submit to verify it is still the same panel and add it as {panel_name}. No panel settings will change."
+      },
       "confirm_existing": {
         "title": "ha-paneld is already installed",
         "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant. A later integration version will add update management. No installation will be performed, even if a release candidate tag was entered."
@@ -98,6 +102,7 @@
     },
     "abort": {
       "already_configured": "This panel is already configured.",
+      "invalid_discovery": "The discovered panel did not prove to be the same healthy ha-paneld installation. No Home Assistant entry or panel setting was changed.",
       "preview_only_release": "The authenticated release has no signed installation descriptor. No ADB credential was created, no APK was downloaded, and no panel state changed.",
       "install_cancelled": "The installation was cancelled before an APK was installed. No Home Assistant entry was created. To try again, add the Panel Assistant integration and enter the same panel address.",
       "install_cancelled_after_staging_cleanup": "The installation was cancelled and the staged APK was removed before installation. No Home Assistant entry was created. To try again, add the Panel Assistant integration and enter the same panel address.",

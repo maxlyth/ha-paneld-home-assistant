@@ -38,6 +38,10 @@
           "address": "Dirección del panel"
         }
       },
+      "confirm_discovery": {
+        "title": "Confirmar panel detectado",
+        "description": "Home Assistant encontró una instalación de ha-paneld en {address}. Envía el formulario para verificar que sigue siendo el mismo panel y añadirlo como {panel_name}. No se cambiará ninguna configuración del panel."
+      },
       "confirm_existing": {
         "title": "ha-paneld ya está instalado",
         "description": "Se ha encontrado en {address} una instalación de ha-paneld {version} que funciona correctamente. Envía el formulario para conectarla a Home Assistant. Una versión posterior de la integración añadirá la gestión de actualizaciones. No se realizará ninguna instalación, aunque se haya introducido una etiqueta de versión candidata."
@@ -98,6 +102,7 @@
     },
     "abort": {
       "already_configured": "Este panel ya está configurado.",
+      "invalid_discovery": "El panel detectado no pudo demostrar que fuera la misma instalación sana de ha-paneld. No se cambió ninguna entrada de Home Assistant ni configuración del panel.",
       "preview_only_release": "La versión autenticada no tiene un descriptor de instalación firmado. No se ha creado ninguna credencial ADB, no se ha descargado ningún APK y no se ha modificado el estado del panel.",
       "install_cancelled": "La instalación se ha cancelado antes de instalar un APK. No se ha creado ninguna entrada de Home Assistant. Para volver a intentarlo, añade la integración Panel Assistant e introduce la misma dirección del panel.",
       "install_cancelled_after_staging_cleanup": "La instalación se ha cancelado y el APK preparado se ha eliminado antes de instalarlo. No se ha creado ninguna entrada de Home Assistant. Para volver a intentarlo, añade la integración Panel Assistant e introduce la misma dirección del panel.",

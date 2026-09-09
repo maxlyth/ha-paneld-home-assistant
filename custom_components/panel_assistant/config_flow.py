@@ -18,6 +18,7 @@ from homeassistant.helpers.selector import (
     TextSelector,
     TextSelectorConfig,
 )
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .adb_credentials import (
     AdbCredentialError,
@@ -34,6 +35,7 @@ from .client import (
     InvalidResponseError,
     PanelAddress,
     PanelHealth,
+    is_valid_discovery_id,
     normalize_address,
 )
 from .const import DEFAULT_PORT, DOMAIN
@@ -111,6 +113,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
 
     _pending_address: PanelAddress | None = None
     _pending_health: PanelHealth | None = None
+    _pending_discovery_id: str | None = None
     _pending_probe: InstallTargetProbe | None = None
     _pending_release: ReleaseArtifact | None = None
     _pending_rc_tag: str | None = None
@@ -176,6 +179,86 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="connect_existing",
             data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
+            errors=errors,
+        )
+
+    async def async_step_zeroconf(
+        self, discovery_info: ZeroconfServiceInfo
+    ) -> ConfigFlowResult:
+        """Offer a verified local mDNS discovery for explicit confirmation."""
+        discovery_id = discovery_info.properties.get("did")
+        if (
+            discovery_info.port != DEFAULT_PORT
+            or not isinstance(discovery_id, str)
+            or not is_valid_discovery_id(discovery_id)
+        ):
+            return self.async_abort(reason="invalid_discovery")
+        try:
+            address = normalize_address(str(discovery_info.ip_address))
+        except InvalidAddressError:
+            return self.async_abort(reason="invalid_discovery")
+
+        await self.async_set_unique_id(discovery_id)
+        self._abort_if_unique_id_configured()
+        if self._address_is_configured(address.stored_value):
+            return self.async_abort(reason="already_configured")
+
+        try:
+            health = await HaPaneldClient(
+                async_get_clientsession(self.hass), address
+            ).async_get_health()
+        except CannotConnectError, InvalidResponseError:
+            return self.async_abort(reason="invalid_discovery")
+        except Exception:
+            _LOGGER.exception(
+                "Unexpected exception while verifying discovered ha-paneld"
+            )
+            return self.async_abort(reason="unknown")
+        if health.discovery_id != discovery_id:
+            return self.async_abort(reason="invalid_discovery")
+
+        self._pending_address = address
+        self._pending_health = health
+        self._pending_discovery_id = discovery_id
+        return self._show_discovery_confirmation()
+
+    async def async_step_confirm_discovery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Re-verify the discovered panel before creating its first entry."""
+        if self._pending_address is None or self._pending_discovery_id is None:
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            try:
+                health = await HaPaneldClient(
+                    async_get_clientsession(self.hass), self._pending_address
+                ).async_get_health()
+            except CannotConnectError, InvalidResponseError:
+                return self._show_discovery_confirmation({"base": "cannot_connect"})
+            except Exception:
+                _LOGGER.exception(
+                    "Unexpected exception while re-verifying discovered ha-paneld"
+                )
+                return self._show_discovery_confirmation({"base": "unknown"})
+            if health.discovery_id != self._pending_discovery_id:
+                return self.async_abort(reason="invalid_discovery")
+            return self._async_create_panel_entry(self._pending_address, health)
+
+        return self._show_discovery_confirmation()
+
+    def _show_discovery_confirmation(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Show only verified, presentation-safe discovery details."""
+        assert self._pending_address is not None
+        assert self._pending_health is not None
+        return self.async_show_form(
+            step_id="confirm_discovery",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "address": self._pending_address.stored_value,
+                "panel_name": _markdown_literal(self._pending_health.panel_id),
+            },
             errors=errors,
         )
 

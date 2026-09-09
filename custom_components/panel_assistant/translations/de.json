@@ -38,6 +38,10 @@
           "address": "Paneladresse"
         }
       },
+      "confirm_discovery": {
+        "title": "Gefundenes Panel bestätigen",
+        "description": "Home Assistant hat eine ha-paneld-Installation unter {address} gefunden. Sende das Formular ab, um zu prüfen, dass es noch dasselbe Panel ist, und füge es als {panel_name} hinzu. Es werden keine Panel-Einstellungen geändert."
+      },
       "confirm_existing": {
         "title": "ha-paneld ist bereits installiert",
         "description": "Unter {address} wurde eine funktionsfähige Installation von ha-paneld {version} gefunden. Wähle „Absenden“, um sie mit Home Assistant zu verbinden. Eine spätere Integrationsversion wird eine Updateverwaltung hinzufügen. Es wird keine Installation durchgeführt, auch wenn ein Release-Candidate-Tag eingegeben wurde."
@@ -98,6 +102,7 @@
     },
     "abort": {
       "already_configured": "Dieses Panel ist bereits konfiguriert.",
+      "invalid_discovery": "Das gefundene Panel konnte nicht als dieselbe fehlerfreie ha-paneld-Installation bestätigt werden. Es wurden weder ein Home Assistant-Eintrag noch Panel-Einstellungen geändert.",
       "preview_only_release": "Das authentifizierte Release hat keine signierte Installationsbeschreibung. Es wurden keine ADB-Anmeldedaten erstellt, keine APK heruntergeladen und kein Panelzustand geändert.",
       "install_cancelled": "Die Installation wurde abgebrochen, bevor eine APK installiert wurde. Es wurde kein Home Assistant-Eintrag erstellt. Füge für einen erneuten Versuch die Panel Assistant-Integration hinzu und gib dieselbe Paneladresse ein.",
       "install_cancelled_after_staging_cleanup": "Die Installation wurde abgebrochen und die bereitgestellte APK vor der Installation entfernt. Es wurde kein Home Assistant-Eintrag erstellt. Füge für einen erneuten Versuch die Panel Assistant-Integration hinzu und gib dieselbe Paneladresse ein.",

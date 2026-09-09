@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from ipaddress import ip_address
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +11,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.panel_assistant.adb_credentials import (
@@ -71,6 +73,8 @@ BETA_HEALTH = PanelHealth(
     build="1001",
     config_hash="1a2b3c4d",
 )
+DISCOVERY_ID = "a" * 64
+DISCOVERY_HEALTH = replace(HEALTH, discovery_id=DISCOVERY_ID)
 DESCRIPTOR = InstallDescriptor(
     schema="io.github.maxlyth.hapaneld.install.v1",
     release_tag="v0.9.7",
@@ -155,6 +159,24 @@ async def _start_step(hass: HomeAssistant, step_id: str) -> dict:
     )
     return await hass.config_entries.flow.async_configure(
         menu["flow_id"], {"next_step_id": step_id}
+    )
+
+
+def _zeroconf_info(
+    *,
+    discovery_id: object = DISCOVERY_ID,
+    port: int | None = 8888,
+) -> ZeroconfServiceInfo:
+    """Return a local advertisement with only the stable test contract."""
+    address = ip_address("192.168.1.23")
+    return ZeroconfServiceInfo(
+        ip_address=address,
+        ip_addresses=[address],
+        port=port,
+        hostname="alpha.local.",
+        type="_ha-paneld._tcp.local.",
+        name="alpha._ha-paneld._tcp.local.",
+        properties={"did": discovery_id},
     )
 
 
@@ -304,6 +326,148 @@ async def test_connect_existing_unexpected_error(hass: HomeAssistant) -> None:
         )
 
     assert result["errors"] == {"base": "unknown"}
+
+
+async def test_zeroconf_requires_fresh_health_confirmation_before_entry_creation(
+    hass: HomeAssistant,
+) -> None:
+    """A valid announcement creates no entry until its health identity is rechecked."""
+    health_mock = AsyncMock(return_value=DISCOVERY_HEALTH)
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            health_mock,
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_status",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+    ):
+        form = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=_zeroconf_info(),
+        )
+        assert form["type"] is FlowResultType.FORM
+        assert form["step_id"] == "confirm_discovery"
+        assert form["description_placeholders"] == {
+            "address": "192.168.1.23",
+            "panel_name": "alpha",
+        }
+        assert not hass.config_entries.async_entries(DOMAIN)
+
+        result = await hass.config_entries.flow.async_configure(form["flow_id"], {})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "alpha"
+    assert result["data"] == {CONF_ADDRESS: "192.168.1.23"}
+    assert result["result"].unique_id == DISCOVERY_ID
+    assert health_mock.await_count >= 2
+
+
+@pytest.mark.parametrize(
+    ("discovery_id", "port"),
+    [
+        ("A" * 64, 8888),
+        ("a" * 63, 8888),
+        (b"a" * 64, 8888),
+        ("a" * 64, 9999),
+        ("a" * 64, None),
+    ],
+)
+async def test_zeroconf_rejects_malformed_or_wrong_port_before_health_contact(
+    hass: HomeAssistant, discovery_id: object, port: int | None
+) -> None:
+    """Untrusted mDNS metadata cannot invoke the panel health endpoint."""
+    health_mock = AsyncMock()
+    with patch(
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=_zeroconf_info(discovery_id=discovery_id, port=port),
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "invalid_discovery"
+    health_mock.assert_not_awaited()
+
+
+async def test_zeroconf_rejects_health_identity_mismatch_without_entry(
+    hass: HomeAssistant,
+) -> None:
+    """The mDNS token alone can never establish panel identity."""
+    health_mock = AsyncMock(
+        return_value=replace(DISCOVERY_HEALTH, discovery_id="b" * 64)
+    )
+    with patch(
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=_zeroconf_info(),
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "invalid_discovery"
+    assert not hass.config_entries.async_entries(DOMAIN)
+    health_mock.assert_awaited_once()
+
+
+async def test_zeroconf_rechecks_identity_after_confirmation(
+    hass: HomeAssistant,
+) -> None:
+    """A panel changing identity while the user reads the form is not added."""
+    health_mock = AsyncMock(
+        side_effect=[DISCOVERY_HEALTH, replace(DISCOVERY_HEALTH, discovery_id="b" * 64)]
+    )
+    with patch(
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        form = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=_zeroconf_info(),
+        )
+        result = await hass.config_entries.flow.async_configure(form["flow_id"], {})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "invalid_discovery"
+    assert not hass.config_entries.async_entries(DOMAIN)
+    assert health_mock.await_count == 2
+
+
+async def test_zeroconf_keeps_existing_entry_identity_without_contacting_panel(
+    hass: HomeAssistant,
+) -> None:
+    """Discovery never rewrites an existing config entry or endpoint."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DISCOVERY_ID,
+        data={CONF_ADDRESS: "192.168.1.23"},
+    )
+    entry.add_to_hass(hass)
+    health_mock = AsyncMock()
+    with patch(
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=_zeroconf_info(),
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert entry.unique_id == DISCOVERY_ID
+    assert entry.data == {CONF_ADDRESS: "192.168.1.23"}
+    health_mock.assert_not_awaited()
 
 
 async def test_install_rejects_invalid_address_before_network_calls(

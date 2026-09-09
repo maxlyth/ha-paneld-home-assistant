@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from . import HaPaneldConfigEntry
 
 _ENTRY_KEYS_TO_REDACT = {CONF_ADDRESS}
-_HEALTH_KEYS_TO_REDACT = {"panel_id"}
+_HEALTH_KEYS_TO_REDACT = {"panel_id", "discovery_id"}
 
 
 async def async_get_config_entry_diagnostics(

@@ -140,6 +140,30 @@ def test_parser_accepts_current_android_network_suffix() -> None:
     )
 
 
+def test_parser_accepts_the_bounded_panel_assistant_discovery_id() -> None:
+    """The new Android identity is consumed only after its strict grammar passes."""
+    discovery_id = "a" * 64
+
+    health = parse_health_response(
+        "ha-paneld 0.9.7-rc4 panel=test_panel build=1725312345678 "
+        f"cfg=0123abcd did={discovery_id}\n"
+    )
+
+    assert health.discovery_id == discovery_id
+
+
+@pytest.mark.parametrize("discovery_id", ["A" * 64, "a" * 63, "a" * 65, "not-a-id"])
+def test_parser_rejects_malformed_panel_assistant_discovery_id(
+    discovery_id: str,
+) -> None:
+    """Malformed identity tokens cannot reach the config flow or diagnostics."""
+    with pytest.raises(InvalidResponseError):
+        parse_health_response(
+            "ha-paneld 0.9.7-rc4 panel=test_panel build=1725312345678 "
+            f"cfg=0123abcd did={discovery_id}\n"
+        )
+
+
 def test_parser_accepts_metadata_boundaries_and_build_fallback() -> None:
     """The response envelope, version limit and Android fallback remain valid."""
     version = f"1.2.3-{'a' * 57}"
@@ -167,6 +191,7 @@ def test_parser_accepts_metadata_boundaries_and_build_fallback() -> None:
         "panel=other",
         "build=5678",
         "cfg=89abcdef",
+        f"did={'a' * 64} did={'a' * 64}",
         "ha=normal ha=starting",
         "ha_src=mqtt ha_src=socket",
         "ha_refused=1 ha_refused=1",

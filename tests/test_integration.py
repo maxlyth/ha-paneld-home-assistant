@@ -58,6 +58,15 @@ BETA_HEALTH = PanelHealth(
     build="1001",
     config_hash="2a2b3c4d",
 )
+DISCOVERY_HEALTH = PanelHealth(
+    version="0.9.0",
+    panel_id="alpha",
+    build="1000",
+    config_hash="1a2b3c4d",
+    ha_state="normal",
+    ha_source="mqtt",
+    discovery_id="a" * 64,
+)
 STATUS = PanelStatus(
     warning_count=2,
     capability_count=3,
@@ -130,7 +139,7 @@ def _assert_healthy_entry_loaded(hass: HomeAssistant, entry: MockConfigEntry) ->
 async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> None:
     """The vertical slice creates one device and unloads/reloads cleanly."""
     entry = _entry(hass)
-    health_mock = AsyncMock(side_effect=[HEALTH, BETA_HEALTH])
+    health_mock = AsyncMock(side_effect=[DISCOVERY_HEALTH, BETA_HEALTH])
     status_mock = AsyncMock(return_value=STATUS)
     resume_mock = AsyncMock(return_value=())
     executor, manager = _installer_doubles()
@@ -179,6 +188,7 @@ async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> Non
         assert diagnostics["entry"][CONF_ADDRESS] == "**REDACTED**"
         assert diagnostics["last_update_success"] is True
         assert diagnostics["health"]["panel_id"] == "**REDACTED**"
+        assert diagnostics["health"]["discovery_id"] == "**REDACTED**"
         assert diagnostics["health"]["build"] == HEALTH.build
         assert diagnostics["status"] == STATUS.as_dict()
         assert diagnostics["status_error"] is None

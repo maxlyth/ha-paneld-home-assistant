@@ -38,6 +38,10 @@
           "address": "Adresse du panneau"
         }
       },
+      "confirm_discovery": {
+        "title": "Confirmer le panneau détecté",
+        "description": "Home Assistant a trouvé une installation ha-paneld à {address}. Envoyez le formulaire pour vérifier qu’il s’agit toujours du même panneau et l’ajouter sous le nom {panel_name}. Aucun réglage du panneau ne sera modifié."
+      },
       "confirm_existing": {
         "title": "ha-paneld est déjà installé",
         "description": "Une installation ha-paneld {version} opérationnelle a été trouvée à l'adresse {address}. Validez pour la connecter à Home Assistant. Une version ultérieure de l'intégration ajoutera la gestion des mises à jour. Aucune installation ne sera effectuée, même si un tag de version candidate a été saisi."
@@ -98,6 +102,7 @@
     },
     "abort": {
       "already_configured": "Ce panneau est déjà configuré.",
+      "invalid_discovery": "Le panneau détecté n’a pas confirmé qu’il s’agissait de la même installation ha-paneld saine. Aucune entrée Home Assistant ni aucun réglage du panneau n’a été modifié.",
       "preview_only_release": "La version authentifiée ne possède aucun descripteur d'installation signé. Aucun identifiant ADB n'a été créé, aucun APK n'a été téléchargé et l'état du panneau n'a pas changé.",
       "install_cancelled": "L'installation a été annulée avant l'installation d'un APK. Aucune entrée Home Assistant n'a été créée. Pour réessayer, ajoutez l'intégration Panel Assistant et saisissez la même adresse de panneau.",
       "install_cancelled_after_staging_cleanup": "L'installation a été annulée et l'APK préparé a été supprimé avant son installation. Aucune entrée Home Assistant n'a été créée. Pour réessayer, ajoutez l'intégration Panel Assistant et saisissez la même adresse de panneau.",

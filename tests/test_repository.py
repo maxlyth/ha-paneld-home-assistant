@@ -146,6 +146,7 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "name": "Panel Assistant",
         "requirements": ["adb-shell[async]==0.4.4"],
         "version": "2026.9.0b0",
+        "zeroconf": ["_ha-paneld._tcp.local."],
     }
     assert hacs == {"homeassistant": "2026.8.3", "name": "Panel Assistant"}
 
@@ -292,7 +293,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
         "it.json",
         "zh-Hans.json",
     ]
-    assert len(english) == 82
+    assert len(english) == 85
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)
