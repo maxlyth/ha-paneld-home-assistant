@@ -181,12 +181,13 @@ class HaPaneldUpdateEntity(
         """Retain local work and recover panel-owned work after an HA restart."""
         operation = self._update_coordinator.data.operation
         return (
-            self._observer_task is not None
-            and not self._observer_task.done()
-        ) or self._attr_in_progress or (
-            operation is not None
-            and operation.running
-            and operation.component == "ha-paneld"
+            (self._observer_task is not None and not self._observer_task.done())
+            or self._attr_in_progress
+            or (
+                operation is not None
+                and operation.running
+                and operation.component == "ha-paneld"
+            )
         )
 
     @property
