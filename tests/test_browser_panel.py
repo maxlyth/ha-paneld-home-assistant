@@ -36,7 +36,7 @@ async def test_real_panel_registration_and_admin_visibility(hass):
     assert panel.config == {
         "installer_url": "https://install.panel-assistant.io/",
         "_panel_custom": {
-            "name": "ha-paneld-usb-install",
+            "name": "panel-assistant-usb-install",
             "embed_iframe": False,
             "trust_external": False,
             "handle_safe_area": False,
@@ -52,6 +52,36 @@ async def test_real_panel_registration_and_admin_visibility(hass):
         result = connection.send_message.call_args.args[0]["result"]
         assert (browser_panel.PANEL_PATH in result) is is_admin
         assert (browser_panel.FLEET_PANEL_PATH in result) is is_admin
+
+
+@pytest.mark.usefixtures("panel_http")
+async def test_legacy_domain_panel_does_not_block_setup(hass):
+    """The predecessor owns `ha-paneld-usb`; sharing that path aborted our setup."""
+    from homeassistant.components import panel_custom
+
+    await panel_custom.async_register_panel(
+        hass,
+        frontend_url_path="ha-paneld-usb",
+        webcomponent_name="ha-paneld-usb-install",
+        module_url="/ha_paneld/usb/ha-panel.js",
+        embed_iframe=False,
+        require_admin=True,
+    )
+
+    await browser_panel.async_register_browser_panel(hass)
+
+    panels = hass.data[frontend.DATA_PANELS]
+    assert browser_panel.PANEL_PATH in panels
+    assert browser_panel.FLEET_PANEL_PATH in panels
+    assert panels["ha-paneld-usb"].config["_panel_custom"]["name"] == (
+        "ha-paneld-usb-install"
+    )
+
+
+def test_registered_panel_paths_carry_the_current_brand() -> None:
+    """A rename that misses a panel path silently collides with the old domain."""
+    for path in (browser_panel.PANEL_PATH, browser_panel.FLEET_PANEL_PATH):
+        assert path == "panel-assistant" or path.startswith("panel-assistant-")
 
 
 @pytest.mark.usefixtures("panel_http")
@@ -105,7 +135,7 @@ async def test_actual_shipped_module_is_served(hass, hass_client_no_auth):
     assert response.status == 200
     expected = (browser_panel.STATIC_PATH / "ha-panel.js").read_bytes()
     assert await response.read() == expected
-    assert b"ha-paneld-usb-install" in expected
+    assert b"panel-assistant-usb-install" in expected
     assert b"sourceMappingURL" not in expected
     for path in ("index.html", "package.json", "src/ha-install-panel.mjs"):
         assert (await client.get(f"/panel_assistant/usb/{path}")).status == 404

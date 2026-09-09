@@ -150,6 +150,6 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
   }
 }
 
-if (!customElements.get('ha-paneld-usb-install')) {
-  customElements.define('ha-paneld-usb-install', HaPaneldUsbInstallPanel);
+if (!customElements.get('panel-assistant-usb-install')) {
+  customElements.define('panel-assistant-usb-install', HaPaneldUsbInstallPanel);
 }

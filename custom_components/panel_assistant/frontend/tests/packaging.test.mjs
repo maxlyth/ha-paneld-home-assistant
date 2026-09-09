@@ -32,7 +32,7 @@ test('production build contains a root installer and a standalone HA panel', asy
   try {
     // A data URL cannot resolve relative imports: success proves this entry is standalone.
     await import(`data:text/javascript;base64,${Buffer.from(panel).toString('base64')}`);
-    assert.equal(registered, 'ha-paneld-usb-install');
+    assert.equal(registered, 'panel-assistant-usb-install');
   } finally {
     delete globalThis.HTMLElement;
     delete globalThis.customElements;

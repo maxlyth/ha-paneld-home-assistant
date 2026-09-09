@@ -223,8 +223,10 @@ async def test_usb_step_links_local_admin_panel_without_creating_entry(
     result = await _start_step(hass, "install_usb")
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "install_usb"
-    assert result["description_placeholders"] == {"usb_install_url": "/ha-paneld-usb"}
-    panel = hass.data[frontend.DATA_PANELS]["ha-paneld-usb"]
+    assert result["description_placeholders"] == {
+        "usb_install_url": "/panel-assistant-usb"
+    }
+    panel = hass.data[frontend.DATA_PANELS]["panel-assistant-usb"]
     assert panel.require_admin is True
     assert panel.config["installer_url"] == "https://install.panel-assistant.io/"
     assert not hass.config_entries.async_entries(DOMAIN)

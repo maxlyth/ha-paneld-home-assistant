@@ -16,7 +16,7 @@ from .fleet import FleetView, ProvisioningPlanView
 DATA_BROWSER_PANEL = "browser_panel"
 STATIC_PATH = Path(__file__).parent / "static"
 STATIC_URL = "/panel_assistant/usb"
-PANEL_PATH = "ha-paneld-usb"
+PANEL_PATH = "panel-assistant-usb"
 FLEET_PANEL_PATH = "panel-assistant"
 INSTALLER_URL = "https://install.panel-assistant.io/"
 
@@ -50,7 +50,7 @@ async def async_register_browser_panel(hass: HomeAssistant) -> None:
             await panel_custom.async_register_panel(
                 hass,
                 frontend_url_path=PANEL_PATH,
-                webcomponent_name="ha-paneld-usb-install",
+                webcomponent_name="panel-assistant-usb-install",
                 module_url=f"{STATIC_URL}/ha-panel.js",
                 sidebar_title=None,
                 embed_iframe=False,
