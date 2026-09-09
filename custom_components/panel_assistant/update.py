@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from homeassistant.components.update import (
     UpdateDeviceClass,
@@ -42,6 +43,17 @@ _UPDATE_TIMEOUT_SECONDS = (
 )
 _UPDATE_RECHECK_SECONDS = 2
 _TERMINAL_STATUS_GRACE_SECONDS = 60
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _update_error(translation_key: str, fallback: str) -> HomeAssistantError:
+    """Return a localized update-action error with a useful log fallback."""
+    return HomeAssistantError(
+        fallback,
+        translation_domain=DOMAIN,
+        translation_key=translation_key,
+    )
 
 
 async def async_setup_entry(
@@ -86,13 +98,78 @@ class HaPaneldUpdateEntity(
         self._update_coordinator = update_coordinator
         self._attr_unique_id = f"{entry_id}_update"
         self._attr_in_progress = False
+        self._observer_task: asyncio.Task[None] | None = None
+        self._recovery_started = False
 
     async def async_added_to_hass(self) -> None:
         """Refresh presentation when the panel's local operation state changes."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self._update_coordinator.async_add_listener(self.async_write_ha_state)
+            self._update_coordinator.async_add_listener(
+                self._handle_update_coordinator_update
+            )
         )
+        self.async_on_remove(self._cancel_observer)
+        self._resume_running_operation()
+
+    def _handle_update_coordinator_update(self) -> None:
+        """Keep a recovered operation latched across transient status samples."""
+        self._resume_running_operation()
+        self.async_write_ha_state()
+
+    def _resume_running_operation(self) -> None:
+        """Resume one bounded observer for panel-owned work found after reload."""
+        operation = self._update_coordinator.data.operation
+        if (
+            self._recovery_started
+            or operation is None
+            or not operation.running
+            or operation.component != "ha-paneld"
+        ):
+            return
+        offer = self._offered_update()
+        if offer is None:
+            return
+        self._recovery_started = True
+        self._start_observer(offer.target_version)
+
+    def _start_observer(self, expected_version: str) -> asyncio.Task[None]:
+        """Start or reuse the entity's sole bounded health observer."""
+        if self._observer_task is not None and not self._observer_task.done():
+            return self._observer_task
+        self._attr_in_progress = True
+        task = self.hass.async_create_task(
+            self._run_observer(expected_version),
+            f"observe ha-paneld update {self._entry_id}",
+        )
+        self._observer_task = task
+        task.add_done_callback(self._observer_finished)
+        return task
+
+    async def _run_observer(self, expected_version: str) -> None:
+        """Observe one target and release its latch before awaiters resume."""
+        try:
+            await self._async_wait_for_installed_version(expected_version)
+        finally:
+            self._attr_in_progress = False
+            self._recovery_started = False
+            if asyncio.current_task() is self._observer_task:
+                self._observer_task = None
+            self.async_write_ha_state()
+
+    def _observer_finished(self, task: asyncio.Task[None]) -> None:
+        """Release the latch only when its observer exits or is cancelled."""
+        if not task.cancelled() and (error := task.exception()) is not None:
+            _LOGGER.warning("ha-paneld update observer stopped: %s", error)
+
+    def _cancel_observer(self) -> None:
+        """Stop polling when Home Assistant unloads the entity."""
+        task = self._observer_task
+        self._observer_task = None
+        self._attr_in_progress = False
+        self._recovery_started = False
+        if task is not None and not task.done():
+            task.cancel()
 
     @property
     def available(self) -> bool:
@@ -103,7 +180,10 @@ class HaPaneldUpdateEntity(
     def in_progress(self) -> bool:
         """Retain local work and recover panel-owned work after an HA restart."""
         operation = self._update_coordinator.data.operation
-        return self._attr_in_progress or (
+        return (
+            self._observer_task is not None
+            and not self._observer_task.done()
+        ) or self._attr_in_progress or (
             operation is not None
             and operation.running
             and operation.component == "ha-paneld"
@@ -159,31 +239,33 @@ class HaPaneldUpdateEntity(
             or offer is None
             or version not in (None, offer.target_version)
         ):
-            raise HomeAssistantError("The requested ha-paneld update is unavailable")
+            raise _update_error(
+                "update_unavailable",
+                "The requested ha-paneld update is unavailable",
+            )
         try:
             await self.coordinator.client.async_start_panel_update(offer.tag)
         except UpdateBusyError as err:
-            raise HomeAssistantError(
-                "The panel is busy with another operation"
+            raise _update_error(
+                "update_busy", "The panel is busy with another operation"
             ) from err
         except UpdateApprovalRequiredError as err:
-            raise HomeAssistantError(
-                "Approve this update on the panel, then try again"
+            raise _update_error(
+                "update_approval_required",
+                "Approve this update on the panel, then try again",
             ) from err
         except UpdateRejectedError as err:
-            raise HomeAssistantError("The panel refused the update request") from err
+            raise _update_error(
+                "update_rejected", "The panel refused the update request"
+            ) from err
         except (CannotConnectError, InvalidResponseError) as err:
-            raise HomeAssistantError(
-                "The panel did not accept the update request"
+            raise _update_error(
+                "update_not_accepted", "The panel did not accept the update request"
             ) from err
 
-        self._attr_in_progress = True
+        observer = self._start_observer(offer.target_version)
         self.async_write_ha_state()
-        try:
-            await self._async_wait_for_installed_version(offer.target_version)
-        finally:
-            self._attr_in_progress = False
-            self.async_write_ha_state()
+        await observer
 
     async def _async_wait_for_installed_version(self, expected_version: str) -> None:
         """Poll status through restart, then prove the health version changed."""
@@ -216,6 +298,10 @@ class HaPaneldUpdateEntity(
                         + _TERMINAL_STATUS_GRACE_SECONDS,
                     )
                 if asyncio.get_running_loop().time() >= terminal_status_deadline:
-                    raise HomeAssistantError("The panel update did not complete")
+                    raise _update_error(
+                        "update_not_complete", "The panel update did not complete"
+                    )
             await asyncio.sleep(_UPDATE_RECHECK_SECONDS)
-        raise HomeAssistantError("The panel did not return after the update")
+        raise _update_error(
+            "update_did_not_return", "The panel did not return after the update"
+        )

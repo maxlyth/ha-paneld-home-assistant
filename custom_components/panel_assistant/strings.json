@@ -140,6 +140,27 @@
   "exceptions": {
     "health_update_failed": {
       "message": "Unable to read panel health"
+    },
+    "update_unavailable": {
+      "message": "The requested ha-paneld update is unavailable"
+    },
+    "update_busy": {
+      "message": "The panel is busy with another operation"
+    },
+    "update_approval_required": {
+      "message": "Approve this update on the panel, then try again"
+    },
+    "update_rejected": {
+      "message": "The panel refused the update request"
+    },
+    "update_not_accepted": {
+      "message": "The panel did not accept the update request"
+    },
+    "update_not_complete": {
+      "message": "The panel update did not complete"
+    },
+    "update_did_not_return": {
+      "message": "The panel did not return after the update"
     }
   },
   "selector": {

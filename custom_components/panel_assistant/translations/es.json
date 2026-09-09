@@ -140,7 +140,14 @@
   "exceptions": {
     "health_update_failed": {
       "message": "No se puede leer el estado del panel"
-    }
+    },
+    "update_unavailable": { "message": "La actualización de ha-paneld solicitada no está disponible" },
+    "update_busy": { "message": "El panel está ocupado con otra operación" },
+    "update_approval_required": { "message": "Aprueba esta actualización en el panel y vuelve a intentarlo" },
+    "update_rejected": { "message": "El panel rechazó la solicitud de actualización" },
+    "update_not_accepted": { "message": "El panel no aceptó la solicitud de actualización" },
+    "update_not_complete": { "message": "La actualización del panel no se completó" },
+    "update_did_not_return": { "message": "El panel no volvió después de la actualización" }
   },
   "selector": {
     "release_channel": {

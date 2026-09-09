@@ -140,7 +140,14 @@
   "exceptions": {
     "health_update_failed": {
       "message": "无法读取面板健康状态"
-    }
+    },
+    "update_unavailable": { "message": "请求的 ha-paneld 更新不可用" },
+    "update_busy": { "message": "面板正在执行其他操作" },
+    "update_approval_required": { "message": "请在面板上批准此更新，然后重试" },
+    "update_rejected": { "message": "面板拒绝了更新请求" },
+    "update_not_accepted": { "message": "面板未接受更新请求" },
+    "update_not_complete": { "message": "面板更新未完成" },
+    "update_did_not_return": { "message": "更新后面板未恢复连接" }
   },
   "selector": {
     "release_channel": {

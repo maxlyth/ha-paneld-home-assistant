@@ -33,12 +33,13 @@ _TOKEN_PATTERN = re.compile(
 _FAULT_DETAIL_PATTERN = re.compile(
     rf"^[A-Za-z0-9_]{{1,{MAX_STATUS_FAULT_DETAIL_LENGTH}}}$"
 )
+_PANEL_VERSION_PART = r"(?:0|[1-9][0-9]{0,7})"
 _PANEL_VERSION_PATTERN = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    rf"^{_PANEL_VERSION_PART}\.{_PANEL_VERSION_PART}\.{_PANEL_VERSION_PART}"
+    rf"(?:-(?:alpha|beta|rc){_PANEL_VERSION_PART})?$"
 )
 _STABLE_PANEL_VERSION_PATTERN = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+    rf"^{_PANEL_VERSION_PART}\.{_PANEL_VERSION_PART}\.{_PANEL_VERSION_PART}$"
 )
 _RELEASE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 

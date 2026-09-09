@@ -468,6 +468,68 @@ def test_status_parser_accepts_an_explicit_empty_cached_panel_update() -> None:
     assert status.panel_assistant_update is None
 
 
+@pytest.mark.parametrize(
+    ("current_version", "target_version"),
+    [
+        ("123456789.9.9", "0.9.10"),
+        ("0.9.9-preview1", "0.9.10"),
+        ("0.9.9-rc123456789", "0.9.10"),
+        ("0.9.9", "123456789.9.10"),
+        ("0.9.9", "0.9.10-rc1"),
+    ],
+)
+def test_status_parser_matches_android_cached_update_version_bounds(
+    current_version: str, target_version: str
+) -> None:
+    """HA rejects every version shape the Android producer grammar rejects."""
+    with pytest.raises(InvalidResponseError):
+        parse_status_response(
+            json.dumps(
+                {
+                    "warnings": [],
+                    "capabilities": [],
+                    "panel_assistant_update": {
+                        "state": "available",
+                        "current_version": current_version,
+                        "target_version": target_version,
+                        "tag": f"v{target_version}",
+                    },
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "current_version",
+    [
+        "12345678.0.99999999",
+        "0.9.9-alpha0",
+        "0.9.9-beta12345678",
+        "0.9.9-rc1",
+    ],
+)
+def test_status_parser_accepts_android_cached_update_version_boundaries(
+    current_version: str,
+) -> None:
+    """HA accepts the producer's stable and bounded prerelease edge cases."""
+    status = parse_status_response(
+        json.dumps(
+            {
+                "warnings": [],
+                "capabilities": [],
+                "panel_assistant_update": {
+                    "state": "available",
+                    "current_version": current_version,
+                    "target_version": "12345678.0.99999999",
+                    "tag": "v12345678.0.99999999",
+                },
+            }
+        )
+    )
+
+    assert status.panel_assistant_update is not None
+
+
 def test_parse_current_status_fixture_projects_only_safe_fields() -> None:
     """The current Android shape is retained without free-form or opaque data."""
     document = json.loads(STATUS_FIXTURE.read_text(encoding="utf-8"))

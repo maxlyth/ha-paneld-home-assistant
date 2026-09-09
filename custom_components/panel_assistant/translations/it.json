@@ -140,7 +140,14 @@
   "exceptions": {
     "health_update_failed": {
       "message": "Impossibile leggere lo stato di funzionamento del pannello"
-    }
+    },
+    "update_unavailable": { "message": "L'aggiornamento ha-paneld richiesto non è disponibile" },
+    "update_busy": { "message": "Il pannello è occupato con un'altra operazione" },
+    "update_approval_required": { "message": "Approva questo aggiornamento sul pannello, quindi riprova" },
+    "update_rejected": { "message": "Il pannello ha rifiutato la richiesta di aggiornamento" },
+    "update_not_accepted": { "message": "Il pannello non ha accettato la richiesta di aggiornamento" },
+    "update_not_complete": { "message": "L'aggiornamento del pannello non è stato completato" },
+    "update_did_not_return": { "message": "Il pannello non è tornato disponibile dopo l'aggiornamento" }
   },
   "selector": {
     "release_channel": {

@@ -1,5 +1,6 @@
 """Configured-panel update projection tests."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,6 +17,7 @@ from custom_components.panel_assistant.client import (
     UpdateBusyError,
     UpdateRejectedError,
 )
+from custom_components.panel_assistant.const import DOMAIN
 from custom_components.panel_assistant.coordinator import (
     HaPaneldDataUpdateCoordinator,
     PanelSnapshot,
@@ -34,6 +36,11 @@ HEALTH = PanelHealth(
     config_hash="1a2b3c4d",
 )
 OFFER = PanelCachedUpdate("0.9.9", "0.9.10", "v0.9.10")
+
+
+def _assert_translated(error: HomeAssistantError, key: str) -> None:
+    assert error.translation_domain == DOMAIN
+    assert error.translation_key == key
 
 
 def _entity(
@@ -66,7 +73,9 @@ def _entity(
     )
     updates = PanelUpdateCoordinator(hass, client)  # type: ignore[arg-type]
     updates.data = PanelUpdateSnapshot(operation=operation, error=update_error)
-    return HaPaneldUpdateEntity("entry-id", health, updates), client
+    entity = HaPaneldUpdateEntity("entry-id", health, updates)
+    entity.hass = hass
+    return entity, client
 
 
 def test_update_entity_uses_existing_config_entry_and_offers_only_newer_stable(
@@ -129,9 +138,10 @@ async def test_update_entity_rejects_versions_outside_the_current_offer(
     """HA cannot turn the update service into a version or downgrade control surface."""
     entity, client = _entity(hass)
 
-    with pytest.raises(HomeAssistantError, match="unavailable"):
+    with pytest.raises(HomeAssistantError, match="unavailable") as error:
         await entity.async_install(version, backup=False)
 
+    _assert_translated(error.value, "update_unavailable")
     client.async_start_panel_update.assert_not_awaited()
 
 
@@ -142,9 +152,10 @@ async def test_update_entity_maps_panel_busy_without_starting_a_retry(
     entity, client = _entity(hass)
     client.async_start_panel_update.side_effect = UpdateBusyError
 
-    with pytest.raises(HomeAssistantError, match="busy"):
+    with pytest.raises(HomeAssistantError, match="busy") as error:
         await entity.async_install(None, backup=False)
 
+    _assert_translated(error.value, "update_busy")
     client.async_start_panel_update.assert_awaited_once_with("v0.9.10")
 
 
@@ -155,9 +166,10 @@ async def test_update_entity_maps_a_panel_refusal_without_retrying(
     entity, client = _entity(hass)
     client.async_start_panel_update.side_effect = UpdateRejectedError
 
-    with pytest.raises(HomeAssistantError, match="refused"):
+    with pytest.raises(HomeAssistantError, match="refused") as error:
         await entity.async_install(None, backup=False)
 
+    _assert_translated(error.value, "update_rejected")
     client.async_start_panel_update.assert_awaited_once_with("v0.9.10")
 
 
@@ -168,9 +180,26 @@ async def test_update_entity_requests_physical_approval_without_retrying(
     entity, client = _entity(hass)
     client.async_start_panel_update.side_effect = UpdateApprovalRequiredError
 
-    with pytest.raises(HomeAssistantError, match="Approve this update on the panel"):
+    with pytest.raises(
+        HomeAssistantError, match="Approve this update on the panel"
+    ) as error:
         await entity.async_install(None, backup=False)
 
+    _assert_translated(error.value, "update_approval_required")
+    client.async_start_panel_update.assert_awaited_once_with("v0.9.10")
+
+
+async def test_update_entity_localizes_transport_failure(
+    hass: HomeAssistant,
+) -> None:
+    """A rejected transport response uses the integration exception catalogue."""
+    entity, client = _entity(hass)
+    client.async_start_panel_update.side_effect = CannotConnectError
+
+    with pytest.raises(HomeAssistantError, match="did not accept") as error:
+        await entity.async_install(None, backup=False)
+
+    _assert_translated(error.value, "update_not_accepted")
     client.async_start_panel_update.assert_awaited_once_with("v0.9.10")
 
 
@@ -191,9 +220,10 @@ async def test_update_entity_reports_a_completed_panel_operation_without_new_hea
     )
     monkeypatch.setattr(panel_update, "_TERMINAL_STATUS_GRACE_SECONDS", 0)
 
-    with pytest.raises(HomeAssistantError, match="did not complete"):
+    with pytest.raises(HomeAssistantError, match="did not complete") as error:
         await entity.async_install(None, backup=False)
 
+    _assert_translated(error.value, "update_not_complete")
     client.async_start_panel_update.assert_awaited_once_with("v0.9.10")
 
 
@@ -252,6 +282,98 @@ def test_update_entity_restores_a_panel_owned_operation_after_reload(
     )
 
     assert entity.in_progress is True
+
+
+async def test_reload_observer_latches_through_transient_and_terminal_status(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reload recovery waits for fresh target health without issuing an install."""
+    entity, client = _entity(
+        hass,
+        operation=PanelInstallStatus(running=True, component="ha-paneld"),
+    )
+    entity.hass = hass
+    entity.async_write_ha_state = MagicMock()
+    health_refreshes = 0
+    guarded_samples: list[bool] = []
+
+    async def refresh_health() -> None:
+        nonlocal health_refreshes
+        health_refreshes += 1
+        guarded_samples.append(entity.in_progress)
+        if health_refreshes == 3:
+            entity.coordinator.data = PanelSnapshot(
+                health=PanelHealth(
+                    version="0.9.10",
+                    panel_id=HEALTH.panel_id,
+                    build=HEALTH.build,
+                    config_hash=HEALTH.config_hash,
+                ),
+                status=PanelStatus(warning_count=0, capability_count=0),
+                status_error=None,
+            )
+
+    update_samples = iter(
+        [
+            PanelUpdateSnapshot(operation=None, error="unavailable"),
+            PanelUpdateSnapshot(
+                operation=PanelInstallStatus(
+                    running=False,
+                    component="ha-paneld",
+                ),
+                error=None,
+            ),
+            PanelUpdateSnapshot(operation=None, error=None),
+        ]
+    )
+
+    async def refresh_update() -> None:
+        entity._update_coordinator.data = next(update_samples)
+
+    entity.coordinator.async_request_refresh = AsyncMock(side_effect=refresh_health)
+    entity._update_coordinator.async_request_refresh = AsyncMock(
+        side_effect=refresh_update
+    )
+    monkeypatch.setattr(panel_update.asyncio, "sleep", AsyncMock())
+
+    entity._resume_running_operation()
+    observer = entity._observer_task
+    assert observer is not None
+    await observer
+
+    assert guarded_samples == [True, True, True]
+    assert entity.installed_version == "0.9.10"
+    assert entity.in_progress is False
+    client.async_start_panel_update.assert_not_awaited()
+
+
+async def test_unload_cancels_recovered_observer_without_install_retry(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Entity teardown owns and cancels its sole recovered observer."""
+    entity, client = _entity(
+        hass,
+        operation=PanelInstallStatus(running=True, component="ha-paneld"),
+    )
+    entity.hass = hass
+    entity.async_write_ha_state = MagicMock()
+    waiting = asyncio.Event()
+
+    async def wait_forever(_expected_version: str) -> None:
+        await waiting.wait()
+
+    monkeypatch.setattr(entity, "_async_wait_for_installed_version", wait_forever)
+
+    entity._resume_running_operation()
+    observer = entity._observer_task
+    assert observer is not None
+    await asyncio.sleep(0)
+    entity._cancel_observer()
+    await asyncio.sleep(0)
+
+    assert observer.cancelled()
+    assert entity._observer_task is None
+    client.async_start_panel_update.assert_not_awaited()
 
 
 async def test_update_coordinator_keeps_local_operation_faults_out_of_entry_setup(

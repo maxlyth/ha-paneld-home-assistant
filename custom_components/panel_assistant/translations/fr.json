@@ -140,7 +140,14 @@
   "exceptions": {
     "health_update_failed": {
       "message": "Impossible de lire l'état du panneau"
-    }
+    },
+    "update_unavailable": { "message": "La mise à jour ha-paneld demandée n'est pas disponible" },
+    "update_busy": { "message": "Le panneau est occupé par une autre opération" },
+    "update_approval_required": { "message": "Approuvez cette mise à jour sur le panneau, puis réessayez" },
+    "update_rejected": { "message": "Le panneau a refusé la demande de mise à jour" },
+    "update_not_accepted": { "message": "Le panneau n'a pas accepté la demande de mise à jour" },
+    "update_not_complete": { "message": "La mise à jour du panneau ne s'est pas terminée" },
+    "update_did_not_return": { "message": "Le panneau n'est pas revenu après la mise à jour" }
   },
   "selector": {
     "release_channel": {
