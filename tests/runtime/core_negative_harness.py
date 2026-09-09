@@ -73,7 +73,14 @@ def _validate_candidate(repository: Path, expected_sha: str) -> None:
 def _component_digest(directory: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(directory.rglob("*")):
-        if "__pycache__" in path.parts:
+        # The candidate is copied from tracked files only. Local Python caches and
+        # generated frontend trees are neither shipped to Core nor part of the
+        # source digest; npm's .bin entries are deliberately symlinks.
+        relative_parts = path.relative_to(directory).parts
+        if (
+            "__pycache__" in relative_parts
+            or relative_parts[:2] in (("frontend", "node_modules"), ("frontend", "dist"))
+        ):
             continue
         _require(not path.is_symlink(), f"component contains a symlink: {path}")
         if not path.is_file():
@@ -168,6 +175,9 @@ class _PanelServer(AbstractContextManager["_PanelServer"]):
                         self.wfile.write(body)
                         recorder.record(self.path, mode, len(body))
                         return
+                elif self.path == "/api/v1/install/status":
+                    mode = "install_status"
+                    body = b'{"running":false,"component":""}'
                 else:
                     body = b"not found"
                     self.send_response(404)

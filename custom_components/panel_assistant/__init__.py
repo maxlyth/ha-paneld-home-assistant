@@ -28,8 +28,9 @@ from .install_jobs import (
     InstallResultCode,
     async_get_install_job_manager,
 )
+from .update_coordinator import PanelUpdateCoordinator
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.UPDATE]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class HaPaneldRuntimeData:
 
     client: HaPaneldClient
     coordinator: HaPaneldDataUpdateCoordinator
+    update_coordinator: PanelUpdateCoordinator
 
 
 type HaPaneldConfigEntry = ConfigEntry[HaPaneldRuntimeData]
@@ -147,6 +149,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaPaneldConfigEntry) -> 
     client = HaPaneldClient(async_get_clientsession(hass), address)
     coordinator = HaPaneldDataUpdateCoordinator(hass, client)
     await coordinator.async_config_entry_first_refresh()
+    update_coordinator = PanelUpdateCoordinator(hass, client)
+    await update_coordinator.async_config_entry_first_refresh()
 
     await _async_reconcile_install_receipt(
         hass,
@@ -155,7 +159,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaPaneldConfigEntry) -> 
         coordinator.data.health.version,
     )
 
-    entry.runtime_data = HaPaneldRuntimeData(client=client, coordinator=coordinator)
+    entry.runtime_data = HaPaneldRuntimeData(
+        client=client,
+        coordinator=coordinator,
+        update_coordinator=update_coordinator,
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

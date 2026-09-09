@@ -16,8 +16,13 @@ from custom_components.panel_assistant.client import (
     InvalidAddressError,
     InvalidResponseError,
     PanelHealth,
+    UpdateApprovalRequiredError,
+    UpdateBusyError,
+    UpdateRejectedError,
+    is_newer_stable_version,
     normalize_address,
     parse_health_response,
+    parse_panel_install_status,
 )
 from custom_components.panel_assistant.const import (
     MAX_STATUS_CAPABILITIES,
@@ -67,6 +72,12 @@ class _FakeSession:
         self.request: tuple[Any, dict[str, Any]] | None = None
 
     def get(self, url: Any, **kwargs: Any) -> _FakeResponse:
+        self.request = (url, kwargs)
+        if self._error is not None:
+            raise self._error
+        return self._response
+
+    def post(self, url: Any, **kwargs: Any) -> _FakeResponse:
         self.request = (url, kwargs)
         if self._error is not None:
             raise self._error
@@ -308,6 +319,153 @@ async def test_client_rejects_oversized_response() -> None:
     )
     with pytest.raises(InvalidResponseError):
         await client.async_get_health()
+
+
+@pytest.mark.parametrize(
+    ("candidate", "installed", "expected"),
+    [
+        ("0.9.10", "0.9.9", True),
+        ("0.9.10", "0.9.10-rc3", True),
+        ("0.9.10", "0.9.10", False),
+        ("0.9.9", "0.9.10", False),
+        ("0.9.10", "invalid", False),
+    ],
+)
+def test_stable_update_comparison_never_offers_a_downgrade(
+    candidate: str, installed: str, expected: bool
+) -> None:
+    """A stable target can replace the equivalent release candidate only."""
+    assert is_newer_stable_version(candidate, installed) is expected
+
+
+async def test_client_uses_the_cached_exact_tag_in_the_panel_update_request() -> None:
+    """The integration sends only a cached Android-owned tag to the updater."""
+    session = _FakeSession(body=b'{"status":"started"}')
+    client = HaPaneldClient(session, normalize_address("panel.local"))  # type: ignore[arg-type]
+
+    await client.async_start_panel_update("v0.9.10")
+
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/install/component"
+    assert kwargs["data"] == {
+        "name": "paneld",
+        "action": "update",
+        "version": "v0.9.10",
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "error"),
+    [
+        (200, b'{"status":"busy"}', UpdateBusyError),
+        (200, b'{"status":"other"}', UpdateRejectedError),
+        (
+            202,
+            b'{"error":"approval-required","approval_id":"opaque"}',
+            UpdateApprovalRequiredError,
+        ),
+        (202, b'{"error":"other"}', UpdateRejectedError),
+        (403, b'{"status":"denied"}', UpdateRejectedError),
+    ],
+)
+async def test_client_rejects_nonstarted_panel_update(
+    status: int, body: bytes, error: type[Exception]
+) -> None:
+    """Hardened-mode and busy outcomes never become a successful update start."""
+    client = HaPaneldClient(  # type: ignore[arg-type]
+        _FakeSession(status=status, body=body), normalize_address("panel.local")
+    )
+
+    with pytest.raises(error):
+        await client.async_start_panel_update("v0.9.10")
+
+
+@pytest.mark.parametrize("tag", ["", "tag/escape", "tag space", "x" * 65])
+async def test_client_refuses_noncanonical_update_tags(tag: str) -> None:
+    """Only an Android-validated release tag can reach the destructive endpoint."""
+    client = HaPaneldClient(  # type: ignore[arg-type]
+        _FakeSession(), normalize_address("panel.local")
+    )
+
+    with pytest.raises(InvalidResponseError):
+        await client.async_start_panel_update(tag)
+
+
+def test_parse_panel_install_status_keeps_only_progress_ownership() -> None:
+    """Operation prose remains on the panel, outside Home Assistant state."""
+    status = parse_panel_install_status(
+        b'{"running":true,"component":"ha-paneld","message":"untrusted prose"}'
+    )
+
+    assert status.running is True
+    assert status.component == "ha-paneld"
+
+
+def test_status_parser_projects_only_the_cached_panel_update_target() -> None:
+    """The additive status contract does not request or expose a release catalogue."""
+    status = parse_status_response(
+        '{"warnings":[],"capabilities":[],"panel_assistant_update":'
+        '{"state":"available","current_version":"0.9.10-rc3",'
+        '"target_version":"0.9.10","tag":"v0.9.10",'
+        '"future":"ignored"}}'
+    )
+
+    assert status.panel_assistant_update is not None
+    assert status.panel_assistant_update.current_version == "0.9.10-rc3"
+    assert status.panel_assistant_update.target_version == "0.9.10"
+    assert status.panel_assistant_update.tag == "v0.9.10"
+
+
+@pytest.mark.parametrize(
+    "cached_update",
+    [
+        {"state": "available"},
+        {
+            "state": "available",
+            "current_version": "0.9.9",
+            "target_version": "0.9.10-rc1",
+            "tag": "v0.9.10-rc1",
+        },
+        {
+            "state": "available",
+            "current_version": "0.9.9",
+            "target_version": "0.9.10",
+            "tag": "bad/tag",
+        },
+        {
+            "state": "available",
+            "current_version": "0.9.9",
+            "target_version": "0.9.10",
+            "tag": "v0.9.11",
+        },
+        {"state": "none", "tag": "v0.9.10"},
+        {"state": "future"},
+    ],
+)
+def test_status_parser_rejects_malformed_cached_panel_update(
+    cached_update: dict[str, str],
+) -> None:
+    """Malformed cached release facts never turn into an HA update action."""
+    with pytest.raises(InvalidResponseError):
+        parse_status_response(
+            json.dumps(
+                {
+                    "warnings": [],
+                    "capabilities": [],
+                    "panel_assistant_update": cached_update,
+                }
+            )
+        )
+
+
+def test_status_parser_accepts_an_explicit_empty_cached_panel_update() -> None:
+    """No cached target is a valid local-only outcome, not an unavailable panel."""
+    status = parse_status_response(
+        '{"warnings":[],"capabilities":[],"panel_assistant_update":{"state":"none"}}'
+    )
+
+    assert status.panel_assistant_update is None
 
 
 def test_parse_current_status_fixture_projects_only_safe_fields() -> None:

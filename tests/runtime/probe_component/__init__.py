@@ -179,14 +179,18 @@ def _registry_snapshot(hass: HomeAssistant, entry_id: str) -> dict[str, str]:
         if entity.config_entry_id == entry_id and entity.platform == "panel_assistant"
     ]
     _require(len(devices) == 1, "expected exactly one runtime device")
-    _require(len(entities) == 1, "expected exactly one runtime entity")
-    state = hass.states.get(entities[0].entity_id)
+    _require(len(entities) == 2, "expected status and update runtime entities")
+    sensor = next(entity for entity in entities if entity.domain == "sensor")
+    update = next(entity for entity in entities if entity.domain == "update")
+    state = hass.states.get(sensor.entity_id)
     _require(state is not None and state.state == "online", "sensor is not online")
     return {
         "entry_id": entry_id,
         "device_id": devices[0].id,
-        "entity_registry_id": entities[0].id,
-        "entity_id": entities[0].entity_id,
+        "sensor_registry_id": sensor.id,
+        "sensor_entity_id": sensor.entity_id,
+        "update_registry_id": update.id,
+        "update_entity_id": update.entity_id,
     }
 
 
@@ -276,7 +280,14 @@ async def _assert_invalid_status(
 ) -> dict[str, str]:
     _require(entry.state is ConfigEntryState.LOADED, "runtime entry is not loaded")
     registry = _registry_snapshot(hass, entry.entry_id)
-    for field in ("entry_id", "device_id", "entity_registry_id", "entity_id"):
+    for field in (
+        "entry_id",
+        "device_id",
+        "sensor_registry_id",
+        "sensor_entity_id",
+        "update_registry_id",
+        "update_entity_id",
+    ):
         _require(
             registry[field] == expected[field],
             f"registry identity changed: {field}",

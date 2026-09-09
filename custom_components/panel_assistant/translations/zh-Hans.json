@@ -130,6 +130,11 @@
           "online": "在线"
         }
       }
+    },
+    "update": {
+      "paneld_update": {
+        "name": "ha-paneld 更新"
+      }
     }
   },
   "exceptions": {

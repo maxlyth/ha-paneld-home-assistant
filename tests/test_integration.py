@@ -26,6 +26,7 @@ from custom_components.panel_assistant.client import (
     CannotConnectError,
     InvalidResponseError,
     PanelHealth,
+    PanelInstallStatus,
 )
 from custom_components.panel_assistant.const import DOMAIN
 from custom_components.panel_assistant.diagnostics import (
@@ -119,7 +120,7 @@ def _installer_doubles(
 
 
 def _assert_healthy_entry_loaded(hass: HomeAssistant, entry: MockConfigEntry) -> None:
-    """Assert the existing entry, device and diagnostic sensor remain available."""
+    """Assert the existing entry, device, status sensor, and update entity remain."""
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data.coordinator.data.health == HEALTH
     entities = [
@@ -127,8 +128,9 @@ def _assert_healthy_entry_loaded(hass: HomeAssistant, entry: MockConfigEntry) ->
         for item in er.async_get(hass).entities.values()
         if item.config_entry_id == entry.entry_id
     ]
-    assert len(entities) == 1
-    state = hass.states.get(entities[0].entity_id)
+    assert len(entities) == 2
+    sensor = next(item for item in entities if item.domain == "sensor")
+    state = hass.states.get(sensor.entity_id)
     assert state is not None
     assert state.state == "online"
     assert (
@@ -141,6 +143,9 @@ async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> Non
     entry = _entry(hass)
     health_mock = AsyncMock(side_effect=[DISCOVERY_HEALTH, BETA_HEALTH])
     status_mock = AsyncMock(return_value=STATUS)
+    operation_mock = AsyncMock(
+        return_value=PanelInstallStatus(running=True, component="ha-paneld")
+    )
     resume_mock = AsyncMock(return_value=())
     executor, manager = _installer_doubles()
 
@@ -152,6 +157,10 @@ async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> Non
         patch(
             "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
             status_mock,
+        ),
+        patch(
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_panel_install_status",
+            operation_mock,
         ),
         patch(
             "custom_components.panel_assistant.async_resume_loaded_install_jobs",
@@ -175,14 +184,25 @@ async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> Non
         ]
         devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
 
-        assert len(entities) == 1
+        assert len(entities) == 2
         assert len(devices) == 1
-        state = hass.states.get(entities[0].entity_id)
+        sensor = next(item for item in entities if item.domain == "sensor")
+        update = next(item for item in entities if item.domain == "update")
+        state = hass.states.get(sensor.entity_id)
         assert state is not None
         assert state.state == "online"
         assert state.attributes["build"] == HEALTH.build
+        update_state = hass.states.get(update.entity_id)
+        assert update_state is not None
         assert devices[0].identifiers == {(DOMAIN, entry.entry_id)}
         assert devices[0].sw_version == HEALTH.version
+        assert (
+            entry.runtime_data.update_coordinator.data.operation
+            == PanelInstallStatus(
+                running=True,
+                component="ha-paneld",
+            )
+        )
 
         diagnostics = await async_get_config_entry_diagnostics(hass, entry)
         assert diagnostics["entry"][CONF_ADDRESS] == "**REDACTED**"
@@ -213,9 +233,17 @@ async def test_setup_entry_diagnostics_unload_reload(hass: HomeAssistant) -> Non
         assert [item.id for item in reloaded_entities] == [item.id for item in entities]
         assert [item.id for item in reloaded_devices] == [item.id for item in devices]
         assert entry.runtime_data.coordinator.data.health.panel_id == "beta"
+        assert (
+            entry.runtime_data.update_coordinator.data.operation
+            == PanelInstallStatus(
+                running=True,
+                component="ha-paneld",
+            )
+        )
 
     assert health_mock.await_count == 2
     assert status_mock.await_count == 2
+    assert operation_mock.await_count == 2
     assert resume_mock.await_count == 2
     assert manager.async_list.await_count == 2
 
@@ -1122,8 +1150,9 @@ async def test_status_failure_does_not_override_health_authority(
         for item in er.async_get(hass).entities.values()
         if item.config_entry_id == entry.entry_id
     ]
-    assert len(entities) == 1
-    state = hass.states.get(entities[0].entity_id)
+    assert len(entities) == 2
+    sensor = next(item for item in entities if item.domain == "sensor")
+    state = hass.states.get(sensor.entity_id)
     assert state is not None
     assert state.state == "online"
 

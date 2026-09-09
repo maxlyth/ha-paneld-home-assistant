@@ -130,6 +130,11 @@
           "online": "Online"
         }
       }
+    },
+    "update": {
+      "paneld_update": {
+        "name": "ha-paneld-Aktualisierung"
+      }
     }
   },
   "exceptions": {

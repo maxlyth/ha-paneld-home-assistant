@@ -33,6 +33,14 @@ _TOKEN_PATTERN = re.compile(
 _FAULT_DETAIL_PATTERN = re.compile(
     rf"^[A-Za-z0-9_]{{1,{MAX_STATUS_FAULT_DETAIL_LENGTH}}}$"
 )
+_PANEL_VERSION_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+)
+_STABLE_PANEL_VERSION_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
+_RELEASE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +54,9 @@ class PanelStatus:
     renderer: ComponentStatus | None = None
     camera: ComponentStatus | None = None
     power_safety: ComponentStatus | None = None
+    panel_assistant_update: PanelCachedUpdate | None = None
 
-    def as_dict(self) -> dict[str, int | dict[str, StatusValue] | None]:
+    def as_dict(self) -> dict[str, object]:
         """Return a serializable copy suitable for diagnostics."""
         return {
             "warning_count": self.warning_count,
@@ -57,6 +66,28 @@ class PanelStatus:
             "renderer": _copy_component(self.renderer),
             "camera": _copy_component(self.camera),
             "power_safety": _copy_component(self.power_safety),
+            "panel_assistant_update": (
+                self.panel_assistant_update.as_dict()
+                if self.panel_assistant_update is not None
+                else None
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PanelCachedUpdate:
+    """One cached panel-owned stable update target, without release metadata."""
+
+    current_version: str
+    target_version: str
+    tag: str
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the small privacy-safe projection used by diagnostics."""
+        return {
+            "current_version": self.current_version,
+            "target_version": self.target_version,
+            "tag": self.tag,
         }
 
 
@@ -199,6 +230,44 @@ def _reason_codes(value: object) -> list[str]:
     if not isinstance(value, list) or len(value) > MAX_STATUS_REASON_CODES:
         raise InvalidResponseError
     return [_token(item) for item in value]
+
+
+def _panel_cached_update(root: Mapping[str, object]) -> PanelCachedUpdate | None:
+    """Parse the additive Android cache without causing a release lookup."""
+    if "panel_assistant_update" not in root:
+        return None
+    value = root["panel_assistant_update"]
+    if not isinstance(value, dict):
+        raise InvalidResponseError
+    state = value.get("state")
+    if state == "none":
+        if any(
+            field in value for field in ("current_version", "target_version", "tag")
+        ):
+            raise InvalidResponseError
+        return None
+    if state != "available":
+        raise InvalidResponseError
+    current_version = value.get("current_version")
+    target_version = value.get("target_version")
+    tag = value.get("tag")
+    if (
+        not isinstance(current_version, str)
+        or len(current_version) > 64
+        or _PANEL_VERSION_PATTERN.fullmatch(current_version) is None
+        or not isinstance(target_version, str)
+        or len(target_version) > 64
+        or _STABLE_PANEL_VERSION_PATTERN.fullmatch(target_version) is None
+        or not isinstance(tag, str)
+        or _RELEASE_TAG_PATTERN.fullmatch(tag) is None
+        or tag.removeprefix("v") != target_version
+    ):
+        raise InvalidResponseError
+    return PanelCachedUpdate(
+        current_version=current_version,
+        target_version=target_version,
+        tag=tag,
+    )
 
 
 _ZIGBEE_FIELDS: dict[str, FieldValidator] = {
@@ -385,4 +454,5 @@ def parse_status_response(body: str) -> PanelStatus:
         power_safety=_sanitize_component(
             parsed, "power_safety", _POWER_FIELDS, frozenset({"state"})
         ),
+        panel_assistant_update=_panel_cached_update(parsed),
     )

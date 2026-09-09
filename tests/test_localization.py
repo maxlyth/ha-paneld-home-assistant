@@ -23,36 +23,42 @@ TRANSLATION_SAMPLES = {
         "Set up a panel",
         "Status",
         "Online",
+        "ha-paneld update",
         "Unable to read panel health",
     ),
     "de": (
         "Panel einrichten",
         "Status",
         "Online",
+        "ha-paneld-Aktualisierung",
         "Der Funktionsstatus des Panels konnte nicht gelesen werden",
     ),
     "es": (
         "Configurar un panel",
         "Estado",
         "En línea",
+        "Actualización de ha-paneld",
         "No se puede leer el estado del panel",
     ),
     "fr": (
         "Configurer un panneau",
         "État",
         "En ligne",
+        "Mise à jour ha-paneld",
         "Impossible de lire l'état du panneau",
     ),
     "it": (
         "Configura un pannello",
         "Stato",
         "Online",
+        "Aggiornamento ha-paneld",
         "Impossibile leggere lo stato di funzionamento del pannello",
     ),
     "zh-Hans": (
         "设置面板",
         "状态",
         "在线",
+        "ha-paneld 更新",
         "无法读取面板健康状态",
     ),
 }
@@ -60,8 +66,8 @@ TRANSLATION_SAMPLES = {
 
 def _translation_cases(
     translations: Path = TRANSLATIONS,
-    samples: dict[str, tuple[str, str, str, str]] = TRANSLATION_SAMPLES,
-) -> list[tuple[str, str, str, str, str]]:
+    samples: dict[str, tuple[str, str, str, str, str]] = TRANSLATION_SAMPLES,
+) -> list[tuple[str, str, str, str, str, str]]:
     shipped = sorted(path.stem for path in translations.glob("*.json"))
     assert set(samples) == set(shipped), (
         "runtime translation samples must exactly cover shipped locale files"
@@ -73,7 +79,7 @@ def test_runtime_translation_cases_reject_locale_coverage_drift(tmp_path: Path) 
     """A catalogue or sample cannot be added without extending runtime coverage."""
     (tmp_path / "en.json").touch()
     (tmp_path / "de.json").touch()
-    sample = ("setup", "status", "online", "error")
+    sample = ("setup", "status", "online", "update", "error")
 
     with pytest.raises(AssertionError, match="exactly cover"):
         _translation_cases(tmp_path, {"en": sample})
@@ -82,7 +88,14 @@ def test_runtime_translation_cases_reject_locale_coverage_drift(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    ("language", "setup_title", "status_name", "online_state", "health_error"),
+    (
+        "language",
+        "setup_title",
+        "status_name",
+        "online_state",
+        "update_name",
+        "health_error",
+    ),
     _translation_cases(),
 )
 async def test_native_status_and_exception_translations(
@@ -91,6 +104,7 @@ async def test_native_status_and_exception_translations(
     setup_title: str,
     status_name: str,
     online_state: str,
+    update_name: str,
     health_error: str,
 ) -> None:
     """Every shipped locale loads rather than using Home Assistant fallback."""
@@ -133,6 +147,10 @@ async def test_native_status_and_exception_translations(
     assert (
         entity_strings.get(f"component.{DOMAIN}.entity.sensor.status.state.online")
         == online_state
+    )
+    assert (
+        entity_strings.get(f"component.{DOMAIN}.entity.update.paneld_update.name")
+        == update_name
     )
     assert (
         async_translate_state(
