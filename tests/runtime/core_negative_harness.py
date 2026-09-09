@@ -79,7 +79,8 @@ def _component_digest(directory: Path) -> str:
         relative_parts = path.relative_to(directory).parts
         if (
             "__pycache__" in relative_parts
-            or relative_parts[:2] in (("frontend", "node_modules"), ("frontend", "dist"))
+            or relative_parts[:2]
+            in (("frontend", "node_modules"), ("frontend", "dist"))
         ):
             continue
         _require(not path.is_symlink(), f"component contains a symlink: {path}")
