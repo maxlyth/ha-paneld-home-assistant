@@ -264,8 +264,18 @@ def test_hacs_repository_foundation() -> None:
         .read_text(encoding="utf-8")
         .startswith("Apache License\nVersion 2.0")
     )
-    icon = INTEGRATION / "brand" / "icon.png"
-    assert icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    _assert_square_png(INTEGRATION / "brand" / "icon.png", 256)
+    _assert_square_png(INTEGRATION / "brand" / "icon@2x.png", 512)
+
+
+def _assert_square_png(path: Path, edge: int) -> None:
+    """Home Assistant serves ``brand/`` images verbatim, so the sizes must be exact."""
+    raw = path.read_bytes()
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+    assert raw[12:16] == b"IHDR"
+    width = int.from_bytes(raw[16:20], "big")
+    height = int.from_bytes(raw[20:24], "big")
+    assert (width, height) == (edge, edge)
 
 
 def test_runtime_translations_are_complete() -> None:
