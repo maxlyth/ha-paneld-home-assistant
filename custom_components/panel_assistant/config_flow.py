@@ -220,6 +220,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         self._pending_address = address
         self._pending_health = health
         self._pending_discovery_id = discovery_id
+        # Without this the card for every discovered panel falls back to the bare
+        # integration name, so a fleet is an indistinguishable list of duplicates.
+        self.context["title_placeholders"] = {"name": health.panel_id}
         return self._show_discovery_confirmation()
 
     async def async_step_confirm_discovery(

@@ -1,6 +1,7 @@
 {
   "title": "Panel Assistant",
   "config": {
+    "flow_title": "{name}",
     "step": {
       "user": {
         "title": "Panel einrichten",

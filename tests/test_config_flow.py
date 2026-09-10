@@ -367,6 +367,30 @@ async def test_zeroconf_requires_fresh_health_confirmation_before_entry_creation
     assert health_mock.await_count >= 2
 
 
+async def test_zeroconf_titles_each_discovery_with_its_own_panel(
+    hass: HomeAssistant,
+) -> None:
+    """Without per-flow placeholders every discovered panel renders the same card."""
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=DISCOVERY_HEALTH),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_status",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+    ):
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_ZEROCONF},
+            data=_zeroconf_info(),
+        )
+
+    flow = hass.config_entries.flow.async_progress()[0]
+    assert flow["context"]["title_placeholders"] == {"name": DISCOVERY_HEALTH.panel_id}
+
+
 @pytest.mark.parametrize(
     ("discovery_id", "port"),
     [

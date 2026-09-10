@@ -303,7 +303,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
         "it.json",
         "zh-Hans.json",
     ]
-    assert len(english) == 93
+    assert len(english) == 94
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)
