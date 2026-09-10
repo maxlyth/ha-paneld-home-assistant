@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from typing import Any
 
 import voluptuous as vol
@@ -104,6 +105,7 @@ _DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_ADDRESS): TextSelector(TextSelectorConfig())}
 )
 _CONF_RELEASE_CANDIDATE = "release_candidate"
+_DATA_DISCOVERY_NAMES = "discovery_names"
 
 
 class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -114,6 +116,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _pending_address: PanelAddress | None = None
     _pending_health: PanelHealth | None = None
     _pending_discovery_id: str | None = None
+    _pending_friendly_name: str | None = None
+    _discovery_title: str | None = None
     _pending_probe: InstallTargetProbe | None = None
     _pending_release: ReleaseArtifact | None = None
     _pending_rc_tag: str | None = None
@@ -220,9 +224,14 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         self._pending_address = address
         self._pending_health = health
         self._pending_discovery_id = discovery_id
-        # Without this the card for every discovered panel falls back to the bare
-        # integration name, so a fleet is an indistinguishable list of duplicates.
-        self.context["title_placeholders"] = {"name": health.panel_id}
+        self._pending_friendly_name = _presentation_safe_name(
+            discovery_info.properties.get("name")
+        )
+        # Without a title placeholder the card for every discovered panel falls back
+        # to the bare integration name, so a fleet is a list of indistinguishable
+        # duplicates. Prefer the human name the panel advertises, and fall back to the
+        # panel id only when there is no usable name or the name is already taken.
+        self._apply_discovery_title()
         return self._show_discovery_confirmation()
 
     async def async_step_confirm_discovery(
@@ -249,6 +258,60 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self._show_discovery_confirmation()
 
+    def _apply_discovery_title(self) -> None:
+        """Title this flow, disambiguating both sides of a friendly-name clash."""
+        assert self._pending_health is not None
+        panel_id = self._pending_health.panel_id
+        friendly = self._pending_friendly_name
+        announced = self._announced_discovery_names()
+        announced[self.flow_id] = (friendly, panel_id)
+
+        if friendly is None:
+            self._set_discovery_title(panel_id)
+            return
+
+        clashing = {
+            flow_id: other_panel_id
+            for flow_id, (other_friendly, other_panel_id) in announced.items()
+            if flow_id != self.flow_id and other_friendly == friendly
+        }
+        taken = bool(clashing) or any(
+            entry.title == friendly for entry in self._async_current_entries()
+        )
+        # A clash is symmetric. Qualifying only the newcomer would leave two cards
+        # that still cannot be told apart, so qualify the ones already showing it.
+        for flow in self.hass.config_entries.flow.async_progress_by_handler(DOMAIN):
+            other_panel_id = clashing.get(flow["flow_id"])
+            if other_panel_id is not None:
+                flow["context"]["title_placeholders"] = {
+                    "name": _qualified_name(friendly, other_panel_id)
+                }
+        self._set_discovery_title(
+            _qualified_name(friendly, panel_id) if taken else friendly
+        )
+
+    def _set_discovery_title(self, display: str) -> None:
+        """Record the rendered title for the card, the form and the created entry."""
+        self.context["title_placeholders"] = {"name": display}
+        self._discovery_title = display
+
+    def _announced_discovery_names(self) -> dict[str, tuple[str | None, str]]:
+        """Names claimed by live discovery flows, pruned of any that finished.
+
+        `ConfigFlowContext` is a closed TypedDict, so this cannot ride along in the
+        flow context. Keying on flow id makes the store self-pruning.
+        """
+        store: dict[str, tuple[str | None, str]] = self.hass.data.setdefault(
+            DOMAIN, {}
+        ).setdefault(_DATA_DISCOVERY_NAMES, {})
+        live = {
+            flow["flow_id"]
+            for flow in self.hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+        }
+        for flow_id in [f for f in store if f not in live and f != self.flow_id]:
+            del store[flow_id]
+        return store
+
     def _show_discovery_confirmation(
         self, errors: dict[str, str] | None = None
     ) -> ConfigFlowResult:
@@ -260,7 +323,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             description_placeholders={
                 "address": self._pending_address.stored_value,
-                "panel_name": _markdown_literal(self._pending_health.panel_id),
+                "panel_name": _markdown_literal(
+                    self._discovery_title or self._pending_health.panel_id
+                ),
             },
             errors=errors,
         )
@@ -1223,10 +1288,38 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         # The configured network endpoint is the entry identity. The health contract
         # exposes only a user-editable panel name, not a stable hardware identifier.
         self._async_abort_entries_match({CONF_ADDRESS: address.stored_value})
+        # A discovered panel keeps the name its card promised. A manually added one
+        # has no advertisement to read, so it stays on the panel id.
         return self.async_create_entry(
-            title=health.panel_id,
+            title=self._discovery_title or health.panel_id,
             data={CONF_ADDRESS: address.stored_value},
         )
+
+
+_FRIENDLY_NAME_MAX_LENGTH = 64
+
+
+def _qualified_name(friendly: str, panel_id: str) -> str:
+    """Show the panel id only when the friendly name alone is ambiguous."""
+    return f"{friendly} ({panel_id})"
+
+
+def _presentation_safe_name(value: object) -> str | None:
+    """Accept an mDNS-advertised name only as bounded, printable, single-line text.
+
+    The TXT record is writable by anything on the LAN, so it is presentation input
+    and never an identity. Identity stays with the verified discovery id.
+    """
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if not name or len(name) > _FRIENDLY_NAME_MAX_LENGTH:
+        return None
+    if any(unicodedata.category(character).startswith("C") for character in name):
+        return None
+    if any(character.isspace() and character != " " for character in name):
+        return None
+    return name
 
 
 def _markdown_literal(value: str) -> str:

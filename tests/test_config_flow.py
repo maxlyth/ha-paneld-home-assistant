@@ -166,9 +166,14 @@ def _zeroconf_info(
     *,
     discovery_id: object = DISCOVERY_ID,
     port: int | None = 8888,
+    friendly_name: object = None,
+    host: str = "192.168.1.23",
 ) -> ZeroconfServiceInfo:
     """Return a local advertisement with only the stable test contract."""
-    address = ip_address("192.168.1.23")
+    address = ip_address(host)
+    properties: dict[str, object] = {"did": discovery_id}
+    if friendly_name is not None:
+        properties["name"] = friendly_name
     return ZeroconfServiceInfo(
         ip_address=address,
         ip_addresses=[address],
@@ -176,7 +181,7 @@ def _zeroconf_info(
         hostname="alpha.local.",
         type="_ha-paneld._tcp.local.",
         name="alpha._ha-paneld._tcp.local.",
-        properties={"did": discovery_id},
+        properties=properties,
     )
 
 
@@ -365,6 +370,120 @@ async def test_zeroconf_requires_fresh_health_confirmation_before_entry_creation
     assert result["data"] == {CONF_ADDRESS: "192.168.1.23"}
     assert result["result"].unique_id == DISCOVERY_ID
     assert health_mock.await_count >= 2
+
+
+async def _start_discovery(hass, info, panel_id):
+    """Drive one zeroconf step to its confirmation form for a named panel."""
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(
+                return_value=replace(
+                    DISCOVERY_HEALTH,
+                    panel_id=panel_id,
+                    discovery_id=info.properties["did"],
+                )
+            ),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_status",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+    ):
+        return await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=info
+        )
+
+
+def _title_of(hass, flow_id):
+    for flow in hass.config_entries.flow.async_progress():
+        if flow["flow_id"] == flow_id:
+            return flow["context"]["title_placeholders"]["name"]
+    raise AssertionError("flow is no longer in progress")
+
+
+async def test_zeroconf_prefers_the_advertised_friendly_name(
+    hass: HomeAssistant,
+) -> None:
+    """The card should read as the human named the panel, not as its identifier."""
+    info = _zeroconf_info(friendly_name="Alpha panel")
+    form = await _start_discovery(hass, info, "alpha_panel")
+
+    assert _title_of(hass, form["flow_id"]) == "Alpha panel"
+    assert form["description_placeholders"]["panel_name"] == "Alpha panel"
+
+
+@pytest.mark.parametrize(
+    "advertised",
+    ["", "   ", "a" * 65, "two\nlines", "bell\x07", 17, b"bytes"],
+)
+async def test_zeroconf_refuses_unusable_advertised_names(
+    hass: HomeAssistant, advertised: object
+) -> None:
+    """TXT records are LAN-writable, so only bounded printable text may be shown."""
+    info = _zeroconf_info(friendly_name=advertised)
+    form = await _start_discovery(hass, info, "alpha")
+
+    assert _title_of(hass, form["flow_id"]) == "alpha"
+
+
+async def test_zeroconf_qualifies_both_sides_of_a_duplicate_friendly_name(
+    hass: HomeAssistant,
+) -> None:
+    """Two panels sharing a name are only distinguishable once both carry their id."""
+    first = await _start_discovery(
+        hass, _zeroconf_info(friendly_name="Spare panel"), "spare_one"
+    )
+    assert _title_of(hass, first["flow_id"]) == "Spare panel"
+
+    second = await _start_discovery(
+        hass,
+        _zeroconf_info(
+            discovery_id="b" * 64, friendly_name="Spare panel", host="192.168.1.24"
+        ),
+        "spare_two",
+    )
+
+    assert _title_of(hass, second["flow_id"]) == "Spare panel (spare_two)"
+    assert _title_of(hass, first["flow_id"]) == "Spare panel (spare_one)"
+
+
+async def test_zeroconf_qualifies_a_name_an_existing_entry_already_uses(
+    hass: HomeAssistant,
+) -> None:
+    """An already configured panel owns its name just as a pending discovery does."""
+    MockConfigEntry(
+        domain=DOMAIN, title="Beta panel", data={CONF_ADDRESS: "192.168.1.99"}
+    ).add_to_hass(hass)
+
+    form = await _start_discovery(
+        hass, _zeroconf_info(friendly_name="Beta panel"), "beta_panel"
+    )
+
+    assert _title_of(hass, form["flow_id"]) == "Beta panel (beta_panel)"
+
+
+async def test_confirmed_discovery_entry_keeps_the_name_its_card_promised(
+    hass: HomeAssistant,
+) -> None:
+    """A card offering one name and an entry landing under another is a mismatch."""
+    info = _zeroconf_info(friendly_name="Gamma panel")
+    form = await _start_discovery(hass, info, "gamma_panel")
+
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(return_value=replace(DISCOVERY_HEALTH, panel_id="gamma_panel")),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_status",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(form["flow_id"], {})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Gamma panel"
 
 
 async def test_zeroconf_titles_each_discovery_with_its_own_panel(
