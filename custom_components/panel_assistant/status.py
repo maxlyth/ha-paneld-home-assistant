@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn
@@ -56,6 +57,7 @@ class PanelStatus:
     camera: ComponentStatus | None = None
     power_safety: ComponentStatus | None = None
     panel_assistant_update: PanelCachedUpdate | None = None
+    panel_assistant_device: PanelDevice | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Return a serializable copy suitable for diagnostics."""
@@ -70,6 +72,11 @@ class PanelStatus:
             "panel_assistant_update": (
                 self.panel_assistant_update.as_dict()
                 if self.panel_assistant_update is not None
+                else None
+            ),
+            "panel_assistant_device": (
+                self.panel_assistant_device.as_dict()
+                if self.panel_assistant_device is not None
                 else None
             ),
         }
@@ -89,6 +96,31 @@ class PanelCachedUpdate:
             "current_version": self.current_version,
             "target_version": self.target_version,
             "tag": self.tag,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PanelDevice:
+    """Presentation-only device facts for one Home Assistant device card.
+
+    Every field is optional because the panel omits anything it cannot state safely, and
+    older panels omit the whole object. None of these values is an identity.
+    """
+
+    name: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    hw_version: str | None = None
+    area: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        """Return the small projection used by diagnostics."""
+        return {
+            "name": self.name,
+            "manufacturer": self.manufacturer,
+            "model": self.model,
+            "hw_version": self.hw_version,
+            "area": self.area,
         }
 
 
@@ -227,6 +259,10 @@ def _nullable_port(value: object) -> int | None:
     return result
 
 
+_DEVICE_FIELD_NAMES = ("name", "manufacturer", "model", "hw_version", "area")
+MAX_STATUS_DEVICE_FIELD_LENGTH = 128
+
+
 def _reason_codes(value: object) -> list[str]:
     if not isinstance(value, list) or len(value) > MAX_STATUS_REASON_CODES:
         raise InvalidResponseError
@@ -269,6 +305,34 @@ def _panel_cached_update(root: Mapping[str, object]) -> PanelCachedUpdate | None
         target_version=target_version,
         tag=tag,
     )
+
+
+def _panel_device(root: Mapping[str, object]) -> PanelDevice | None:
+    """Parse the additive device projection: presentation text, never identity."""
+    if "panel_assistant_device" not in root:
+        return None
+    value = root["panel_assistant_device"]
+    if not isinstance(value, dict) or set(value) - set(_DEVICE_FIELD_NAMES):
+        raise InvalidResponseError
+    fields: dict[str, str] = {}
+    for name in _DEVICE_FIELD_NAMES:
+        if name not in value:
+            continue
+        raw = value[name]
+        # The panel drops a field it cannot state safely, so a present but unusable
+        # value is a contract breach, not something to quietly clean up here.
+        if (
+            not isinstance(raw, str)
+            or not raw
+            or len(raw) > MAX_STATUS_DEVICE_FIELD_LENGTH
+            or raw != raw.strip()
+            or any(unicodedata.category(character).startswith("C") for character in raw)
+        ):
+            raise InvalidResponseError
+        fields[name] = raw
+    if not fields:
+        return None
+    return PanelDevice(**fields)
 
 
 _ZIGBEE_FIELDS: dict[str, FieldValidator] = {
@@ -456,4 +520,5 @@ def parse_status_response(body: str) -> PanelStatus:
             parsed, "power_safety", _POWER_FIELDS, frozenset({"state"})
         ),
         panel_assistant_update=_panel_cached_update(parsed),
+        panel_assistant_device=_panel_device(parsed),
     )

@@ -402,6 +402,64 @@ def test_parse_panel_install_status_keeps_only_progress_ownership() -> None:
     assert status.component == "ha-paneld"
 
 
+def test_status_parser_projects_every_device_card_fact() -> None:
+    """The device projection fills the card and stays presentation-only."""
+    status = parse_status_response(
+        '{"warnings":[],"capabilities":[],"panel_assistant_device":'
+        '{"name":"Alpha panel","manufacturer":"Acme","model":"AP-1",'
+        '"hw_version":"Android 14 · TQ3A","area":"Study"}}'
+    )
+
+    device = status.panel_assistant_device
+    assert device is not None
+    assert device.name == "Alpha panel"
+    assert device.manufacturer == "Acme"
+    assert device.model == "AP-1"
+    assert device.hw_version == "Android 14 · TQ3A"
+    assert device.area == "Study"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ('{"warnings":[],"capabilities":[]}', None),
+        ('{"warnings":[],"capabilities":[],"panel_assistant_device":{}}', None),
+    ],
+)
+def test_status_parser_treats_a_silent_panel_as_no_device_facts(
+    body: str, expected: None
+) -> None:
+    """Older panels omit the object and a bounded panel may have nothing safe to say."""
+    assert parse_status_response(body).panel_assistant_device is expected
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        {"serial_number": "abc"},
+        {"name": ""},
+        {"name": "   Alpha"},
+        {"name": "Alpha   "},
+        {"name": "a" * 129},
+        {"name": "Two\nLines"},
+        {"name": "Bell\u0007"},
+        {"name": 17},
+        {"name": None},
+        {"manufacturer": ["Acme"]},
+    ],
+)
+def test_status_parser_refuses_a_device_field_the_panel_should_have_dropped(
+    device: dict[str, object],
+) -> None:
+    """The panel omits what it cannot state safely, so a bad value breaks contract."""
+    body = json.dumps(
+        {"warnings": [], "capabilities": [], "panel_assistant_device": device}
+    )
+
+    with pytest.raises(InvalidResponseError):
+        parse_status_response(body)
+
+
 def test_status_parser_projects_only_the_cached_panel_update_target() -> None:
     """The additive status contract does not request or expose a release catalogue."""
     status = parse_status_response(

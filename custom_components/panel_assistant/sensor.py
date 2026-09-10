@@ -10,8 +10,8 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import HaPaneldConfigEntry
-from .const import DOMAIN
 from .coordinator import HaPaneldDataUpdateCoordinator
+from .device import panel_device_info
 
 
 async def async_setup_entry(
@@ -62,11 +62,8 @@ class HaPaneldStatusSensor(
     @property
     def device_info(self) -> DeviceInfo:
         """Return API-backed device information."""
-        health = self.coordinator.data.health
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name=health.panel_id,
-            model="ha-paneld",
-            sw_version=health.version,
-            configuration_url=self.coordinator.client.configuration_url,
+        return panel_device_info(
+            self._entry_id,
+            self.coordinator.data,
+            self.coordinator.client.configuration_url,
         )

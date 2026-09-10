@@ -27,6 +27,7 @@ from .client import (
 )
 from .const import DOMAIN
 from .coordinator import HaPaneldDataUpdateCoordinator
+from .device import panel_device_info
 from .status import PanelCachedUpdate
 from .update_coordinator import PanelUpdateCoordinator
 
@@ -220,13 +221,10 @@ class HaPaneldUpdateEntity(
     @property
     def device_info(self) -> DeviceInfo:
         """Attach to the existing config-entry device without a second identity."""
-        health = self.coordinator.data.health
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name=health.panel_id,
-            model="ha-paneld",
-            sw_version=health.version,
-            configuration_url=self.coordinator.client.configuration_url,
+        return panel_device_info(
+            self._entry_id,
+            self.coordinator.data,
+            self.coordinator.client.configuration_url,
         )
 
     async def async_install(
