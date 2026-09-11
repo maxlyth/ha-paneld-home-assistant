@@ -349,3 +349,35 @@ async def test_cleanup_failure_after_eof_does_not_send_second_response(
     assert await response.read() == b"apk"
     error_response.assert_not_called()
     assert not endpoint.service._requests
+
+
+async def test_a_feed_build_is_handed_over_as_the_exact_signed_feed(endpoint):
+    """The browser gets the signed feed to verify itself, never GitHub-shaped fields."""
+    from custom_components.panel_assistant.build_feed import FeedInstallBundle
+
+    feed_record = BrowserReleaseRecord(
+        BUNDLE_ID,
+        FeedInstallBundle(
+            ReleaseArtifact("build-772", "0.9.7-rc4", "x.apk", "private-url", "b" * 64),
+            b'{"builds":[]}\n',
+            b"s" * 256,
+        ),
+        InstallArtifact(BUNDLE_ID, "/private/path", 3, "b" * 64),
+    )
+    endpoint.service.cache.async_prepare = AsyncMock(return_value=feed_record)
+    response = await endpoint.client.post(URL, json={"release_candidate": "build-772"})
+    assert response.status == 200
+    assert endpoint.service.cache.async_prepare.call_args.kwargs == {
+        "rc_tag": "build-772"
+    }
+    assert await response.json() == {
+        "id": BUNDLE_ID,
+        "tag": "build-772",
+        "feed": base64.b64encode(b'{"builds":[]}\n').decode(),
+        "feed_signature": base64.b64encode(b"s" * 256).decode(),
+        "apk_size": 3,
+        "apk_sha256": "b" * 64,
+    }
+    for refused in ("build-0772", "build-", "772"):
+        response = await endpoint.client.post(URL, json={"release_candidate": refused})
+        assert response.status == 400, refused

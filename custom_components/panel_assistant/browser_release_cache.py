@@ -19,8 +19,10 @@ from .browser_artifacts import (
     async_download_browser_artifact,
     async_reconcile_browser_artifacts,
 )
+from .build_feed import FeedInstallBundle
 from .install_artifacts import InstallArtifact
-from .release import InstallReleaseBundle, async_resolve_install_bundle
+from .release import InstallReleaseBundle
+from .release_catalog import async_resolve_install_bundle_choice
 
 _CAPACITY = 2
 _TTL_SECONDS = 900.0
@@ -50,7 +52,7 @@ class BrowserReleaseRecord:
     """Internal verified bundle; callers must explicitly select public fields."""
 
     id: str
-    bundle: InstallReleaseBundle
+    bundle: InstallReleaseBundle | FeedInstallBundle
     artifact: InstallArtifact
 
 
@@ -148,7 +150,7 @@ class BrowserReleaseCache:
             reservation = secrets.token_hex(16)
             while reservation in self._entries:
                 reservation = secrets.token_hex(16)
-            bundle = await async_resolve_install_bundle(self._session, rc_tag=rc_tag)
+            bundle = await async_resolve_install_bundle_choice(self._hass, rc_tag)
             descriptor = bundle.artifact.descriptor
             if descriptor is None or not 0 < descriptor.apk_size <= _MAX_APK_BYTES:
                 raise BrowserReleaseCacheError(

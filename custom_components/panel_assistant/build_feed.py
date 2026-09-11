@@ -12,7 +12,7 @@ import asyncio
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -20,6 +20,7 @@ from yarl import URL
 
 from .release import (
     _DATABASE_COMPATIBILITY_PATTERN,
+    _INSTALL_DESCRIPTOR_SCHEMA,
     _LAUNCH_COMPONENT,
     _MAX_ANDROID_SDK,
     _MAX_ANDROID_VERSION_CODE,
@@ -28,12 +29,16 @@ from .release import (
     _RELEASE_SIGNER_CERTIFICATE_SHA256,
     _SHA256_PATTERN,
     _SUPPORTED_ABIS,
+    _VERSION_NAME_PATTERN,
+    InstallDescriptor,
+    ReleaseArtifact,
     ReleaseResolutionError,
     _async_fetch_bounded,
     _bounded_integer,
     _object_without_duplicates,
     _reject_json_constant,
     _verify_detached_signature,
+    feed_build_tag,
 )
 
 FEED_SCHEMA = "io.github.maxlyth.hapaneld.buildfeed.v1"
@@ -60,7 +65,6 @@ _BUILD_FIELDS = frozenset(
     }
 )
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-_VERSION_NAME_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 _PUBLISHED_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 )
@@ -96,10 +100,15 @@ class FeedBuild:
 
 @dataclass(frozen=True, slots=True)
 class BuildFeed:
-    """An authenticated feed, newest build first."""
+    """An authenticated feed, newest build first.
+
+    The exact signed bytes are kept so a browser can verify them independently.
+    """
 
     channel: str
     builds: tuple[FeedBuild, ...]
+    raw: bytes = field(default=b"", repr=False)
+    signature: bytes = field(default=b"", repr=False)
 
     def newest(self) -> FeedBuild | None:
         """Return the build with the highest version code."""
@@ -108,6 +117,47 @@ class BuildFeed:
     def find(self, version_code: int) -> FeedBuild | None:
         """Return the build with exactly this version code."""
         return next((b for b in self.builds if b.version_code == version_code), None)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FeedInstallBundle:
+    """One feed build plus the exact signed feed, for independent verification."""
+
+    artifact: ReleaseArtifact
+    feed: bytes
+    feed_signature: bytes
+
+
+def feed_release_artifact(build: FeedBuild) -> ReleaseArtifact:
+    """Present a signed feed build to the install paths as a release artifact.
+
+    The descriptor carries the same facts a GitHub release descriptor does; the
+    tag and file name are the feed build's own identity.
+    """
+    tag = feed_build_tag(build.version_code)
+    apk_name = f"{build.apk_sha256}.apk"
+    return ReleaseArtifact(
+        tag=tag,
+        version=build.version_name,
+        apk_name=apk_name,
+        apk_url=str(build.apk_url),
+        sha256=build.apk_sha256,
+        descriptor=InstallDescriptor(
+            schema=_INSTALL_DESCRIPTOR_SCHEMA,
+            release_tag=tag,
+            version_name=build.version_name,
+            version_code=build.version_code,
+            apk_name=apk_name,
+            apk_size=build.apk_size,
+            apk_sha256=build.apk_sha256,
+            package_id=_PACKAGE_ID,
+            signer_certificate_sha256=_RELEASE_SIGNER_CERTIFICATE_SHA256,
+            min_sdk=build.min_sdk,
+            supported_abis=_SUPPORTED_ABIS,
+            database_compatibility=build.database_compatibility,
+            launch_component=_LAUNCH_COMPONENT,
+        ),
+    )
 
 
 def build_label(version_name: str, version_code: int) -> str:
@@ -255,6 +305,8 @@ def parse_build_feed(body: bytes, signature: bytes, feed_url: URL) -> BuildFeed:
     return BuildFeed(
         channel=document["channel"],
         builds=tuple(sorted(builds, key=lambda b: b.version_code, reverse=True)),
+        raw=body,
+        signature=signature,
     )
 
 

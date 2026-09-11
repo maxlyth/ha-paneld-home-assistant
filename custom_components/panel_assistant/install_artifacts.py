@@ -32,7 +32,18 @@ _TRUSTED_DOWNLOAD_HOSTS = frozenset(
         "release-assets.githubusercontent.com",
     }
 )
+# Hosts of a configured signed build feed. Only a content-addressed APK path is
+# ever fetched from them, and the bytes are still held to the signed hash.
+_FEED_DOWNLOAD_HOSTS: set[str] = set()
+_FEED_APK_PATH = re.compile(r"^/(?:[^/?#]+/)*apks/[0-9a-f]{64}\.apk$")
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def register_feed_download_host(host: str) -> None:
+    """Allow content-addressed APK downloads from the configured build feed."""
+    _FEED_DOWNLOAD_HOSTS.add(host)
+
+
 _MAX_REDIRECTS = 3
 _OVERALL_TIMEOUT_SECONDS = 180.0
 _REQUEST_TIMEOUT_SECONDS = 120.0
@@ -157,7 +168,13 @@ def _trusted_download_url(raw_url: object) -> URL:
         url.scheme != "https"
         or url.user is not None
         or url.password is not None
-        or url.host not in _TRUSTED_DOWNLOAD_HOSTS
+        or not (
+            url.host in _TRUSTED_DOWNLOAD_HOSTS
+            or (
+                url.host in _FEED_DOWNLOAD_HOSTS
+                and _FEED_APK_PATH.fullmatch(url.path) is not None
+            )
+        )
         or url.port != 443
         or bool(url.fragment)
     ):

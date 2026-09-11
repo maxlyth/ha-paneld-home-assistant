@@ -169,6 +169,61 @@ def is_install_release_tag(value: object) -> bool:
     )
 
 
+# A dev build from the signed build feed is named by its version code. It is
+# never a GitHub tag, so the two identities can never be confused.
+_FEED_BUILD_TAG_PATTERN = re.compile(r"^build-([1-9][0-9]{0,9})$")
+_VERSION_NAME_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
+
+
+def feed_build_tag(version_code: int) -> str:
+    """Name a feed build."""
+    return f"build-{version_code}"
+
+
+def feed_build_code(value: object) -> int | None:
+    """Return the version code a feed build tag names, or None."""
+    match = _FEED_BUILD_TAG_PATTERN.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        return None
+    code = int(match.group(1))
+    return code if code <= _MAX_ANDROID_VERSION_CODE else None
+
+
+def is_feed_build_tag(value: object) -> bool:
+    """Accept only a bounded feed build tag."""
+    return feed_build_code(value) is not None
+
+
+def artifact_identity_matches(
+    release_tag: object,
+    version_name: object,
+    version_code: object,
+    apk_name: object,
+    apk_sha256: object,
+) -> bool:
+    """The one rule binding an artifact's tag, version and file name together.
+
+    A GitHub release is named by its tag; a feed build by its version code and
+    its content-addressed file name.
+    """
+    if is_install_release_tag(release_tag):
+        assert isinstance(release_tag, str)
+        return (
+            version_name == release_tag.removeprefix("v")
+            and apk_name == f"ha-paneld-{release_tag}-manual-setup-required.apk"
+        )
+    code = feed_build_code(release_tag)
+    return (
+        code is not None
+        and version_code == code
+        and isinstance(version_name, str)
+        and _VERSION_NAME_PATTERN.fullmatch(version_name) is not None
+        and isinstance(apk_sha256, str)
+        and _SHA256_PATTERN.fullmatch(apk_sha256) is not None
+        and apk_name == f"{apk_sha256}.apk"
+    )
+
+
 def _request_timeout() -> ClientTimeout:
     """Return explicit total, connection and read bounds for each request."""
     return ClientTimeout(

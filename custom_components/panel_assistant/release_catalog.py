@@ -7,17 +7,28 @@ import json
 from typing import Any
 
 from aiohttp import ClientSession
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from yarl import URL
 
+from .build_feed import BuildFeed, FeedBuild, FeedInstallBundle, feed_release_artifact
+from .feed_coordinator import async_get_feed_coordinator
 from .release import (
     _API_HEADERS,
     _LATEST_RELEASE_URL,
     _MAX_RELEASE_RESPONSE_BYTES,
+    InstallReleaseBundle,
+    ReleaseArtifact,
     ReleaseResolutionError,
     _async_fetch_bounded,
     _object_without_duplicates,
     _parse_release_metadata,
     _reject_json_constant,
+    async_resolve_install_bundle,
+    async_resolve_rc_release,
+    async_resolve_stable_release,
+    feed_build_code,
+    feed_build_tag,
     is_rc_release_tag,
 )
 
@@ -108,3 +119,83 @@ async def async_list_install_releases(
             if len(choices) == _MAX_RECENT_RELEASES:
                 break
     return choices
+
+
+async def _async_current_feed(hass: HomeAssistant) -> BuildFeed | None:
+    """Read the configured build feed afresh, or None when there is none."""
+    coordinator = async_get_feed_coordinator(hass)
+    if coordinator is None:
+        return None
+    await coordinator.async_refresh()
+    if not coordinator.last_update_success or coordinator.data is None:
+        return None
+    return coordinator.data
+
+
+async def async_list_install_choices(
+    hass: HomeAssistant,
+) -> list[dict[str, str | bool]]:
+    """The one version list every install path offers.
+
+    GitHub releases come first; builds from a configured signed build feed
+    follow, newest first, each named by its version code. A GitHub outage still
+    leaves the feed's builds on offer, and the reverse.
+    """
+    feed = await _async_current_feed(hass)
+    builds: list[dict[str, str | bool]] = [
+        {
+            "tag": feed_build_tag(build.version_code),
+            "prerelease": True,
+            "name": build.label,
+        }
+        for build in (feed.builds if feed is not None else ())
+    ]
+    try:
+        releases = await async_list_install_releases(async_get_clientsession(hass))
+    except ReleaseResolutionError:
+        if builds:
+            return builds
+        raise
+    return [*releases, *builds]
+
+
+async def async_resolve_feed_choice(
+    hass: HomeAssistant, tag: str
+) -> tuple[BuildFeed, FeedBuild]:
+    """Find exactly the feed build a choice names, in a freshly read feed."""
+    code = feed_build_code(tag)
+    feed = await _async_current_feed(hass) if code is not None else None
+    build = feed.find(code) if feed is not None and code is not None else None
+    if feed is None or build is None:
+        raise ReleaseResolutionError
+    return feed, build
+
+
+async def async_resolve_install_choice(
+    hass: HomeAssistant, tag: str | None
+) -> ReleaseArtifact:
+    """The one resolver behind every install path: stable, an RC, or a feed build."""
+    if tag is None:
+        return await async_resolve_stable_release(async_get_clientsession(hass))
+    if feed_build_code(tag) is not None:
+        _feed, build = await async_resolve_feed_choice(hass, tag)
+        return feed_release_artifact(build)
+    if not is_rc_release_tag(tag):
+        raise ReleaseResolutionError
+    return await async_resolve_rc_release(async_get_clientsession(hass), tag)
+
+
+async def async_resolve_install_bundle_choice(
+    hass: HomeAssistant, tag: str | None
+) -> InstallReleaseBundle | FeedInstallBundle:
+    """Resolve a choice with the signed bytes a browser verifies for itself."""
+    if tag is not None and feed_build_code(tag) is not None:
+        feed, build = await async_resolve_feed_choice(hass, tag)
+        return FeedInstallBundle(
+            artifact=feed_release_artifact(build),
+            feed=feed.raw,
+            feed_signature=feed.signature,
+        )
+    if tag is not None and not is_rc_release_tag(tag):
+        raise ReleaseResolutionError
+    return await async_resolve_install_bundle(async_get_clientsession(hass), rc_tag=tag)

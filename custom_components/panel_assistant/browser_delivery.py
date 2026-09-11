@@ -24,9 +24,10 @@ from .browser_release_cache import (
     BrowserReleaseCacheError,
     BrowserReleaseCacheErrorCode,
 )
+from .build_feed import FeedInstallBundle
 from .const import DOMAIN
-from .release import is_rc_release_tag
-from .release_catalog import async_list_install_releases
+from .release import is_feed_build_tag, is_rc_release_tag
+from .release_catalog import async_list_install_choices
 
 DATA_BROWSER_DELIVERY = "browser_delivery"
 _BODY_LIMIT = 1024
@@ -74,7 +75,7 @@ async def _selection(request: web.Request) -> str | None:
     if not value:
         return None
     tag = value["release_candidate"]
-    if not is_rc_release_tag(tag):
+    if not (is_rc_release_tag(tag) or is_feed_build_tag(tag)):
         raise ValueError
     assert isinstance(tag, str)
     return tag
@@ -130,9 +131,7 @@ class BrowserReleaseCatalogView(HomeAssistantView):
             return _error("browser_release_invalid_request", 400)
         try:
             async with self.service.async_admit():
-                releases = await async_list_install_releases(
-                    async_get_clientsession(self.service.hass)
-                )
+                releases = await async_list_install_choices(self.service.hass)
                 return web.json_response({"releases": releases}, headers=_HEADERS)
         except BrowserReleaseCacheError as error:
             return _cache_error(error)
@@ -160,6 +159,22 @@ class BrowserReleaseView(HomeAssistantView):
                 except ValueError, TimeoutError, ConnectionError:
                     return _error("browser_release_invalid_request", 400)
                 record = await self.service.cache.async_prepare(user.id, rc_tag=tag)
+                if isinstance(record.bundle, FeedInstallBundle):
+                    return web.json_response(
+                        {
+                            "id": record.id,
+                            "tag": record.bundle.artifact.tag,
+                            "feed": base64.b64encode(record.bundle.feed).decode(
+                                "ascii"
+                            ),
+                            "feed_signature": base64.b64encode(
+                                record.bundle.feed_signature
+                            ).decode("ascii"),
+                            "apk_size": record.artifact.size,
+                            "apk_sha256": record.artifact.sha256,
+                        },
+                        headers=_HEADERS,
+                    )
                 metadata = record.bundle.metadata
                 return web.json_response(
                     {

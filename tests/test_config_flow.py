@@ -107,7 +107,7 @@ LEGACY_RELEASE = replace(RELEASE, descriptor=None)
 def install_release_catalog():
     """Keep native setup discovery offline with published stable and RC choices."""
     with patch(
-        "custom_components.panel_assistant.config_flow.async_list_install_releases",
+        "custom_components.panel_assistant.release_catalog.async_list_install_releases",
         AsyncMock(
             return_value=[
                 {"tag": "v0.9.7", "prerelease": False},
@@ -1060,7 +1060,7 @@ async def test_install_candidate_readiness_is_non_mutating_until_confirmation(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -1129,7 +1129,7 @@ async def test_install_classification_error_can_retry_to_candidate(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -1172,7 +1172,7 @@ async def test_install_candidate_without_identity_fails_closed(
             AsyncMock(return_value=incomplete),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -1240,7 +1240,7 @@ async def test_install_unauthorized_requires_physical_approval_without_creating_
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -1287,7 +1287,7 @@ async def test_install_authorization_retry_uses_persistent_signer(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -1333,7 +1333,7 @@ async def test_install_authorization_revalidates_pin_before_loading_key(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -1425,7 +1425,7 @@ async def test_install_authorization_approval_reaches_release_preview(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -1479,7 +1479,7 @@ async def test_install_authorization_credential_storage_error_is_actionable(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
     ):
@@ -1544,7 +1544,7 @@ async def test_install_authorization_failures_create_no_config_entry(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             release_mock,
         ),
     ):
@@ -1587,7 +1587,7 @@ async def test_install_candidate_release_resolution_failure_is_non_mutating(
             ),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(side_effect=ReleaseResolutionError),
         ),
     ):
@@ -1626,7 +1626,7 @@ async def test_unexpected_release_failure_is_not_misclassified(
             AsyncMock(return_value=clean),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(side_effect=RuntimeError("unexpected")),
         ),
     ):
@@ -1786,11 +1786,11 @@ async def test_invalid_rc_selection_precedes_all_contact(
             AsyncMock(return_value=CANDIDATE),
         ) as probe,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_rc_release",
             AsyncMock(),
         ) as rc,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
         patch(
@@ -1840,11 +1840,12 @@ async def test_rc_selection_requires_exact_translated_consent_and_frozen_plan(
             AsyncMock(return_value=CANDIDATE),
         ) as probe,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             stable,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_rc_release", rc
+            "custom_components.panel_assistant.release_catalog.async_resolve_rc_release",
+            rc,
         ),
         patch(
             "custom_components.panel_assistant.config_flow.async_get_adb_credential",
@@ -1894,11 +1895,11 @@ async def test_rc_resolution_failure_never_falls_back_or_creates_credential(
             AsyncMock(return_value=CANDIDATE),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_rc_release",
             AsyncMock(side_effect=ReleaseResolutionError),
         ) as rc,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
         patch(
@@ -1935,11 +1936,11 @@ async def test_installed_panel_only_connects_without_release_work(
             AsyncMock(),
         ) as adb,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_rc_release",
             AsyncMock(),
         ) as rc,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
     ):
@@ -1990,11 +1991,11 @@ async def test_active_job_resumes_with_its_own_release(
             AsyncMock(),
         ) as adb,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_rc_release",
             AsyncMock(),
         ) as rc,
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(),
         ) as stable,
         patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
@@ -2132,7 +2133,7 @@ async def test_descriptorless_unauthorized_release_never_loads_a_credential(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=LEGACY_RELEASE),
         ),
         patch(
@@ -2200,11 +2201,11 @@ async def test_release_preview_only_returns_to_choose_version(
             AsyncMock(return_value=CANDIDATE),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             stable_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_rc_release",
             rc_mock,
         ),
         patch(
@@ -2267,7 +2268,7 @@ async def test_signed_confirmation_rejects_every_target_identity_drift(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
@@ -2316,7 +2317,7 @@ async def test_confirmation_late_duplicate_guard_precedes_all_contact(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
@@ -2367,7 +2368,7 @@ async def test_signed_confirmation_pin_drift_precedes_credentials_and_job(
             AsyncMock(return_value=CANDIDATE),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
@@ -2434,7 +2435,7 @@ async def test_install_progress_removal_detaches_without_cancelling_worker(
             AsyncMock(side_effect=[CANDIDATE, CANDIDATE]),
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             AsyncMock(return_value=RELEASE),
         ),
         patch(
@@ -2593,7 +2594,7 @@ async def test_existing_job_reattaches_before_any_panel_or_release_contact(
             probe_mock,
         ),
         patch(
-            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            "custom_components.panel_assistant.release_catalog.async_resolve_stable_release",
             release_mock,
         ),
         patch(

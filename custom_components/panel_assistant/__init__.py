@@ -21,6 +21,7 @@ from .client import HaPaneldClient, normalize_address
 from .const import DOMAIN
 from .coordinator import HaPaneldDataUpdateCoordinator
 from .feed_coordinator import CONF_BUILD_FEED, DATA_BUILD_FEED, BuildFeedCoordinator
+from .install_artifacts import register_feed_download_host
 from .install_executor import (
     InstallExecutor,
     async_get_install_executor,
@@ -57,6 +58,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 CONF_BUILD_FEED,
             )
         else:
+            if feed_url.host is not None:
+                register_feed_download_host(feed_url.host)
             coordinator = BuildFeedCoordinator(hass, feed_url)
             hass.data.setdefault(DOMAIN, {})[DATA_BUILD_FEED] = coordinator
             hass.async_create_background_task(

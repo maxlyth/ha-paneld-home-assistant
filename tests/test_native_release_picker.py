@@ -25,6 +25,7 @@ from .test_config_flow import (
 from .test_release_catalog import document, session
 
 _FLOW = "custom_components.panel_assistant.config_flow"
+_CATALOG = "custom_components.panel_assistant.release_catalog"
 
 
 def _patch_clean_panel(stack: ExitStack, manager) -> dict[str, AsyncMock]:
@@ -45,7 +46,12 @@ def _patch_clean_panel(stack: ExitStack, manager) -> dict[str, AsyncMock]:
         ("async_resolve_rc_release", "rc"),
         ("async_get_adb_credential", "credential"),
     ]:
-        stack.enter_context(patch(f"{_FLOW}.{target}", mocks[name]))
+        module = (
+            _CATALOG
+            if target in ("async_resolve_stable_release", "async_resolve_rc_release")
+            else _FLOW
+        )
+        stack.enter_context(patch(f"{module}.{target}", mocks[name]))
     return mocks
 
 
@@ -57,7 +63,7 @@ async def test_real_catalog_populates_selector_and_caches(hass):
     with ExitStack() as stack:
         _patch_clean_panel(stack, _manager_for(_receipt(InstallPhase.APPROVED)))
         stack.enter_context(
-            patch(f"{_FLOW}.async_get_clientsession", return_value=client)
+            patch(f"{_CATALOG}.async_get_clientsession", return_value=client)
         )
         address_form = await flow.async_step_add_panel()
         assert client.requests == []
@@ -97,7 +103,7 @@ async def test_unavailable_catalog_preserves_attach_and_resume(hass, failed, sta
         if state == "healthy":
             mocks["health"].side_effect = None
             mocks["health"].return_value = HEALTH
-        stack.enter_context(patch(f"{_FLOW}.async_list_install_releases", catalog))
+        stack.enter_context(patch(f"{_CATALOG}.async_list_install_releases", catalog))
         progress = stack.enter_context(
             patch.object(
                 flow,
@@ -144,7 +150,7 @@ async def test_unavailable_catalog_preserves_attach_and_resume(hass, failed, sta
 async def test_connect_found_never_loads_catalog(hass):
     """Connecting a running panel needs no release, so the catalogue is untouched."""
     with (
-        patch(f"{_FLOW}.async_list_install_releases", AsyncMock()) as catalog,
+        patch(f"{_CATALOG}.async_list_install_releases", AsyncMock()) as catalog,
         patch(
             f"{_FLOW}.HaPaneldClient.async_get_health", AsyncMock(return_value=HEALTH)
         ),
@@ -171,7 +177,7 @@ async def test_retry_requires_fresh_selection_before_new_install(hass):
     )
     with ExitStack() as stack:
         mocks = _patch_clean_panel(stack, manager)
-        stack.enter_context(patch(f"{_FLOW}.async_list_install_releases", catalog))
+        stack.enter_context(patch(f"{_CATALOG}.async_list_install_releases", catalog))
         form = await flow.async_step_add_panel({CONF_ADDRESS: "panel.local"})
         assert form["data_schema"].schema["release_candidate"].config["options"] == [
             {"value": "v1.3.0-rc2", "label": "v1.3.0-rc2 (test version)"}
@@ -197,7 +203,7 @@ async def test_empty_catalogue_retry_submits_in_the_ui_and_offers_a_fresh_choice
     catalog = AsyncMock(side_effect=[ReleaseResolutionError(), [stable]])
     with ExitStack() as stack:
         mocks = _patch_clean_panel(stack, manager)
-        stack.enter_context(patch(f"{_FLOW}.async_list_install_releases", catalog))
+        stack.enter_context(patch(f"{_CATALOG}.async_list_install_releases", catalog))
         form = await _start_step(hass, "add_panel")
         empty = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
@@ -212,5 +218,69 @@ async def test_empty_catalogue_retry_submits_in_the_ui_and_offers_a_fresh_choice
     assert [option["value"] for option in options] == [""]
     assert catalog.await_count == 2
     mocks["stable"].assert_not_awaited()
+    mocks["credential"].assert_not_awaited()
+    manager.async_create_or_join.assert_not_awaited()
+
+
+async def test_network_setup_offers_and_installs_a_feed_build(hass):
+    """The same list the USB page shows, and the same resolver, drive network setup."""
+    import hashlib
+
+    from yarl import URL
+
+    from custom_components.panel_assistant.build_feed import BuildFeed, FeedBuild
+    from custom_components.panel_assistant.feed_coordinator import (
+        DATA_BUILD_FEED,
+        BuildFeedCoordinator,
+    )
+
+    sha = hashlib.sha256(b"772").hexdigest()
+    feed_url = URL("https://builds.example/maintainer.json")
+    coordinator = BuildFeedCoordinator(hass, feed_url)
+    coordinator.async_refresh = AsyncMock()
+    coordinator.data = BuildFeed(
+        "maintainer",
+        (
+            FeedBuild(
+                772,
+                "0.9.7-rc4",
+                feed_url.join(URL(f"apks/{sha}.apk")),
+                sha,
+                14,
+                "0" * 40,
+                "hapaneld-db:v1:ha-paneld.db:11:14",
+                26,
+                "2026-09-11T10:00:00Z",
+            ),
+        ),
+    )
+    coordinator.last_update_success = True
+    hass.data.setdefault("panel_assistant", {})[DATA_BUILD_FEED] = coordinator
+    flow = HaPaneldConfigFlow()
+    flow.hass = hass
+    manager = _manager_for(_receipt(InstallPhase.APPROVED))
+    github = [{"tag": "v0.9.7-rc3", "prerelease": True}]
+    with ExitStack() as stack:
+        mocks = _patch_clean_panel(stack, manager)
+        stack.enter_context(
+            patch(
+                f"{_CATALOG}.async_list_install_releases",
+                AsyncMock(return_value=github),
+            )
+        )
+        form = await flow.async_step_add_panel({CONF_ADDRESS: "panel.local"})
+        assert form["data_schema"].schema["release_candidate"].config["options"] == [
+            {"value": "v0.9.7-rc3", "label": "v0.9.7-rc3 (test version)"},
+            {"value": "build-772", "label": "0.9.7-rc4 build 772 (dev build)"},
+        ]
+        result = await flow.async_step_choose_version(
+            {"release_candidate": "build-772"}
+        )
+    assert result["step_id"] == "confirm_install_rc"
+    assert flow._pending_release is not None
+    assert flow._pending_release.tag == "build-772"
+    assert flow._pending_rc_tag == "build-772"
+    mocks["stable"].assert_not_awaited()
+    mocks["rc"].assert_not_awaited()
     mocks["credential"].assert_not_awaited()
     manager.async_create_or_join.assert_not_awaited()

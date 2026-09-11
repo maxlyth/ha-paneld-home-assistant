@@ -33,7 +33,7 @@ from .install_network import (
     _resolver_hostname,
     is_allowed_install_address,
 )
-from .release import is_install_release_tag
+from .release import artifact_identity_matches
 
 _STORE_VERSION = 1
 _STORE_KEY = f"{DOMAIN}.install_jobs"
@@ -528,9 +528,13 @@ def _parse_artifact(value: object) -> InstallArtifact:
         or signer != _RELEASE_SIGNER_SHA256
         or not isinstance(abis, (list, tuple))
         or tuple(abis) != _SUPPORTED_ABIS
-        or not is_install_release_tag(release_tag)
-        or version_name != release_tag.removeprefix("v")
-        or apk_name != f"ha-paneld-{release_tag}-manual-setup-required.apk"
+        or not artifact_identity_matches(
+            release_tag,
+            version_name,
+            value["version_code"],
+            apk_name,
+            apk_sha256,
+        )
         or _APK_NAME.fullmatch(apk_name) is None
         or _SHA256.fullmatch(apk_sha256) is None
         or database_match is None

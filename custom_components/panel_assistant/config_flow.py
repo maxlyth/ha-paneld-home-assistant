@@ -69,11 +69,8 @@ from .provisioning import InstallTargetProbe, async_probe_install_target
 from .release import (
     ReleaseArtifact,
     ReleaseResolutionError,
-    async_resolve_rc_release,
-    async_resolve_stable_release,
-    is_rc_release_tag,
 )
-from .release_catalog import async_list_install_releases
+from .release_catalog import async_list_install_choices, async_resolve_install_choice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -333,7 +330,12 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             *[
                 SelectOptionDict(
-                    value=release["tag"], label=f"{release['tag']} (test version)"
+                    value=str(release["tag"]),
+                    label=(
+                        f"{release['name']} (dev build)"
+                        if "name" in release
+                        else f"{release['tag']} (test version)"
+                    ),
                 )
                 for release in releases
                 if release["prerelease"]
@@ -384,9 +386,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_load_install_releases(self) -> None:
         """Cache the bounded published catalogue for this setup flow."""
         try:
-            self._install_releases = await async_list_install_releases(
-                async_get_clientsession(self.hass)
-            )
+            self._install_releases = await async_list_install_choices(self.hass)
         except ReleaseResolutionError:
             self._install_releases = []
             self._release_catalog_error = "release_catalog_unavailable"
@@ -580,7 +580,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         tag = user_input.get(_CONF_RELEASE_CANDIDATE, "")
         releases = self._install_releases or []
         offered = {r["tag"] for r in releases if r["prerelease"]}
-        if tag != "" and (not is_rc_release_tag(tag) or tag not in offered):
+        if tag != "" and tag not in offered:
             return self._show_choose_version(
                 {_CONF_RELEASE_CANDIDATE: "invalid_release_candidate"}
             )
@@ -588,11 +588,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             return self._show_choose_version({"base": "release_selection_required"})
         self._pending_rc_tag = tag or None
         try:
-            session = async_get_clientsession(self.hass)
-            self._pending_release = (
-                await async_resolve_stable_release(session)
-                if self._pending_rc_tag is None
-                else await async_resolve_rc_release(session, self._pending_rc_tag)
+            self._pending_release = await async_resolve_install_choice(
+                self.hass, self._pending_rc_tag
             )
         except ReleaseResolutionError:
             return self._show_choose_version({"base": "cannot_resolve_release"})

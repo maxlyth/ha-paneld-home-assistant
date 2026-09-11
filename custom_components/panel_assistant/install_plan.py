@@ -20,6 +20,8 @@ from .provisioning import InstallTargetProbe, InstallTargetState
 from .release import (
     InstallDescriptor,
     ReleaseArtifact,
+    artifact_identity_matches,
+    is_feed_build_tag,
     is_install_release_tag,
     is_rc_release_tag,
 )
@@ -183,6 +185,17 @@ def _build_target(
     )
 
 
+def _selection_matches(release_tag: str, expected_tag: str | None) -> bool:
+    """No selection means the stable release; otherwise exactly what was chosen."""
+    if expected_tag is None:
+        return is_install_release_tag(release_tag) and not is_rc_release_tag(
+            release_tag
+        )
+    return release_tag == expected_tag and (
+        is_rc_release_tag(expected_tag) or is_feed_build_tag(expected_tag)
+    )
+
+
 def _build_artifact(
     release: ReleaseArtifact, expected_rc_tag: str | None
 ) -> InstallArtifact:
@@ -218,15 +231,10 @@ def _build_artifact(
     if (
         descriptor.schema != _DESCRIPTOR_SCHEMA
         or release_tag is None
-        or not is_install_release_tag(release_tag)
-        or (
-            is_rc_release_tag(release_tag)
-            if expected_rc_tag is None
-            else not is_rc_release_tag(expected_rc_tag)
-            or release_tag != expected_rc_tag
+        or not artifact_identity_matches(
+            release_tag, version_name, version_code, apk_name, apk_sha256
         )
-        or version_name != release_tag.removeprefix("v")
-        or apk_name != f"ha-paneld-{release_tag}-manual-setup-required.apk"
+        or not _selection_matches(release_tag, expected_rc_tag)
         or apk_sha256 is None
         or _SHA256.fullmatch(apk_sha256) is None
         or signer != _RELEASE_SIGNER_SHA256

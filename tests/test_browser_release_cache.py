@@ -78,7 +78,12 @@ def services(monkeypatch):
             raise state.reconcile_error
         state.files.intersection_update(retained)
 
-    monkeypatch.setattr(cache_module, "async_resolve_install_bundle", resolve)
+    async def resolve_choice(hass, tag):
+        return await resolve(None, rc_tag=tag)
+
+    monkeypatch.setattr(
+        cache_module, "async_resolve_install_bundle_choice", resolve_choice
+    )
     monkeypatch.setattr(cache_module, "async_download_browser_artifact", download)
     monkeypatch.setattr(cache_module, "async_cleanup_browser_artifact", cleanup)
     monkeypatch.setattr(cache_module, "async_reconcile_browser_artifacts", reconcile)

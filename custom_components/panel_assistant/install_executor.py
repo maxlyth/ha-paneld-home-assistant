@@ -17,6 +17,7 @@ from pathlib import Path
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from yarl import URL
 
 from .adb_credentials import (
     AdbCredential,
@@ -31,6 +32,7 @@ from .client import (
     normalize_address,
 )
 from .const import DOMAIN
+from .feed_coordinator import async_get_feed_coordinator
 from .install_adb import (
     AdbInstallTarget,
     AdbPreflight,
@@ -75,7 +77,7 @@ from .install_network import (
     PinnedPanelTarget,
     async_revalidate_install_target,
 )
-from .release import InstallDescriptor, ReleaseArtifact
+from .release import InstallDescriptor, ReleaseArtifact, is_feed_build_tag
 
 _EXECUTOR_DATA_KEY = f"{DOMAIN}.install_executor"
 _EXECUTOR_LOCK_DATA_KEY = f"{DOMAIN}.install_executor_lock"
@@ -184,6 +186,11 @@ class InstallExecutor:
         # Never restart it in the same process, whose manager still owns the old
         # in-memory claim. A new HA process will reclaim or quarantine durably.
         self._nonrestartable_workers: set[str] = set()
+
+    def _feed_url(self) -> URL | None:
+        """Where feed builds are fetched from, when a build feed is configured."""
+        coordinator = async_get_feed_coordinator(self._hass)
+        return coordinator.feed_url if coordinator is not None else None
 
     async def async_ensure_job(self, job_id: str) -> asyncio.Task[None] | None:
         """Start or join one process-wide worker without duplicating side effects."""
@@ -303,7 +310,7 @@ class InstallExecutor:
                     )
                     continue
 
-                execution = _frozen_execution(receipt)
+                execution = _frozen_execution(receipt, self._feed_url())
                 phase = receipt.phase
                 if phase is InstallPhase.APPROVED:
                     receipt = await self._async_transition(
@@ -800,7 +807,7 @@ class InstallExecutor:
         local_artifact: CustodiedArtifact | None,
         staged: StagedApk | None,
     ) -> InstallJobReceipt:
-        execution = _frozen_execution(receipt)
+        execution = _frozen_execution(receipt, self._feed_url())
         if receipt.phase is InstallPhase.STAGING and staged is not None:
             try:
                 credential, receipt = await self._async_cleanup_authority(
@@ -958,7 +965,24 @@ def _descriptor(artifact: InstallArtifact) -> InstallDescriptor:
     )
 
 
-def _frozen_execution(receipt: InstallJobReceipt) -> _FrozenExecution:
+def _apk_url(receipt: InstallJobReceipt, feed_url: URL | None) -> str:
+    """Rebuild the download URL from the receipt, never from stored input.
+
+    A feed build is fetched from the configured build feed. If no feed is
+    configured any more, the empty URL is refused by custody and the job fails
+    rather than fetching from anywhere else.
+    """
+    artifact = receipt.artifact
+    if is_feed_build_tag(artifact.release_tag):
+        if feed_url is None:
+            return ""
+        return str(feed_url.join(URL(f"apks/{artifact.apk_name}")))
+    return f"{_RELEASE_DOWNLOAD_ROOT}/{artifact.release_tag}/{artifact.apk_name}"
+
+
+def _frozen_execution(
+    receipt: InstallJobReceipt, feed_url: URL | None = None
+) -> _FrozenExecution:
     original = normalize_address(receipt.target.address)
     pinned_address = normalize_address(receipt.target.pinned_address)
     pinned = PinnedPanelTarget(original=original, pinned=pinned_address)
@@ -978,10 +1002,7 @@ def _frozen_execution(receipt: InstallJobReceipt) -> _FrozenExecution:
             tag=receipt.artifact.release_tag,
             version=receipt.artifact.version_name,
             apk_name=receipt.artifact.apk_name,
-            apk_url=(
-                f"{_RELEASE_DOWNLOAD_ROOT}/{receipt.artifact.release_tag}/"
-                f"{receipt.artifact.apk_name}"
-            ),
+            apk_url=_apk_url(receipt, feed_url),
             sha256=receipt.artifact.apk_sha256,
             descriptor=descriptor,
         ),
