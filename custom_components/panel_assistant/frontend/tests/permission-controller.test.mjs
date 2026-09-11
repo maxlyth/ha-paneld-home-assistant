@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createInstallController} from '../src/install-controller.mjs';
-import {INSTALL_SCREEN_MESSAGES} from '../src/install-screen-messages.mjs';
 
 const target = {model: 'Test panel', serial: 'serial', primaryAbi: 'arm64-v8a', androidSdk: 33,
   rootMode: 'rootless', usbVendorId: 1, usbProductId: 2, usbSerial: 'usb'};
@@ -64,14 +63,19 @@ test('permission mutation holds controller lock against read, preview or concurr
   assert.deepEqual(await f.controller.observeSetup(), {reportedComplete: false});
 });
 
-test('frontend includes an independent permission checkbox and action, with honest retry wording', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+test('permissions are granted only by the Install press, after the app is healthy', () => {
   const source = readFileSync(new URL('../src/install-main.mjs', import.meta.url), 'utf8');
-  assert.match(html, /id="permissions-confirmation" type="checkbox"/);
-  assert.match(html, /id="permissions-grant"[^>]+disabled/);
-  assert.match(source, /controller\.commissionPermissions\(element\('permissions-confirmation'\)\.checked\)/);
-  assert.match(source, /permissions-grant'\)\.disabled = .*permissions-confirmation'\)\.checked/);
-  assert.match(INSTALL_SCREEN_MESSAGES.permissionsVerified, /not yet verified/);
-  assert.match(INSTALL_SCREEN_MESSAGES.permissionsUnverified, /reload/i);
-  assert.match(INSTALL_SCREEN_MESSAGES.permissionsHelp, /MQTT settings are preserved/);
+  // The single consent flows through: there is exactly one grant call, inside installAll.
+  const calls = source.match(/controller\.commissionPermissions\(/g) ?? [];
+  assert.equal(calls.length, 1);
+  const body = source.slice(source.indexOf('async function installAll()'), source.indexOf('function finish('));
+  assert.match(body, /controller\.commissionPermissions\(true\)/);
+  const guard = body.indexOf("receipt?.phase !== 'healthy') throw");
+  assert.ok(guard >= 0, 'installAll refuses to continue unless the app reports healthy');
+  assert.ok(guard < body.indexOf('commissionPermissions'),
+    'permissions are never granted before the installed app reports healthy');
+  assert.match(body, /permissionsVerified !== true/, 'an unverified grant is a failure, not a success');
+  // Never on load: installAll only runs from the Install press or a job already under way.
+  const onLoad = source.slice(source.lastIndexOf('if (!supported) {'));
+  assert.ok(!onLoad.includes('installAll('));
 });

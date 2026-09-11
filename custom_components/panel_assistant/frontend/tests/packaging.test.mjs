@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readBounded } from '../src/bounded-stream.mjs';
-import { installationView } from '../src/install-view.mjs';
+import { INSTALL_MESSAGES, installProgress } from '../src/install-view.mjs';
+import { INSTALL_SCREEN_MESSAGES } from '../src/install-screen-messages.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -49,11 +50,36 @@ test('extracted stream reader decodes split UTF-8 and rejects oversized input', 
   await assert.rejects(readBounded(stream([0xff]), 3));
 });
 
-test('installation preview requires confirmation and interrupted steps offer observation', () => {
-  assert.equal(installationView(null, { connected: true }).actionEnabled, false);
-  assert.equal(installationView(null, { connected: true, confirmed: true }).actionEnabled, true);
-  for (const phase of ['staging', 'installing', 'launching', 'cleanup_pending']) {
-    assert.equal(installationView({ phase }, { connected: true }).actionKey, 'installReconcile');
+test('progress only ever moves forward and never names an internal phase', () => {
+  const order = ['prepared', 'staging', 'staged', 'installing', 'installed', 'launching', 'healthy'];
+  const percents = order.map(phase => installProgress({ phase }).percent);
+  assert.deepEqual(percents, [...percents].sort((a, b) => a - b));
+  assert.ok(percents.at(-1) < 100, 'healthy is not done: permissions and setup still follow');
+  // Resuming an interrupted step reads as that step, not as a reconciliation.
+  assert.equal(installProgress({ phase: 'staging' }).stepKey, 'stepCopying');
+  assert.equal(installProgress({ phase: 'installing' }).stepKey, 'stepInstalling');
+  assert.equal(installProgress(null).stepKey, 'stepCopying');
+  assert.equal(installProgress({ phase: 'nonsense' }).stepKey, 'stepCopying');
+});
+
+test('nothing the person reads mentions internals, JSON or terminal vocabulary', () => {
+  const shown = [...Object.values(INSTALL_MESSAGES), ...Object.values(INSTALL_SCREEN_MESSAGES)].join('\n');
+  for (const word of ['JSON', 'receipt', 'descriptor', 'sha256', 'SHA-256', 'phase', 'adb', 'ADB',
+    'shell', 'reconcile', 'quarantine', 'MQTT', 'signature', 'checksum']) {
+    assert.ok(!shown.includes(word), `user-facing text mentions ${word}`);
   }
-  assert.equal(installationView({ phase: 'healthy' }, { connected: true }).actionKey, null);
+  // One plain sentence each: nothing reads like a paragraph of caveats.
+  for (const [key, text] of Object.entries({ ...INSTALL_MESSAGES, ...INSTALL_SCREEN_MESSAGES })) {
+    assert.ok(text.length <= 140, `${key} is ${text.length} characters`);
+  }
+});
+
+test('the page offers one primary action per step and no consent checkboxes', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(!/type="checkbox"/.test(html), 'consent is the Install press, not a checkbox');
+  assert.ok(!/<pre id="(bundle|target|receipt)-result"/.test(html), 'no raw dumps on the page');
+  assert.match(html, /<details id="support">/, 'technical detail lives behind Details for support');
+  for (const step of html.match(/<section id="step-[^"]+"[^]*?<\/section>/g)) {
+    assert.ok((step.match(/class="primary"/g) ?? []).length <= 1, 'a step never offers two primary actions');
+  }
 });

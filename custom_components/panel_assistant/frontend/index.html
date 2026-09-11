@@ -5,60 +5,111 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title data-screen-message="title"></title>
   <style>
-    :root { font-family: system-ui, sans-serif; color-scheme: light dark; }
-    body { margin: 0; padding: 2rem 1rem; }
-    main { max-width: 48rem; margin: auto; }
-    section { border: 1px solid #8886; border-radius: .75rem; padding: 1.25rem; margin-block: 1.25rem; }
-    h1, h2 { line-height: 1.2; } p { line-height: 1.5; }
-    label { display: block; margin-block: 1rem; }
-    input[type=text] { display: block; width: min(100%, 22rem); box-sizing: border-box; margin-top: .5rem; }
-    button, input { font: inherit; } button { padding: .6rem 1rem; margin: .25rem .5rem .25rem 0; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6f9; --card: #ffffff; --text: #1b1f24; --muted: #5b6470;
+      --accent: #18bcf2; --accent-text: #04202b; --line: #dde2e8; --bad: #c62828;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #111418; --card: #1b2027; --text: #eef1f4; --muted: #9aa4af; --line: #2c333c; --bad: #ef6c6c; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      display: grid; place-items: center; padding: 1.5rem; }
+    main { width: min(100%, 30rem); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 1rem;
+      padding: 2rem 1.75rem; box-shadow: 0 1px 3px #0001, 0 8px 24px #0000000d; }
+    .brand { display: flex; align-items: center; gap: .6rem; color: var(--muted);
+      font-size: .9rem; margin-bottom: 1.5rem; }
+    .brand img { width: 2rem; height: 2rem; }
+    h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .75rem; }
+    p { line-height: 1.55; margin: 0 0 1.25rem; color: var(--muted); }
+    .step p.lead { color: var(--text); font-size: 1.05rem; }
+    button.primary { display: block; width: 100%; border: 0; border-radius: .6rem;
+      padding: .9rem 1rem; font: inherit; font-weight: 600; font-size: 1.05rem;
+      background: var(--accent); color: var(--accent-text); cursor: pointer; }
+    button.primary:disabled { opacity: .45; cursor: default; }
+    a.primary { display: block; text-align: center; text-decoration: none; }
+    .bar { height: .5rem; border-radius: 1rem; background: var(--line); overflow: hidden; margin: 1.25rem 0 .9rem; }
+    .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
+    .activity { color: var(--text); margin: 0 0 .5rem; }
+    .spinner { width: 2.25rem; height: 2.25rem; border-radius: 50%; margin: .5rem 0 1.25rem;
+      border: .25rem solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } .bar > div { transition: none; } }
+    .error h1 { color: var(--bad); }
+    details { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
+    details summary { cursor: pointer; }
+    details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto;
+      background: var(--bg); border-radius: .5rem; padding: .75rem; }
+    .advanced label { display: block; margin: .75rem 0; }
+    .advanced input[type=text] { display: block; width: 100%; margin-top: .35rem; padding: .5rem; font: inherit; }
+    .advanced button { margin-top: .5rem; padding: .5rem 1rem; font: inherit; }
+    footer { text-align: center; font-size: .8rem; margin-top: 1rem; }
+    footer a { color: var(--muted); }
     [hidden] { display: none !important; }
   </style>
 </head>
 <body><main>
-  <h1 data-screen-message="title"></h1>
-  <p data-screen-message="scope"></p>
-  <p data-message="installUsbBoundary"></p>
-  <p data-message="installMqttBoundary"></p>
-  <section aria-labelledby="release-heading">
-    <h2 id="release-heading" data-screen-message="releaseHeading"></h2>
-    <p data-screen-message="releaseAdapter"></p>
-    <label><span data-screen-message="releaseFiles"></span> <input id="bundle-files" type="file" multiple accept=".apk,.sha256,.sig,.json"></label>
-    <label><span data-screen-message="releaseRc"></span> <input id="bundle-rc" type="text" maxlength="64" autocomplete="off" spellcheck="false" data-screen-placeholder="releaseRcExample"></label>
-    <p data-screen-message="releaseRcHelp"></p>
-    <button id="verify-bundle" data-screen-message="verifyRelease"></button>
-    <p id="bundle-status" role="status" aria-live="polite"></p>
-    <pre id="bundle-result"></pre>
-  </section>
-  <section aria-labelledby="connection-heading">
-    <h2 id="connection-heading" data-screen-message="connectionHeading"></h2>
-    <p data-screen-message="connectionHelp"></p>
-    <button id="connect" data-screen-message="connect" disabled></button>
-    <button id="cancel" data-screen-message="cancel" disabled></button>
-    <p id="status" role="status" aria-live="polite"></p>
-    <pre id="target-result"></pre>
-  </section>
-  <section id="installation" aria-labelledby="install-title" hidden>
-    <h2 id="install-title"></h2>
-    <p id="install-body"></p>
-    <label id="confirmation-label"><input id="confirmation" type="checkbox"> <span data-message="installConfirmation"></span></label>
-    <button id="install-action" disabled></button>
-    <pre id="receipt-result"></pre>
-    <p data-screen-message="progressHelp"></p>
-    <div id="setup-observation" hidden>
-      <h3 data-screen-message="permissionsHeading"></h3>
-      <p data-screen-message="permissionsHelp"></p>
-      <label><input id="permissions-confirmation" type="checkbox"><span data-screen-message="permissionsConfirmation"></span></label>
-      <button id="permissions-grant" data-screen-message="permissionsGrant" disabled></button>
-      <p id="permissions-summary" role="status" aria-live="polite"></p>
-      <h3 data-screen-message="setupHeading"></h3>
-      <p data-screen-message="setupHelp"></p>
-      <button id="setup-check" data-screen-message="setupCheck" disabled></button>
-      <p id="setup-summary" role="status" aria-live="polite"></p>
-    </div>
-  </section>
-  <p><a href="./THIRD_PARTY_NOTICES.txt">Third-party licenses</a></p>
+  <div class="card">
+    <div class="brand"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDgiIGhlaWdodD0iMTA4IiB2aWV3Qm94PSIwIDAgMTA4IDEwOCI+CjxwYXRoIGQ9Ik0yOCwzMiBoNTIgYTQsNCAwIDAgMSA0LDQgdjM3IGE0LDQgMCAwIDEgLTQsNCBoLTUyIGE0LDQgMCAwIDEgLTQsLTQgdi0zNyBhNCw0IDAgMCAxIDQsLTQgeiIgZmlsbD0iIzM3NDc0RiIvPgo8cGF0aCBkPSJNMjksMzUgaDUwIGEyLDIgMCAwIDEgMiwyIHYzNSBhMiwyIDAgMCAxIC0yLDIgaC01MCBhMiwyIDAgMCAxIC0yLC0yIHYtMzUgYTIsMiAwIDAgMSAyLC0yIHoiIGZpbGw9IiMwRTE2MjAiLz4KPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNDIuMDAsNDIuNTApIHNjYWxlKDAuMTAwMCkiPgo8cGF0aCBmaWxsPSIjRjJGNEY5IiBkPSJNMjQwIDIyNC44MTNDMjQwIDIzMy4wNjMgMjMzLjI1IDIzOS44MTMgMjI1IDIzOS44MTNIMTVDNi43NSAyMzkuODEzIDAgMjMzLjA2MyAwIDIyNC44MTNWMTM0LjgxM0MwIDEyNi41NjMgNC43NyAxMTUuMDQzIDEwLjYxIDEwOS4yMDNMMTA5LjM5IDEwLjQyM0MxMTUuMjIgNC41OTMwNCAxMjQuNzcgNC41OTMwNCAxMzAuNiAxMC40MjNMMjI5LjM5IDEwOS4yMTNDMjM1LjIyIDExNS4wNDMgMjQwIDEyNi41NzMgMjQwIDEzNC44MjNWMjI0LjgyM1YyMjQuODEzWiIvPgo8cGF0aCBmaWxsPSIjMThCQ0YyIiBkPSJNMjI5LjM5IDEwOS4yMDNMMTMwLjYxIDEwLjQyM0MxMjQuNzggNC41OTMwNCAxMTUuMjMgNC41OTMwNCAxMDkuNCAxMC40MjNMMTAuNjEgMTA5LjIwM0M0Ljc4IDExNS4wMzMgMCAxMjYuNTYzIDAgMTM0LjgxM1YyMjQuODEzQzAgMjMzLjA2MyA2Ljc1IDIzOS44MTMgMTUgMjM5LjgxM0gxMDcuMjdMNjYuNjQgMTk5LjE4M0M2NC41NSAxOTkuOTAzIDYyLjMyIDIwMC4zMTMgNjAgMjAwLjMxM0M0OC43IDIwMC4zMTMgMzkuNSAxOTEuMTEzIDM5LjUgMTc5LjgxM0MzOS41IDE2OC41MTMgNDguNyAxNTkuMzEzIDYwIDE1OS4zMTNDNzEuMyAxNTkuMzEzIDgwLjUgMTY4LjUxMyA4MC41IDE3OS44MTNDODAuNSAxODIuMTQzIDgwLjA5IDE4NC4zNzMgNzkuMzcgMTg2LjQ2M0wxMTEgMjE4LjA5M1YxMDIuMjEzQzEwNC4yIDk4Ljg3MyA5OS41IDkxLjg5MyA5OS41IDgzLjgyM0M5OS41IDcyLjUyMyAxMDguNyA2My4zMjMgMTIwIDYzLjMyM0MxMzEuMyA2My4zMjMgMTQwLjUgNzIuNTIzIDE0MC41IDgzLjgyM0MxNDAuNSA5MS44OTMgMTM1LjggOTguODczIDEyOSAxMDIuMjEzVjE4My40ODNMMTYwLjQ2IDE1Mi4wMjNDMTU5Ljg0IDE1MC4wNjMgMTU5LjUgMTQ3Ljk4MyAxNTkuNSAxNDUuODIzQzE1OS41IDEzNC41MjMgMTY4LjcgMTI1LjMyMyAxODAgMTI1LjMyM0MxOTEuMyAxMjUuMzIzIDIwMC41IDEzNC41MjMgMjAwLjUgMTQ1LjgyM0MyMDAuNSAxNTcuMTIzIDE5MS4zIDE2Ni4zMjMgMTgwIDE2Ni4zMjNDMTc3LjUgMTY2LjMyMyAxNzUuMTIgMTY1Ljg1MyAxNzIuOTEgMTY1LjAzM0wxMjkgMjA4Ljk0M1YyMzkuODIzSDIyNUMyMzMuMjUgMjM5LjgyMyAyNDAgMjMzLjA3MyAyNDAgMjI0LjgyM1YxMzQuODIzQzI0MCAxMjYuNTczIDIzNS4yMyAxMTUuMDUzIDIyOS4zOSAxMDkuMjEzVjEwOS4yMDNaIi8+CjwvZz4KPC9zdmc+Cg==" alt=""><span>ha-paneld</span></div>
+
+    <section id="step-preparing" class="step">
+      <h1 data-screen-message="title"></h1>
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="preparing-text" class="lead" role="status" aria-live="polite" data-screen-message="preparing"></p>
+    </section>
+
+    <section id="step-connect" class="step" hidden>
+      <h1 data-screen-message="connectHeading"></h1>
+      <p class="lead" data-screen-message="connectBody"></p>
+      <button id="connect" class="primary" data-screen-message="connect"></button>
+    </section>
+
+    <section id="step-allow" class="step" hidden>
+      <h1 data-screen-message="allowHeading"></h1>
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="allow-text" class="lead" role="status" aria-live="polite" data-screen-message="allowBody"></p>
+    </section>
+
+    <section id="step-confirm" class="step" hidden>
+      <h1 data-screen-message="confirmHeading"></h1>
+      <p class="lead" data-screen-message="confirmBody"></p>
+      <button id="install" class="primary" data-screen-message="install"></button>
+    </section>
+
+    <section id="step-progress" class="step" hidden>
+      <h1 data-screen-message="progressHeading"></h1>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div id="progress-fill"></div></div>
+      <p id="activity" class="activity" role="status" aria-live="polite"></p>
+      <p data-screen-message="keepConnected"></p>
+    </section>
+
+    <section id="step-done" class="step" hidden>
+      <h1 data-screen-message="doneHeading"></h1>
+      <p id="done-text" class="lead" role="status" aria-live="polite"></p>
+      <a id="open-setup" class="primary" hidden data-screen-message="openSetup"></a>
+    </section>
+
+    <section id="step-error" class="step error" hidden>
+      <h1 data-screen-message="errorHeading"></h1>
+      <p id="error-text" class="lead" role="alert"></p>
+      <button id="retry" class="primary" data-screen-message="tryAgain"></button>
+    </section>
+
+    <details id="advanced" class="advanced" hidden>
+      <summary data-screen-message="advanced"></summary>
+      <label><span data-screen-message="releaseFiles"></span> <input id="bundle-files" type="file" multiple accept=".apk,.sha256,.sig,.json"></label>
+      <label><span data-screen-message="releaseRc"></span> <input id="bundle-rc" type="text" maxlength="64" autocomplete="off" spellcheck="false" data-screen-placeholder="releaseRcExample"></label>
+      <button id="verify-bundle" data-screen-message="verifyRelease"></button>
+    </details>
+
+    <details id="support">
+      <summary data-screen-message="details"></summary>
+      <pre id="support-log"></pre>
+    </details>
+  </div>
+  <footer><a href="./THIRD_PARTY_NOTICES.txt">Third-party licenses</a></footer>
 </main><script type="module" src="/src/install-main.mjs"></script></body>
 </html>

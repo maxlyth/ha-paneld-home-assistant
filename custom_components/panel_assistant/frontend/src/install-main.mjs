@@ -7,62 +7,59 @@ import { inspectSessionTarget } from './session-target.mjs';
 import { openJobStore } from './job-store.mjs';
 import { createUsbTransactionPorts } from './usb-transaction-ports.mjs';
 import { createInstallController } from './install-controller.mjs';
-import { INSTALL_MESSAGES, installationView, errorView } from './install-view.mjs';
+import { INSTALL_MESSAGES, installProgress, errorView } from './install-view.mjs';
 import { INSTALL_SCREEN_MESSAGES as screen } from './install-screen-messages.mjs';
 import { handoffOptions, receiveReleaseHandoff } from './release-handoff.mjs';
+import { readSetupUrl } from './panel-address.mjs';
+
+// A guided wizard for people who have never used a terminal. One step is on
+// screen at a time; the single Install press is the consent for everything
+// that follows, including granting the app its permissions. Every safety check
+// below still runs, and technical detail only reaches "Details for support".
 
 const element = id => document.getElementById(id);
 const files = element('bundle-files');
 const rc = element('bundle-rc');
 const verify = element('verify-bundle');
 const connect = element('connect');
-const cancel = element('cancel');
-const confirmation = element('confirmation');
-const action = element('install-action');
-for (const node of document.querySelectorAll('[data-message]')) {
-  node.textContent = INSTALL_MESSAGES[node.dataset.message];
-}
+const install = element('install');
 for (const node of document.querySelectorAll('[data-screen-message]')) {
   node.textContent = screen[node.dataset.screenMessage];
 }
 for (const node of document.querySelectorAll('[data-screen-placeholder]')) {
   node.placeholder = screen[node.dataset.screenPlaceholder];
 }
+
+const STEPS = ['preparing', 'connect', 'allow', 'confirm', 'progress', 'done', 'error'];
 const manager = window.isSecureContext && navigator.usb
   ? new AdbDaemonWebUsbDeviceManager(boundedUsb(navigator.usb)) : undefined;
 const supported = Boolean(manager && navigator.locks && globalThis.indexedDB);
-let pinned, release, raw, adb, store, controller;
+let pinned, release, raw, adb, sessionAdb, store, controller;
 let handoff, incomingAuthenticate;
-let busy = false, connected = false, quarantined = false, hasPreview = false;
-let refineFailure = false;
+let busy = false, quarantined = false;
 let receipt = null;
 let deadline;
 let rejectStop;
 const stopPromise = new Promise((_, reject) => { rejectStop = reject; });
 void stopPromise.catch(() => {});
-const status = text => { element('status').textContent = text; };
+const newNonce = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
+  byte => byte.toString(16).padStart(2, '0')).join('');
 
-function render() {
-  files.disabled = rc.disabled = verify.disabled = Boolean(handoff) || busy || connected || quarantined;
-  connect.disabled = !supported || !release || busy || connected || quarantined;
-  cancel.disabled = quarantined || (!busy && !connected);
-  confirmation.disabled = busy || !connected || quarantined;
-  element('installation').hidden = !hasPreview;
-  if (!hasPreview) return;
-  const view = installationView(receipt, {
-    connected: connected && !quarantined, confirmed: confirmation.checked, busy,
-  });
-  element('install-title').textContent = INSTALL_MESSAGES[view.titleKey];
-  element('install-body').textContent = INSTALL_MESSAGES[view.bodyKey];
-  element('confirmation-label').hidden = !view.showConfirmation;
-  action.hidden = view.actionKey === null;
-  action.textContent = view.actionKey ? INSTALL_MESSAGES[view.actionKey] : '';
-  action.disabled = !view.actionEnabled;
-  element('receipt-result').textContent = receipt ? JSON.stringify(receipt, null, 2) : '';
-  element('setup-observation').hidden = receipt?.phase !== 'healthy';
-  element('setup-check').disabled = receipt?.phase !== 'healthy' || busy || !connected || quarantined;
-  element('permissions-confirmation').disabled = element('setup-check').disabled;
-  element('permissions-grant').disabled = element('setup-check').disabled || !element('permissions-confirmation').checked;
+function show(step) {
+  for (const name of STEPS) element(`step-${name}`).hidden = name !== step;
+}
+
+// Support detail is collected, never shown unless the person opens it.
+const supportLines = [];
+function support(label, value) {
+  supportLines.push(`${label}\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`);
+  element('support-log').textContent = supportLines.join('\n\n');
+}
+
+function progress(stepKey, percent) {
+  element('activity').textContent = screen[stepKey];
+  element('progress-fill').style.width = `${percent}%`;
+  element('step-progress').querySelector('.bar').setAttribute('aria-valuenow', String(percent));
 }
 
 // Close each acquired resource independently. Late chooser/authentication
@@ -77,21 +74,20 @@ function closeResources() {
       new Promise(resolve => { timer = setTimeout(resolve, 5000); }),
     ]).catch(() => {}).finally(() => clearTimeout(timer));
   }
-  try { store?.close(); } catch { /* The connection is already quarantined. */ }
+  try { store?.close(); } catch { /* The connection is already closed. */ }
 }
 
+// Any safety fault ends this connection. The saved job survives in this
+// browser, so pressing Try again reconnects and carries on from where it stopped.
 function quarantine(message = INSTALL_MESSAGES.installErrorConnection) {
-  const first = !quarantined;
-  quarantined = true;
-  connected = false;
-  clearTimeout(deadline);
-  handoff?.cancel();
-  if (first) {
-    refineFailure = message === INSTALL_MESSAGES.installErrorConnection;
-    status(`${message} ${screen.reloadRequired}`);
+  if (!quarantined) {
+    quarantined = true;
+    clearTimeout(deadline);
+    handoff?.cancel();
     rejectStop(new Error('session_closed'));
+    element('error-text').textContent = message;
+    show('error');
   }
-  render();
   closeResources();
 }
 
@@ -120,55 +116,49 @@ function guardedAdb(value) {
 }
 
 function fail(error) {
-  const key = errorView(error?.code);
-  if (!quarantined) quarantine(INSTALL_MESSAGES[key]);
-  else if (refineFailure && key !== 'installErrorGeneric') {
-    // Ports quarantine synchronously before their rejected promise reaches the
-    // UI. Preserve their specific diagnosis without restoring any permission.
-    status(`${INSTALL_MESSAGES[key]} ${screen.reloadRequired}`);
-    refineFailure = false;
-  }
+  support('Error', String(error?.code ?? error?.message ?? error));
+  quarantine(INSTALL_MESSAGES[errorView(error?.code)]);
 }
+
+function releaseReady(verified) {
+  release = verified;
+  support('Release', release.descriptor);
+  show(supported ? 'connect' : 'error');
+  if (!supported) element('error-text').textContent = screen.unsupported;
+}
+
 function selectionChanged() {
-  if (handoff || busy || connected) { quarantine(INSTALL_MESSAGES.installErrorArtifact); return; }
+  if (handoff || busy) { quarantine(INSTALL_MESSAGES.installErrorArtifact); return; }
   pinned = release = undefined;
-  confirmation.checked = false;
-  element('bundle-status').textContent = '';
-  element('bundle-result').textContent = '';
-  render();
 }
 files.addEventListener('change', selectionChanged);
 rc.addEventListener('input', selectionChanged);
-confirmation.addEventListener('change', render);
-cancel.addEventListener('click', () => quarantine(screen.cancelled));
-window.addEventListener('pagehide', () => quarantine(screen.pageClosed));
+// The release arrives from the Home Assistant tab, so starting again means going
+// back there; the saved job then resumes from where it stopped.
+element('retry').addEventListener('click', () => {
+  if (handoff && window.opener) { window.close(); return; }
+  window.location.reload();
+});
+let leaving = false;
+window.addEventListener('pagehide', () => { if (!leaving) quarantine(screen.pageClosed); });
 
 verify.addEventListener('click', async () => {
-  if (verify.disabled) return;
+  if (busy) return;
   busy = true;
   release = undefined;
   pinned = Object.freeze({ files: Object.freeze(Array.from(files.files)), tag: rc.value });
-  element('bundle-status').textContent = screen.bundleVerifying;
-  render();
+  show('preparing');
   try {
     const verified = await Promise.race([stopPromise,
       verifySelectedBundle(pinned.files, { expectedRcTag: pinned.tag || null })]);
     ensureCurrent();
-    release = verified;
-    element('bundle-result').textContent = JSON.stringify(release.descriptor, null, 2);
-    element('bundle-status').textContent = screen.bundleVerified;
-  } catch (error) {
-    element('bundle-status').textContent = screen.bundleFailure;
-    fail(error);
-  } finally { busy = false; render(); }
+    releaseReady(verified);
+  } catch (error) { fail(error); } finally { busy = false; }
 });
 
 connect.addEventListener('click', async () => {
-  if (connect.disabled) return;
+  if (busy || !release || quarantined) return;
   busy = true;
-  confirmation.checked = false;
-  render();
-  status(screen.selecting);
   deadline = setTimeout(() => quarantine(screen.connectionTimeout), 45000);
   try {
     // requestDevice is invoked directly within this user gesture, never on load.
@@ -179,7 +169,7 @@ connect.addEventListener('click', async () => {
       if (quarantined) { closeResources(); return; }
       if (!device) { quarantine(screen.noSelection); return; }
       ensureCurrent();
-      status(screen.authenticating);
+      show('allow');
       const connection = await device.connect();
       if (quarantined) { closeResources(); return; }
       ensureCurrent();
@@ -192,13 +182,14 @@ connect.addEventListener('click', async () => {
       if (quarantined) { closeResources(); return; }
       ensureCurrent();
       void adb.disconnected.then(() => quarantine(screen.disconnected), fail);
-      const sessionAdb = guardedAdb(adb);
-      status(screen.inspecting);
+      sessionAdb = guardedAdb(adb);
+      element('allow-text').textContent = screen.checkingPanel;
       store = await openJobStore();
       if (quarantined) { closeResources(); return; }
       ensureCurrent();
       const target = await inspectSessionTarget(sessionAdb, release.descriptor, raw, ensureCurrent);
       ensureCurrent();
+      support('Panel', target);
       const ports = createUsbTransactionPorts({
         adb: sessionAdb, usbDevice: raw, ensureCurrent,
         authenticate: async () => {
@@ -211,92 +202,106 @@ connect.addEventListener('click', async () => {
         quarantine: () => quarantine(),
       });
       controller = createInstallController({ store, ports, ensureCurrent,
-        onReceipt(value) { receipt = value; render(); },
+        onReceipt(value) {
+          receipt = value;
+          const { stepKey, percent } = installProgress(receipt);
+          progress(stepKey, percent);
+        },
       });
       const preview = await controller.preview(target);
       ensureCurrent();
       receipt = preview.receipt;
-      hasPreview = connected = true;
-      element('target-result').textContent = JSON.stringify(target, null, 2);
-      status(screen.previewReady);
+      support('Saved progress', receipt ?? 'none');
+      // A job already under way resumes without asking again: the person
+      // agreed to install when they started it.
+      if (receipt) await installAll(); else show('confirm');
     })().catch(error => { fail(error); throw error; })]);
   } catch (error) { fail(error); }
-  finally { clearTimeout(deadline); busy = false; render(); }
+  finally { clearTimeout(deadline); busy = false; }
 });
 
-action.addEventListener('click', async () => {
-  if (action.disabled || !controller) return;
+install.addEventListener('click', async () => {
+  if (busy || !controller || quarantined) return;
   busy = true;
-  render();
-  status(screen.advancing);
-  try {
-    // Each click is explicit permission for the displayed action. Pending
-    // intents reconcile once, read-only; the controller never replays them.
+  try { await installAll(); } catch (error) { fail(error); } finally { busy = false; }
+});
+
+// Run the saved job to a healthy app, then permissions, then hand over to the
+// panel's own setup. Each advance goes through the same locked, durable
+// transaction a click used to; the loop only removes the clicks. The bound
+// stops a job that can never settle from spinning forever.
+async function installAll() {
+  clearTimeout(deadline);
+  show('progress');
+  const { stepKey, percent } = installProgress(receipt);
+  progress(stepKey, percent);
+  for (let round = 0; round < 12 && receipt?.phase !== 'healthy'; round++) {
     receipt = await Promise.race([stopPromise,
-      (['recovery_required', 'cleanup_pending'].includes(receipt?.phase)
-        ? controller.recover(true) : controller.run(true)).catch(error => { fail(error); throw error; })]);
+      ['recovery_required', 'cleanup_pending'].includes(receipt?.phase)
+        ? controller.recover(true) : controller.run(true)]);
     ensureCurrent();
-    status(receipt.phase === 'healthy'
-      ? `${INSTALL_MESSAGES.installHealthyBody} ${INSTALL_MESSAGES.installMqttBoundary}`
-      : screen.progressUpdated);
-  } catch (error) { fail(error); }
-  finally { busy = false; render(); }
-});
+    support('Saved progress', receipt);
+  }
+  if (receipt?.phase !== 'healthy') throw Object.assign(new Error('install_incomplete'), { code: 'health_unavailable' });
 
-element('setup-check').addEventListener('click', async () => {
-  if (element('setup-check').disabled || !controller) return;
-  busy = true; render();
-  element('setup-summary').textContent = screen.setupChecking;
-  try {
-    const result = await Promise.race([stopPromise,
-      controller.observeSetup().catch(error => { fail(error); throw error; })]);
-    ensureCurrent();
-    element('setup-summary').textContent = result.needsUpdatedClient ? screen.setupUnsupported :
-      result.actionRequired ? screen.setupAction : result.reportedComplete ? screen.setupComplete : screen.setupWaiting;
-  } catch (error) { element('setup-summary').textContent = screen.setupWaiting; fail(error); }
-  finally { busy = false; render(); }
-});
+  progress('stepPermissions', 92);
+  const granted = await Promise.race([stopPromise, controller.commissionPermissions(true)]);
+  ensureCurrent();
+  support('Permissions', granted);
+  if (granted?.permissionsVerified !== true) {
+    throw Object.assign(new Error('permissions_unverified'), { code: 'health_unavailable' });
+  }
 
-element('permissions-confirmation').addEventListener('change', render);
-element('permissions-grant').addEventListener('click', async () => {
-  if (element('permissions-grant').disabled || !controller) return;
-  busy = true; render();
-  element('permissions-summary').textContent = screen.permissionsChecking;
-  try {
-    const result = await Promise.race([stopPromise,
-      controller.commissionPermissions(element('permissions-confirmation').checked)
-        .catch(error => { fail(error); throw error; })]);
-    ensureCurrent();
-    if (result?.permissionsVerified !== true) throw new Error('permissions_unverified');
-    element('permissions-summary').textContent = screen.permissionsVerified;
-    element('permissions-confirmation').checked = false;
-  } catch (error) {
-    element('permissions-summary').textContent = screen.permissionsUnverified;
-    fail(error);
-  } finally { busy = false; render(); }
-});
+  progress('stepOpening', 100);
+  const url = await readSetupUrl(sessionAdb, newNonce);
+  support('Setup address', url ?? 'not found; setup continues on the panel');
+  finish(url);
+}
 
-status(supported ? screen.ready : screen.unsupported);
-if (window.location.hash) {
+function finish(url) {
+  show('done');
+  const link = element('open-setup');
+  if (!url) {
+    element('done-text').textContent = screen.doneManual;
+    return;
+  }
+  element('done-text').textContent = screen.doneOpening;
+  link.href = url;
+  link.hidden = false;
+  // Same tab, so the panel's own wizard simply takes over. The visible button
+  // stays in case this computer cannot reach the panel's network.
+  setTimeout(() => {
+    // Leaving on success is not a failure: release USB quietly, then go.
+    leaving = true;
+    closeResources();
+    window.location.assign(url);
+  }, 1200);
+}
+
+if (!supported) {
+  element('error-text').textContent = screen.unsupported;
+  show('error');
+  element('retry').hidden = true;
+} else if (window.location.hash) {
   try {
     const options = handoffOptions(window.location.hash);
     busy = true;
+    const slow = setTimeout(() => { element('preparing-text').textContent = screen.preparingSlow; }, 15000);
     handoff = receiveReleaseHandoff({ options });
-    files.closest('label').hidden = rc.closest('label').hidden = verify.hidden = true;
-    document.querySelector('[data-screen-message="releaseRcHelp"]').hidden = true;
-    document.querySelector('[data-screen-message="releaseAdapter"]').textContent = screen.handoffScope;
-    document.querySelector('[data-screen-message="progressHelp"]').textContent = screen.handoffProgressHelp;
-    element('bundle-status').textContent = screen.handoffWaiting;
     void handoff.completion.then(({ release: verified, authenticate }) => {
       if (quarantined) return;
-      release = verified;
       incomingAuthenticate = authenticate;
-      element('bundle-result').textContent = JSON.stringify(release.descriptor, null, 2);
-      element('bundle-status').textContent = screen.bundleVerified;
-      status(supported ? screen.handoffReady : screen.unsupported);
+      releaseReady(verified);
     }, () => {
       if (!quarantined) quarantine(screen.handoffFailure);
-    }).finally(() => { busy = false; render(); });
+    }).finally(() => { clearTimeout(slow); busy = false; });
   } catch { quarantine(screen.handoffFailure); busy = false; }
+  element('retry').textContent = screen.backToHa;
+} else {
+  // No Home Assistant handover: only the advanced file route is available.
+  show('connect');
+  connect.disabled = true;
+  element('advanced').hidden = false;
+  element('advanced').open = true;
+  verify.addEventListener('click', () => { connect.disabled = false; }, { once: true });
 }
-render();
