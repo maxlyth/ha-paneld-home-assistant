@@ -1,7 +1,8 @@
 import { inspectCleanTarget } from './clean-inspection.mjs';
 import { buildPosture, parsePosture } from './posture.mjs';
 import { readShell } from './shell-session.mjs';
-import { buildPathState, parsePathState, buildStagedObservation, parseStagedObservation } from './staging-contract.mjs';
+import { buildPathState, parsePathState, buildStagedObservation, parseStagedObservation,
+  buildStagedPreparation, parseStagedPreparation } from './staging-contract.mjs';
 import { uploadApk } from './usb-upload.mjs';
 import { buildInstall, parseInstall, buildLaunch, parseLaunch } from './install-contract.mjs';
 import { inspectInstalledApk } from './installed-observation.mjs';
@@ -49,12 +50,20 @@ export function createUsbTransactionPorts({ adb, usbDevice, authenticate,
     }
     binding(receipt, release);
   };
+  // Establish exactly 0644 on this job's file before either check reads it.
+  const prepare = async receipt => {
+    const n = nonce();
+    parseStagedPreparation(await readShell(adb, buildStagedPreparation(n, receipt.id),
+      { timeoutMs: 30000 }), n);
+  };
   const staged = async (receipt, release) => {
+    await prepare(receipt);
     const n = nonce();
     return parseStagedObservation(await readShell(adb, buildStagedObservation(n, receipt.id),
       { timeoutMs: 30000 }), n, receipt.id, release.descriptor);
   };
   const prefix = async (receipt, release) => {
+    await prepare(receipt);
     const n = nonce();
     return verifyStagedPrefix(await readShell(adb, buildStagedObservation(n, receipt.id),
       {timeoutMs: 30000}), n, receipt.id, release);

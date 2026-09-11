@@ -4,14 +4,14 @@
 // and a progress bar, and an error tells them the single thing to do next.
 
 export const INSTALL_MESSAGES = Object.freeze({
-  installErrorGeneric: 'Something went wrong. Unplug the panel, plug it back in and try again.',
+  installErrorGeneric: 'Something went wrong. Keep the panel plugged in and press Try again.',
   installErrorBusy: 'The panel is busy with another install. Wait a minute, then try again.',
   installErrorStorage: 'This browser couldn’t save its progress. Allow this site to store data, then try again.',
   installErrorTarget: 'A different panel was connected. Plug in the same panel and try again.',
   installErrorArtifact: 'The app download couldn’t be checked. Go back to Home Assistant and start again.',
   installErrorNotClean: 'This panel already has the app. Update it from Home Assistant instead.',
   installErrorIncompatible: 'This panel can’t run this version of the app.',
-  installErrorConnection: 'The connection to the panel dropped. Unplug it, plug it back in and try again.',
+  installErrorConnection: 'The connection to the panel dropped. Keep it plugged in and press Try again.',
   installErrorHealth: 'The app is installed but hasn’t started yet. Wait a moment, then try again.',
 });
 

@@ -38,8 +38,8 @@ export const INSTALL_SCREEN_MESSAGES = Object.freeze({
   unsupported: 'This browser can’t talk to USB devices. Open this page in Chrome or Edge on a computer.',
   handoffFailure: 'The app couldn’t be fetched from Home Assistant. Go back to Home Assistant and start again.',
   noSelection: 'No panel was chosen. Press Find my panel and pick it from the list.',
-  connectionTimeout: 'The panel didn’t answer. Unplug the cable, plug it back in and try again.',
-  disconnected: 'The panel was disconnected. Plug it back in and try again.',
+  connectionTimeout: 'The panel didn’t answer. Check the cable is firmly in, then press Try again.',
+  disconnected: 'The panel was disconnected. Plug it back in, wait for it to start, then press Try again.',
   cancelled: 'Cancelled.',
   pageClosed: 'The page was closed.',
 });

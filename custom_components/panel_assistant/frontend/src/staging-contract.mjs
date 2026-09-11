@@ -17,7 +17,19 @@ export function buildPathState(nonce, jobId) {
   return [`echo HAPANELD_PATH_BEGIN:${nonce}`,
     `if ${parents} && [ -r /data/local/tmp ]; then if [ -e ${path} ] || [ -L ${path} ]; then echo present; else echo absent; fi; echo HAPANELD_PATH_END:${nonce}:0; else echo HAPANELD_PATH_END:${nonce}:1; fi`].join('; ');
 }
-// Observation only: unlike Python's post-upload preparation, this never chmods.
+// Mirrors the network installer's post-upload preparation. Some adbd builds create
+// pushed files 0666 whatever mode was requested (a Tuya TPA10 on Android 11 does),
+// and the observation below demands exactly 0644, so without this the installer
+// rejects its own byte-perfect upload. Only this job's own regular file is touched;
+// a symlink or anything else is left alone and still fails the observation.
+export function buildStagedPreparation(nonce, jobId) {
+  validNonce(nonce);
+  const path = stagingPath(jobId);
+  return [`echo HAPANELD_PREPARE_BEGIN:${nonce}`,
+    `if [ -f ${path} ] && [ ! -L ${path} ]; then chmod 0644 ${path}; fi`,
+    `echo HAPANELD_PREPARE_END:${nonce}:$?`].join('; ');
+}
+// Observation only: preparation above is the separate step that sets the mode.
 export function buildStagedObservation(nonce, jobId) {
   validNonce(nonce);
   const path = stagingPath(jobId);
@@ -66,6 +78,13 @@ export function parseStagedFile(body, nonce, jobId) {
     fail('staged_artifact_mismatch');
   }
   return Object.freeze({size, sha256: hashLine[1]});
+}
+export function parseStagedPreparation(body, nonce) {
+  validNonce(nonce);
+  const output = lines(body);
+  if (output.length !== 2 || output[0] !== `HAPANELD_PREPARE_BEGIN:${nonce}` ||
+      output[1] !== `HAPANELD_PREPARE_END:${nonce}:0`) fail('staged_preparation_failed');
+  return true;
 }
 export function parseStagedObservation(body, nonce, jobId, descriptor) {
   if (!Number.isSafeInteger(descriptor?.apkSize) || descriptor.apkSize < 1 || descriptor.apkSize > 67108864 ||
