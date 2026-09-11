@@ -41,7 +41,7 @@ test('stable defaults, labels use text, RC requires selection and handoff receiv
   await tick();
   assert.equal(f.element('release').value, stable.tag);
   assert.equal(f.element('start').disabled, false);
-  assert.deepEqual(f.element('release').children.map(option => option.textContent), ['Choose a version', `${rc.tag} — Release candidate (testing)`, `${stable.tag} — Stable`]);
+  assert.deepEqual(f.element('release').children.map(option => option.textContent), ['Choose a version', '1.2.4-rc1 (test version)', '1.2.3 (recommended)']);
   let opened;
   globalThis.window = { crypto: webcrypto, location: { origin: 'http://ha.example' }, addEventListener() {}, removeEventListener() {}, open(url) { opened = new URL(url); return { closed: false }; } };
   f.element('start').listeners.click();

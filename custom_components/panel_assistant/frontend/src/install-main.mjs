@@ -11,6 +11,7 @@ import { INSTALL_MESSAGES, installProgress, errorView } from './install-view.mjs
 import { INSTALL_SCREEN_MESSAGES as screen } from './install-screen-messages.mjs';
 import { handoffOptions, receiveReleaseHandoff } from './release-handoff.mjs';
 import { readSetupUrl } from './panel-address.mjs';
+import { renderJourney } from './wizard-look.mjs';
 
 // A guided wizard for people who have never used a terminal. One step is on
 // screen at a time; the single Install press is the consent for everything
@@ -45,8 +46,12 @@ void stopPromise.catch(() => {});
 const newNonce = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
   byte => byte.toString(16).padStart(2, '0')).join('');
 
+// Where each screen sits in the whole journey. Version was chosen in Home
+// Assistant; Set up continues on the panel's own wizard. An error stays put.
+const JOURNEY_STOP = Object.freeze({ preparing: 1, connect: 1, allow: 1, confirm: 2, progress: 2, done: 3 });
 function show(step) {
   for (const name of STEPS) element(`step-${name}`).hidden = name !== step;
+  if (Object.hasOwn(JOURNEY_STOP, step)) renderJourney(element('journey'), JOURNEY_STOP[step]);
 }
 
 // Support detail is collected, never shown unless the person opens it.

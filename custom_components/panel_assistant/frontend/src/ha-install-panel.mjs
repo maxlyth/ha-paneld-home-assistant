@@ -1,32 +1,35 @@
 import { startReleaseHandoff } from './ha-release-handoff.mjs';
 import { fetchReleaseCatalog } from './release-catalog.mjs';
+import { BRAND_ICON, WIZARD_CSS, journeyHtml } from './wizard-look.mjs';
 
 // Stable keys keep presentation separate from the release-transfer protocol.
+// This is the first stop of the same wizard the installer window and the
+// panel's own setup continue, so it speaks the same plain one-line language.
 export const HA_INSTALL_MESSAGES = Object.freeze({
-  title: 'Panel Assistant USB installation',
-  introduction: 'Connect the panel to this browser’s computer or mobile device, not to the Home Assistant server. USB debugging and Android authorization are required.',
-  scope: 'This experimental installer supports clean installation only. Existing installations are not overwritten. Setup permissions and connecting the panel to Home Assistant remain separate steps. MQTT is unchanged.',
-  release: 'ha-paneld version',
-  releaseHelp: 'Stable is recommended. Release candidates are for testing. To resume, use the same release and browser as before.',
-  loading: 'Loading available versions…',
-  catalogError: 'Available versions could not be loaded. Try again.',
-  empty: 'No supported versions are available yet. Try again later.',
+  title: 'Install ha-paneld on a panel',
+  introduction: 'Plug the panel into this computer with a USB cable. A new window will find it and install the app.',
+  release: 'Version',
+  loading: 'Loading versions…',
+  catalogError: 'The list of versions couldn’t be loaded.',
+  empty: 'No versions are available yet. Try again later.',
   choose: 'Choose a version',
-  retry: 'Retry',
-  start: 'Open USB installer',
-  cancel: 'Cancel release transfer',
-  ready: 'A separate secure window will verify the release before asking you to select a USB panel. Nothing is installed without confirmation.',
-  unavailable: 'The secure installer location has not been configured for this integration.',
-  admin: 'An administrator must open the installer.',
-  waiting: 'Installer window opened. Waiting for it to become ready…',
-  preparing: 'Home Assistant is preparing the signed release…',
-  downloading: 'Downloading the verified release from Home Assistant…',
-  verifying: 'The installer window is independently verifying the release…',
-  verified: 'Release verified. Continue in the installer window to select the USB panel and review installation. This does not mean the panel is installed.',
-  cancelled: 'Release transfer cancelled. This does not cancel an installation already started in the other window.',
-  popup_blocked: 'Allow this Home Assistant page to open a popup, then try again.',
-  invalid_request: 'Choose an available version before opening the installer.',
-  failed: 'Release transfer did not complete. Check the installer window and try again. No installation result is implied.',
+  recommended: 'recommended',
+  testing: 'test version',
+  retry: 'Try again',
+  start: 'Continue',
+  cancel: 'Cancel',
+  ready: '',
+  unavailable: 'The installer isn’t available. Update Panel Assistant, then try again.',
+  admin: 'Ask a Home Assistant administrator to install panels.',
+  waiting: 'Continue in the new window.',
+  preparing: 'Getting the app ready…',
+  downloading: 'Getting the app ready…',
+  verifying: 'Getting the app ready…',
+  verified: 'Continue in the new window.',
+  cancelled: 'Cancelled.',
+  popup_blocked: 'Your browser blocked the new window. Allow pop-ups for this page, then press Continue.',
+  invalid_request: 'Choose a version first.',
+  failed: 'That didn’t work. Press Continue to try again.',
 });
 
 export class HaPaneldUsbInstallPanel extends HTMLElement {
@@ -41,23 +44,23 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     // Only fixed markup is HTML. Configuration and translations use textContent.
-    this.shadowRoot.innerHTML = `<style>
-      :host{display:block;color:var(--primary-text-color,#17232d);padding:24px;box-sizing:border-box}
-      main{max-width:680px;margin:auto;font:inherit;line-height:1.5}
-      h1{font-size:1.6rem}label{display:block;font-weight:600}
-      select{display:block;box-sizing:border-box;width:100%;max-width:26rem;padding:12px;font:inherit}
-      button{padding:12px 18px;font:inherit;margin:8px 8px 8px 0;cursor:pointer}
-      button:disabled{cursor:default}p{overflow-wrap:anywhere}
-      #status{padding:16px;border:1px solid var(--divider-color,#aab6bd);border-radius:8px}
-    </style><main>
-      <h1 data-message="title"></h1><p data-message="introduction"></p>
-      <p data-message="scope"></p>
-      <label for="release" data-message="release"></label>
-      <select id="release" aria-describedby="release-help catalog-status"></select>
-      <p id="release-help" data-message="releaseHelp"></p>
-      <p id="catalog-status" role="status" aria-live="polite"></p><button id="retry" data-message="retry"></button>
-      <button id="start" data-message="start"></button><button id="cancel" data-message="cancel"></button>
-      <p id="status" role="status" aria-live="polite"></p>
+    this.shadowRoot.innerHTML = `<style>${WIZARD_CSS}
+      :host{display:block;min-height:100%;background:var(--bg);padding:24px 16px}
+      .card p.status{color:var(--text);margin:14px 0 0}
+    </style><main class="wiz">
+      <div class="wiz-brand"><img src="${BRAND_ICON}" alt=""><span>ha-paneld</span></div>
+      <ol class="wiz-dots" aria-label="Progress">${journeyHtml(0)}</ol>
+      <section class="card">
+        <h2 data-message="title"></h2>
+        <p class="lead" data-message="introduction"></p>
+        <label for="release" data-message="release"></label>
+        <select id="release" aria-describedby="catalog-status"></select>
+        <p id="catalog-status" role="status" aria-live="polite"></p>
+        <button id="retry" class="secondary" data-message="retry"></button>
+        <button id="start" class="primary" data-message="start"></button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+        <button id="cancel" class="secondary" data-message="cancel"></button>
+      </section>
     </main>`;
     for (const element of this.shadowRoot.querySelectorAll('[data-message]')) {
       element.textContent = HA_INSTALL_MESSAGES[element.dataset.message];
@@ -73,6 +76,9 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
       this.#hass?.user?.is_admin !== value?.user?.is_admin || this.#hass?.connection !== value?.connection ||
       this.#hass?.auth !== value?.auth;
     this.#hass = value;
+    // Follow Home Assistant's own light or dark choice, not only the device's.
+    const dark = value?.themes?.darkMode;
+    if (typeof dark === 'boolean') this.setAttribute?.('theme', dark ? 'dark' : 'light');
     if (changed) { this.#transfer?.cancel(); this.#loadCatalog(); }
     this.#render();
   }
@@ -106,13 +112,16 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
       placeholder.textContent = HA_INSTALL_MESSAGES.choose;
       placeholder.disabled = true;
       select.append(placeholder);
+      const recommended = releases.find(release => !release.prerelease)?.tag ?? '';
       for (const release of releases) {
         const option = document.createElement('option');
         option.value = release.tag;
-        option.textContent = `${release.tag} — ${release.prerelease ? 'Release candidate (testing)' : 'Stable'}`;
+        const note = release.tag === recommended ? HA_INSTALL_MESSAGES.recommended
+          : release.prerelease ? HA_INSTALL_MESSAGES.testing : '';
+        option.textContent = `${release.tag.replace(/^v/, '')}${note ? ` (${note})` : ''}`;
         select.append(option);
       }
-      select.value = releases.find(release => !release.prerelease)?.tag ?? '';
+      select.value = recommended;
     } catch {
       if (this.#catalogRequest !== request) return;
       this.#catalogState = 'catalogError';
@@ -128,10 +137,15 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
     this.shadowRoot.querySelector('#start').disabled = !allowed || !configured || Boolean(this.#transfer) || !selected;
     this.shadowRoot.querySelector('#cancel').disabled = !this.#transfer;
     this.shadowRoot.querySelector('#release').disabled = Boolean(this.#transfer) || this.#catalogState !== 'ready';
-    this.shadowRoot.querySelector('#catalog-status').textContent = allowed && configured && this.#catalogState !== 'ready' ? HA_INSTALL_MESSAGES[this.#catalogState] : '';
+    const catalog = this.shadowRoot.querySelector('#catalog-status');
+    catalog.textContent = allowed && configured && this.#catalogState !== 'ready' ? HA_INSTALL_MESSAGES[this.#catalogState] : '';
+    catalog.hidden = !catalog.textContent;
     this.shadowRoot.querySelector('#retry').hidden = !allowed || !configured || !['catalogError', 'empty'].includes(this.#catalogState);
+    this.shadowRoot.querySelector('#cancel').hidden = !this.#transfer;
     const key = !allowed ? 'admin' : !configured ? 'unavailable' : this.#status;
-    this.shadowRoot.querySelector('#status').textContent = HA_INSTALL_MESSAGES[key] ?? HA_INSTALL_MESSAGES.failed;
+    const status = this.shadowRoot.querySelector('#status');
+    status.textContent = Object.hasOwn(HA_INSTALL_MESSAGES, key) ? HA_INSTALL_MESSAGES[key] : HA_INSTALL_MESSAGES.failed;
+    status.hidden = !status.textContent;
   }
   #start() {
     if (this.#transfer || this.#hass?.user?.is_admin !== true) return;

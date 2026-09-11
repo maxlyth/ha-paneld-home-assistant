@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { readBounded } from '../src/bounded-stream.mjs';
 import { INSTALL_MESSAGES, installProgress } from '../src/install-view.mjs';
 import { INSTALL_SCREEN_MESSAGES } from '../src/install-screen-messages.mjs';
+import { WIZARD_CSS, BRAND_ICON } from '../src/wizard-look.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -27,6 +28,10 @@ test('production build contains a root installer and a standalone HA panel', asy
   assert.ok(notices.includes('Permission is hereby granted'));
   const panel = readFileSync(new URL('../../static/ha-panel.js', import.meta.url), 'utf8');
   assert.ok(!panel.includes('sourceMappingURL'));
+  // Both halves of the journey paint from the one shared look, from the first frame.
+  assert.ok(html.includes(`<style>${WIZARD_CSS}</style>`), 'installer page carries the shared look inline');
+  assert.ok(html.includes(BRAND_ICON) && !html.includes('__BRAND_ICON__'));
+  assert.ok(panel.includes('.wiz-dots li.current::before'), 'Home Assistant page uses the shared look');
   let registered;
   globalThis.HTMLElement = class {};
   globalThis.customElements = { get() {}, define(name) { registered = name; } };
@@ -62,14 +67,18 @@ test('progress only ever moves forward and never names an internal phase', () =>
   assert.equal(installProgress({ phase: 'nonsense' }).stepKey, 'stepCopying');
 });
 
-test('nothing the person reads mentions internals, JSON or terminal vocabulary', () => {
-  const shown = [...Object.values(INSTALL_MESSAGES), ...Object.values(INSTALL_SCREEN_MESSAGES)].join('\n');
+test('nothing the person reads mentions internals, JSON or terminal vocabulary', async () => {
+  globalThis.HTMLElement ??= class {};
+  globalThis.customElements ??= { get: () => true };
+  const { HA_INSTALL_MESSAGES } = await import('../src/ha-install-panel.mjs');
+  const shown = [...Object.values(INSTALL_MESSAGES), ...Object.values(INSTALL_SCREEN_MESSAGES),
+    ...Object.values(HA_INSTALL_MESSAGES)].join('\n');
   for (const word of ['JSON', 'receipt', 'descriptor', 'sha256', 'SHA-256', 'phase', 'adb', 'ADB',
     'shell', 'reconcile', 'quarantine', 'MQTT', 'signature', 'checksum']) {
     assert.ok(!shown.includes(word), `user-facing text mentions ${word}`);
   }
   // One plain sentence each: nothing reads like a paragraph of caveats.
-  for (const [key, text] of Object.entries({ ...INSTALL_MESSAGES, ...INSTALL_SCREEN_MESSAGES })) {
+  for (const [key, text] of Object.entries({ ...INSTALL_MESSAGES, ...INSTALL_SCREEN_MESSAGES, ...HA_INSTALL_MESSAGES })) {
     assert.ok(text.length <= 140, `${key} is ${text.length} characters`);
   }
 });
