@@ -154,3 +154,14 @@ test('a clean panel still gets a fresh install from the start', async () => {
   assert.deepEqual(f.inspected, ['installed', 'prepared']);
   await assert.rejects(f.controller.run(false), /confirmation_required/);
 });
+
+test('an already installed build is announced, not failed', () => {
+  const source = readFileSync(new URL('../src/install-main.mjs', import.meta.url), 'utf8');
+  const branch = source.slice(source.indexOf('if (!receipt && preview.adopt)'));
+  assert.ok(branch.length < source.length, 'the adopt branch exists');
+  const block = branch.slice(0, branch.indexOf('}'));
+  assert.match(block, /screen\.alreadyInstalledHeading/);
+  assert.match(block, /screen\.alreadyInstalledBody/);
+  assert.match(block, /screen\.continueSetup/);
+  assert.ok(!/fail\(|quarantine\(/.test(block), 'it never routes to the error screen');
+});

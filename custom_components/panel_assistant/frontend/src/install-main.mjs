@@ -241,6 +241,14 @@ connect.addEventListener('click', async () => {
       support('Saved progress', receipt ?? 'none');
       // A job already under way resumes without asking again: the person
       // agreed to install when they started it.
+      // The same build already on the panel is not an error: say so plainly,
+      // and let the one press finish its setup.
+      if (!receipt && preview.adopt) {
+        support('Already installed', `${release.descriptor.versionName} (${release.descriptor.versionCode})`);
+        element('step-confirm').querySelector('h2').textContent = screen.alreadyInstalledHeading;
+        element('confirm-body').textContent = screen.alreadyInstalledBody;
+        install.textContent = screen.continueSetup;
+      }
       if (receipt) await installAll(); else show('confirm');
     })().catch(error => { fail(error); throw error; })]);
   } catch (error) { fail(error); }
