@@ -36,6 +36,9 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
   #hass;
   #panel;
   #transfer;
+  // A finished transfer keeps answering a reloaded installer window until this
+  // page goes away or a new transfer starts.
+  #served;
   #status = 'ready';
   #catalogRequest;
   #catalogState = 'loading';
@@ -90,7 +93,7 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
     this.#render();
   }
   connectedCallback() { this.#loadCatalog(); }
-  disconnectedCallback() { this.#transfer?.cancel(); this.#catalogRequest?.abort(); this.#catalogRequest = undefined; }
+  disconnectedCallback() { this.#transfer?.cancel(); this.#served?.cancel(); this.#served = undefined; this.#catalogRequest?.abort(); this.#catalogRequest = undefined; }
   async #loadCatalog() {
     this.#catalogRequest?.abort();
     this.#catalogRequest = undefined;
@@ -151,13 +154,17 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
     if (this.#transfer || this.#hass?.user?.is_admin !== true) return;
     const release = this.#releases.find(item => item.tag === this.shadowRoot.querySelector('#release').value);
     if (!release || !this.isConnected) return;
+    this.#served?.cancel();
+    this.#served = undefined;
     const transfer = startReleaseHandoff(this.#hass, this.#panel?.config?.installer_url, {
       rcTag: release.prerelease ? release.tag : null,
       onState: state => { this.#status = state; this.#render(); },
     });
     this.#transfer = transfer;
     this.#render();
-    void transfer.completion.catch(() => {}).finally(() => {
+    void transfer.completion.then(() => {
+      if (this.#transfer === transfer) this.#served = transfer;
+    }, () => {}).finally(() => {
       if (this.#transfer === transfer) this.#transfer = undefined;
       this.#render();
     });

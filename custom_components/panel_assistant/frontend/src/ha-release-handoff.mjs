@@ -1,5 +1,9 @@
 const API = '/api/panel_assistant/usb/release';
 const MAX_APK = 64 * 1024 * 1024;
+// A reloaded installer window (a back button, a refresh) asks again with the
+// same nonce. The verified bytes stay available to it this long, and no longer
+// than the window stays open.
+const SERVE_MS = 30 * 60 * 1000;
 const STABLE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const RC = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$/;
 const FIELDS = ['id', 'tag', 'checksum', 'checksum_signature', 'descriptor',
@@ -73,16 +77,26 @@ export function startReleaseHandoff(hass, installerUrl, {
   let nonce;
   let acceptedReady = false;
   let sent = false;
+  let delivered;
+  let sweep;
+  let serveTimer;
+  const stopServing = () => {
+    clearInterval(sweep);
+    clearTimeout(serveTimer);
+    delivered = undefined;
+    windowObject.removeEventListener('message', receive);
+  };
   const state = (status) => { try { onState(status); } catch { /* UI callbacks do not own delivery. */ } };
   const finish = (code = null) => {
     if (finished) return;
     finished = true;
     controller.abort();
     clearTimeout(timer);
-    windowObject.removeEventListener('message', receive);
     state(code ?? 'verified');
-    if (code) rejectCompletion(new HandoffError(code));
-    else resolveCompletion();
+    if (code) { stopServing(); rejectCompletion(new HandoffError(code)); return; }
+    sweep = setInterval(() => { if (child.closed) stopServing(); }, 2000);
+    serveTimer = setTimeout(stopServing, SERVE_MS);
+    resolveCompletion();
   };
   async function deliver() {
     try {
@@ -117,19 +131,24 @@ export function startReleaseHandoff(hass, installerUrl, {
       const apk = await readBounded(apkResponse, MAX_APK, controller.signal, metadata.apk_size);
       requireValid(!finished && !child.closed, 'window_closed');
       sent = true;
-      child.postMessage({ type: 'ha-paneld/usb-bundle', nonce, bundle, apk }, targetOrigin);
+      delivered = { type: 'ha-paneld/usb-bundle', nonce, bundle, apk };
+      child.postMessage(delivered, targetOrigin);
       state('verifying');
     } catch (error) {
       finish(error instanceof HandoffError ? error.code : 'delivery_failed');
     }
   }
   function receive(event) {
-    if (finished || event.source !== child || event.origin !== targetOrigin ||
+    if (event.source !== child || event.origin !== targetOrigin ||
       !keys(event.data, ['type', 'nonce']) || event.data.nonce !== nonce) return;
-    if (event.data.type === 'ha-paneld/usb-ready' && !acceptedReady) {
-      acceptedReady = true;
-      void deliver();
-    } else if (event.data.type === 'ha-paneld/usb-verified' && sent) finish();
+    if (event.data.type === 'ha-paneld/usb-ready') {
+      if (!acceptedReady && !finished) { acceptedReady = true; void deliver(); }
+      // The same window reloaded: hand it the same verified bytes again.
+      else if (delivered && !child.closed) child.postMessage(delivered, targetOrigin);
+      return;
+    }
+    if (finished) return;
+    if (event.data.type === 'ha-paneld/usb-verified' && sent) finish();
     else if (event.data.type === 'ha-paneld/usb-error') finish('verification_failed');
   }
   try {
@@ -153,5 +172,5 @@ export function startReleaseHandoff(hass, installerUrl, {
   } catch (error) {
     finish(error instanceof HandoffError ? error.code : 'invalid_request');
   }
-  return { completion, cancel: () => finish('cancelled') };
+  return { completion, cancel: () => { finish('cancelled'); stopServing(); } };
 }

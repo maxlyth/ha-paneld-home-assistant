@@ -59,9 +59,28 @@ test('opens synchronously, selects stable, sends only bounded bytes and waits fo
   assert.equal(await message.apk.text(), 'apk');
   assert.equal(f.listeners.size, 1);
   f.send('verified'); await f.handle.completion;
-  assert.equal(f.listeners.size, 0);
   assert.equal(f.child.closed, false);
   assert.deepEqual(f.states, ['waiting', 'preparing', 'downloading', 'verifying', 'verified']);
+  f.handle.cancel();
+  assert.equal(f.listeners.size, 0, 'cancel stops serving the verified bytes');
+});
+test('a reloaded installer window gets the same verified bytes again without a new download', async () => {
+  const f = fixture();
+  f.send('ready'); await tick(); await tick();
+  f.send('verified'); await f.handle.completion;
+  f.send('ready', { source: {} }); f.send('ready', {}, { nonce: 'wrong' });
+  assert.equal(f.posts.length, 1, 'only the same window with the same nonce is answered');
+  f.send('ready');
+  assert.equal(f.posts.length, 2);
+  assert.equal(f.posts[1][0], f.posts[0][0], 'the identical message, not a new fetch');
+  assert.equal(f.posts[1][1], 'https://installer.example');
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(f.states.at(-1), 'verified', 'a re-send does not reopen the transfer');
+  f.child.closed = true;
+  f.send('ready');
+  assert.equal(f.posts.length, 2, 'a closed window gets nothing');
+  f.handle.cancel();
+  assert.equal(f.listeners.size, 0);
 });
 test('ignores wrong source, origin, nonce and additional message keys', async () => {
   const f = fixture();
@@ -77,6 +96,7 @@ test('RC is selected explicitly in fragment and POST, without stable fallback', 
   f.send('ready'); await tick();
   assert.deepEqual(JSON.parse(f.calls[0][1].body), { release_candidate: m.tag });
   f.send('verified'); await f.handle.completion;
+  f.handle.cancel();
 });
 test('cancel aborts fetch and prevents late response from posting', async () => {
   let resolve;

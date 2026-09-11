@@ -154,12 +154,9 @@ function selectionChanged() {
 }
 files.addEventListener('change', selectionChanged);
 rc.addEventListener('input', selectionChanged);
-// The release arrives from the Home Assistant tab, so starting again means going
-// back there; the saved job then resumes from where it stopped.
-element('retry').addEventListener('click', () => {
-  if (handoff && window.opener) { window.close(); return; }
-  window.location.reload();
-});
+// Starting again stays in this window: the Home Assistant tab hands a reloaded
+// window the same verified release, and the saved job resumes where it stopped.
+element('retry').addEventListener('click', () => { window.location.reload(); });
 let leaving = false;
 window.addEventListener('pagehide', () => { if (!leaving) quarantine(screen.pageClosed); });
 
