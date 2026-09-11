@@ -87,6 +87,9 @@ function closeResources() {
 // Any safety fault ends this connection. The saved job survives in this
 // browser, so pressing Try again reconnects and carries on from where it stopped.
 function quarantine(message = INSTALL_MESSAGES.installErrorConnection) {
+  // After success, closing our own USB connection (or the person unplugging)
+  // is not a failure: release quietly and never flash the error screen.
+  if (finished) { quarantined = true; closeResources(); return; }
   if (!quarantined) {
     support('Stopped', message);
     quarantined = true;
@@ -158,6 +161,7 @@ rc.addEventListener('input', selectionChanged);
 // window the same verified release, and the saved job resumes where it stopped.
 element('retry').addEventListener('click', () => { window.location.reload(); });
 let leaving = false;
+let finished = false;
 window.addEventListener('pagehide', () => { if (!leaving) quarantine(screen.pageClosed); });
 
 verify.addEventListener('click', async () => {
@@ -294,6 +298,7 @@ async function installAll() {
 }
 
 function finish(url) {
+  finished = true;
   show('done');
   const link = element('open-setup');
   if (!url) {

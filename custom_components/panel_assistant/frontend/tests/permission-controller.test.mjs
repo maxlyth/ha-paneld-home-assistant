@@ -165,3 +165,14 @@ test('an already installed build is announced, not failed', () => {
   assert.match(block, /screen\.continueSetup/);
   assert.ok(!/fail\(|quarantine\(/.test(block), 'it never routes to the error screen');
 });
+
+test('after success nothing can flash the error screen', () => {
+  const source = readFileSync(new URL('../src/install-main.mjs', import.meta.url), 'utf8');
+  const quarantine = source.slice(source.indexOf('function quarantine('), source.indexOf('function ensureCurrent('));
+  const guard = quarantine.indexOf('if (finished)');
+  assert.ok(guard >= 0, 'quarantine checks for a finished install');
+  assert.ok(guard < quarantine.indexOf("show('error')"), 'before it can show the error screen');
+  const finish = source.slice(source.indexOf('function finish('));
+  assert.ok(finish.indexOf('finished = true') < finish.indexOf("show('done')"),
+    'success is recorded before anything that can close the connection');
+});
