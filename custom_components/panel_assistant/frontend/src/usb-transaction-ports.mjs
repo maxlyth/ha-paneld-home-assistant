@@ -20,7 +20,7 @@ const fail = code => { throw new TransactionError(code); };
 // selection, confirmation, receipt creation and device-wide transaction lock.
 // No USB discovery, network ADB activation, HA credentials or entry creation.
 export function createUsbTransactionPorts({ adb, usbDevice, authenticate,
-  ensureCurrent = () => {}, quarantine }) {
+  ensureCurrent = () => {}, quarantine, onUploadProgress = () => {} }) {
   if (!adb || !usbDevice || typeof authenticate !== 'function' ||
       typeof ensureCurrent !== 'function' || typeof quarantine !== 'function') fail('invalid_request');
   let stopped = false;
@@ -125,7 +125,8 @@ export function createUsbTransactionPorts({ adb, usbDevice, authenticate,
       const n = nonce();
       if (parsePathState(await readShell(adb, buildPathState(n, receipt.id)), n)) fail('staging_path_exists');
       binding(receipt, release);
-      await uploadApk(adb, receipt.id, release, { ensureCurrent: guard, quarantine: stop });
+      await uploadApk(adb, receipt.id, release, { ensureCurrent: guard, quarantine: stop,
+        onProgress: onUploadProgress });
       uploadedJob = receipt.id;
     }),
     install: protect(async (receipt, release) => {

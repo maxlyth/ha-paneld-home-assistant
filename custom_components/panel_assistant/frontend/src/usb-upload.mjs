@@ -14,7 +14,7 @@ function frame(id, value) {
 // Internal actuator: caller owns transaction intent, fresh target/clean/path
 // admission and quarantine. No path supplied by the panel or arbitrary caller.
 export async function uploadApk(adb, jobId, release, {
-  ensureCurrent = () => {}, quarantine, timeoutMs = 180000, closeMs = 2000,
+  ensureCurrent = () => {}, quarantine, timeoutMs = 180000, closeMs = 2000, onProgress = () => {},
 } = {}) {
   const path = stagingPath(jobId);
   if (typeof quarantine !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000 ||
@@ -48,6 +48,8 @@ export async function uploadApk(adb, jobId, release, {
           Blob.prototype.slice.call(blob, offset, Math.min(size, offset + 65536))));
         guard();
         await writer.write(frame('DATA', chunk));
+        // Presentation only: a throwing callback must never affect the transfer.
+        try { onProgress(Math.min(size, offset + 65536), size); } catch { /* ignored */ }
       }
       guard();
       await writer.write(frame('DONE', 0));

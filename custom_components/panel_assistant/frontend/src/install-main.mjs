@@ -51,8 +51,10 @@ function show(step) {
 
 // Support detail is collected, never shown unless the person opens it.
 const supportLines = [];
+const started = performance.now();
 function support(label, value) {
-  supportLines.push(`${label}\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`);
+  const at = ((performance.now() - started) / 1000).toFixed(1);
+  supportLines.push(`${label} (+${at}s)\n${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}`);
   element('support-log').textContent = supportLines.join('\n\n');
 }
 
@@ -81,6 +83,7 @@ function closeResources() {
 // browser, so pressing Try again reconnects and carries on from where it stopped.
 function quarantine(message = INSTALL_MESSAGES.installErrorConnection) {
   if (!quarantined) {
+    support('Stopped', message);
     quarantined = true;
     clearTimeout(deadline);
     handoff?.cancel();
@@ -115,9 +118,22 @@ function guardedAdb(value) {
   });
 }
 
+// A USB step that fails closes the session itself before its own rejection
+// arrives, so every other pending step then reports session_closed. Keep the
+// first real code: that is the one that explains what happened.
+let firstFailure;
+function noteFailure(error) {
+  const code = error?.code ?? error?.message;
+  if (!firstFailure && code && code !== 'session_closed') {
+    firstFailure = code;
+    support('Cause', String(code));
+    element('error-text').textContent = INSTALL_MESSAGES[errorView(code)];
+  }
+  throw error;
+}
 function fail(error) {
   support('Error', String(error?.code ?? error?.message ?? error));
-  quarantine(INSTALL_MESSAGES[errorView(error?.code)]);
+  quarantine(INSTALL_MESSAGES[errorView(firstFailure ?? error?.code)]);
 }
 
 function releaseReady(verified) {
@@ -200,6 +216,14 @@ connect.addEventListener('click', async () => {
           return verified;
         },
         quarantine: () => quarantine(),
+        onUploadProgress(sent, total) {
+          if (sent >= total) {
+            progress('stepFinishingCopy', 50);
+            support('Copied', `${total} bytes sent; waiting for the panel to confirm`);
+          } else {
+            progress('stepCopying', 10 + Math.floor((40 * sent) / total));
+          }
+        },
       });
       controller = createInstallController({ store, ports, ensureCurrent,
         onReceipt(value) {
@@ -208,7 +232,7 @@ connect.addEventListener('click', async () => {
           progress(stepKey, percent);
         },
       });
-      const preview = await controller.preview(target);
+      const preview = await controller.preview(target).catch(noteFailure);
       ensureCurrent();
       receipt = preview.receipt;
       support('Saved progress', receipt ?? 'none');
@@ -237,15 +261,15 @@ async function installAll() {
   progress(stepKey, percent);
   for (let round = 0; round < 12 && receipt?.phase !== 'healthy'; round++) {
     receipt = await Promise.race([stopPromise,
-      ['recovery_required', 'cleanup_pending'].includes(receipt?.phase)
-        ? controller.recover(true) : controller.run(true)]);
+      (['recovery_required', 'cleanup_pending'].includes(receipt?.phase)
+        ? controller.recover(true) : controller.run(true)).catch(noteFailure)]);
     ensureCurrent();
     support('Saved progress', receipt);
   }
   if (receipt?.phase !== 'healthy') throw Object.assign(new Error('install_incomplete'), { code: 'health_unavailable' });
 
   progress('stepPermissions', 92);
-  const granted = await Promise.race([stopPromise, controller.commissionPermissions(true)]);
+  const granted = await Promise.race([stopPromise, controller.commissionPermissions(true).catch(noteFailure)]);
   ensureCurrent();
   support('Permissions', granted);
   if (granted?.permissionsVerified !== true) {

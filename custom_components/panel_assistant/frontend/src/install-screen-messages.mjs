@@ -16,6 +16,7 @@ export const INSTALL_SCREEN_MESSAGES = Object.freeze({
   install: 'Install',
   progressHeading: 'Installing',
   stepCopying: 'Copying the app to your panel…',
+  stepFinishingCopy: 'Finishing the copy…',
   stepInstalling: 'Installing…',
   stepStarting: 'Starting the app…',
   stepPermissions: 'Giving the app what it needs to run…',
