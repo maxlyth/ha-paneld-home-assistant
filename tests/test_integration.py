@@ -1168,7 +1168,7 @@ async def test_huge_status_integer_does_not_override_health_authority(
     """An integer conversion failure remains optional diagnostic failure."""
     entry = _entry(hass)
 
-    async def _get_invalid_status() -> PanelStatus:
+    async def _get_invalid_status(*, update_owner: bool = False) -> PanelStatus:
         return parse_status_response(
             json.dumps(
                 {
@@ -1197,3 +1197,60 @@ async def test_huge_status_integer_does_not_override_health_authority(
     assert diagnostics["status"] is None
     assert diagnostics["status_error"] == "invalid_response"
     assert diagnostics["health"]["build"] == HEALTH.build
+
+
+async def test_status_poll_claims_the_panel_update_while_its_entity_is_enabled(
+    hass: HomeAssistant,
+) -> None:
+    """The panel is told to withhold its MQTT update only while ours is shown."""
+    entry = _entry(hass)
+    executor, manager = _installer_doubles()
+    status_mock = AsyncMock(return_value=STATUS)
+    health_mock = AsyncMock(return_value=HEALTH)
+
+    with (
+        patch(
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_health",
+            health_mock,
+        ),
+        patch(
+            "custom_components.panel_assistant.client.HaPaneldClient.async_get_status",
+            status_mock,
+        ),
+        patch(
+            "custom_components.panel_assistant.async_resume_loaded_install_jobs",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "custom_components.panel_assistant.async_get_install_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch(
+            "custom_components.panel_assistant.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = entry.runtime_data.coordinator
+
+        # The first poll runs before the update platform registers its entity.
+        assert status_mock.await_args_list[0].kwargs == {"update_owner": False}
+
+        await coordinator.async_refresh()
+        assert status_mock.await_args.kwargs == {"update_owner": True}
+
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            "update", DOMAIN, f"{entry.entry_id}_update"
+        )
+        assert entity_id is not None
+        registry.async_update_entity(
+            entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        await coordinator.async_refresh()
+        assert status_mock.await_args.kwargs == {"update_owner": False}
+
+    # The health probe never claims anything.
+    for call in health_mock.await_args_list:
+        assert call.kwargs == {}

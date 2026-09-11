@@ -25,7 +25,7 @@ from .client import (
     UpdateRejectedError,
     is_newer_stable_version,
 )
-from .const import DOMAIN
+from .const import DOMAIN, update_unique_id
 from .coordinator import HaPaneldDataUpdateCoordinator
 from .device import panel_device_info
 from .status import PanelCachedUpdate
@@ -97,7 +97,7 @@ class HaPaneldUpdateEntity(
         super().__init__(coordinator)
         self._entry_id = entry_id
         self._update_coordinator = update_coordinator
-        self._attr_unique_id = f"{entry_id}_update"
+        self._attr_unique_id = update_unique_id(entry_id)
         self._attr_in_progress = False
         self._observer_task: asyncio.Task[None] | None = None
         self._recovery_started = False

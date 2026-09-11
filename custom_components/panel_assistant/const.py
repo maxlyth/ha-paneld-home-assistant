@@ -23,5 +23,13 @@ MAX_ZIGBEE_CPU_PERCENT = 1000
 
 HEALTH_PATH = "/api/v1/health"
 STATUS_PATH = "/api/v1/status"
+# Tells the panel this Home Assistant shows its ha-paneld update, so the panel
+# withholds its own MQTT update entity rather than duplicating it.
+UPDATE_OWNER_HEADER = "X-Panel-Assistant-Update-Owner"
 INSTALL_COMPONENT_PATH = "/api/v1/install/component"
 INSTALL_STATUS_PATH = "/api/v1/install/status"
+
+
+def update_unique_id(entry_id: str) -> str:
+    """Return the registry unique ID of an entry's ha-paneld update entity."""
+    return f"{entry_id}_update"

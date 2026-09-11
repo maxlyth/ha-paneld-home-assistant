@@ -21,6 +21,7 @@ from .const import (
     MAX_INSTALL_RESPONSE_BYTES,
     MAX_STATUS_RESPONSE_BYTES,
     STATUS_PATH,
+    UPDATE_OWNER_HEADER,
 )
 
 if TYPE_CHECKING:
@@ -362,12 +363,14 @@ class HaPaneldClient:
         """Return the panel-owned component-update endpoint."""
         return self.address.base_url.with_path(INSTALL_COMPONENT_PATH)
 
-    async def _async_get_bounded(self, url: URL, maximum_bytes: int) -> bytes:
+    async def _async_get_bounded(
+        self, url: URL, maximum_bytes: int, extra_headers: dict[str, str] | None = None
+    ) -> bytes:
         try:
             async with self._session.get(
                 url,
                 allow_redirects=False,
-                headers={"Cache-Control": "no-cache"},
+                headers={"Cache-Control": "no-cache", **(extra_headers or {})},
                 timeout=ClientTimeout(total=DEFAULT_TIMEOUT_SECONDS),
             ) as response:
                 if response.status != 200:
@@ -417,11 +420,19 @@ class HaPaneldClient:
         except UnicodeDecodeError as err:
             raise InvalidResponseError from err
 
-    async def async_get_status(self) -> PanelStatus:
-        """Fetch and parse the bounded, privacy-safe status response."""
+    async def async_get_status(self, *, update_owner: bool = False) -> PanelStatus:
+        """Fetch and parse the bounded, privacy-safe status response.
+
+        With ``update_owner`` the request tells the panel this Home Assistant
+        shows its ha-paneld update entity.
+        """
         from .status import parse_status_response
 
-        body = await self._async_get_bounded(self.status_url, MAX_STATUS_RESPONSE_BYTES)
+        body = await self._async_get_bounded(
+            self.status_url,
+            MAX_STATUS_RESPONSE_BYTES,
+            {UPDATE_OWNER_HEADER: "1"} if update_owner else None,
+        )
         try:
             return parse_status_response(body.decode("utf-8"))
         except UnicodeDecodeError as err:

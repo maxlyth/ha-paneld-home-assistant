@@ -782,6 +782,22 @@ async def test_client_fetches_canonical_status_endpoint() -> None:
     assert kwargs["headers"] == {"Cache-Control": "no-cache"}
 
 
+async def test_client_claims_the_panel_update_only_when_asked() -> None:
+    """The owner header rides only on a status poll that claims the update."""
+    session = _FakeSession(body=STATUS_FIXTURE.read_bytes())
+    client = HaPaneldClient(session, normalize_address("panel.local"))  # type: ignore[arg-type]
+
+    await client.async_get_status(update_owner=True)
+
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/status"
+    assert kwargs["headers"] == {
+        "Cache-Control": "no-cache",
+        "X-Panel-Assistant-Update-Owner": "1",
+    }
+
+
 async def test_client_rejects_invalid_status_utf8() -> None:
     """Invalid UTF-8 is rejected before status parsing."""
     client = HaPaneldClient(  # type: ignore[arg-type]

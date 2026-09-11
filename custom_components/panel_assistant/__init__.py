@@ -147,7 +147,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaPaneldConfigEntry) -> 
     await _async_resume_install_jobs(hass)
     address = normalize_address(entry.data[CONF_ADDRESS])
     client = HaPaneldClient(async_get_clientsession(hass), address)
-    coordinator = HaPaneldDataUpdateCoordinator(hass, client)
+    coordinator = HaPaneldDataUpdateCoordinator(hass, client, entry.entry_id)
     await coordinator.async_config_entry_first_refresh()
     update_coordinator = PanelUpdateCoordinator(hass, client)
     await update_coordinator.async_config_entry_first_refresh()
