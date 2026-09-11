@@ -162,6 +162,24 @@ async def _start_step(hass: HomeAssistant, step_id: str) -> dict:
     )
 
 
+async def _connect_found(hass: HomeAssistant, found: dict) -> dict:
+    """Choose to connect the running panel offered by the found_panel menu."""
+    assert found["type"] is FlowResultType.MENU
+    assert found["step_id"] == "found_panel"
+    return await hass.config_entries.flow.async_configure(
+        found["flow_id"], {"next_step_id": "connect_found"}
+    )
+
+
+async def _choose_version(hass: HomeAssistant, form: dict, tag: str = "") -> dict:
+    """Pick a release on the choose_version form reached after a clean probe."""
+    assert form["type"] is FlowResultType.FORM
+    assert form["step_id"] == "choose_version"
+    return await hass.config_entries.flow.async_configure(
+        form["flow_id"], {"release_candidate": tag}
+    )
+
+
 def _zeroconf_info(
     *,
     discovery_id: object = DISCOVERY_ID,
@@ -186,18 +204,14 @@ def _zeroconf_info(
 
 
 async def test_user_starts_with_install_first_menu(hass: HomeAssistant) -> None:
-    """Offer browser USB, network installation and existing attachment."""
+    """Offer one address-first path for network panels, then browser USB."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "user"
-    assert result["menu_options"] == [
-        "install_usb",
-        "install_or_upgrade",
-        "connect_existing",
-    ]
+    assert result["menu_options"] == ["add_panel", "install_usb"]
 
 
 async def test_first_user_flow_registers_browser_delivery_before_any_panel(
@@ -245,10 +259,10 @@ async def test_connect_existing_starts_with_address_form(
     hass: HomeAssistant,
 ) -> None:
     """The secondary path retains the existing manual address form."""
-    result = await _start_step(hass, "connect_existing")
+    result = await _start_step(hass, "add_panel")
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "connect_existing"
+    assert result["step_id"] == "add_panel"
 
 
 async def test_connect_existing_success(hass: HomeAssistant) -> None:
@@ -257,10 +271,11 @@ async def test_connect_existing_success(hass: HomeAssistant) -> None:
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         AsyncMock(return_value=HEALTH),
     ):
-        form = await _start_step(hass, "connect_existing")
-        result = await hass.config_entries.flow.async_configure(
+        form = await _start_step(hass, "add_panel")
+        found = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: " PANEL.local "}
         )
+        result = await _connect_found(hass, found)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "alpha"
@@ -277,11 +292,14 @@ async def test_connect_existing_duplicate_address_is_rejected(
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
-        first_form = await _start_step(hass, "connect_existing")
-        first = await hass.config_entries.flow.async_configure(
-            first_form["flow_id"], {CONF_ADDRESS: "PANEL.local"}
+        first_form = await _start_step(hass, "add_panel")
+        first = await _connect_found(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                first_form["flow_id"], {CONF_ADDRESS: "PANEL.local"}
+            ),
         )
-        second_form = await _start_step(hass, "connect_existing")
+        second_form = await _start_step(hass, "add_panel")
         second = await hass.config_entries.flow.async_configure(
             second_form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
@@ -297,7 +315,7 @@ async def test_connect_existing_duplicate_address_is_rejected(
 
 async def test_connect_existing_expected_errors(hass: HomeAssistant) -> None:
     """Address and health failures remain actionable connect-form errors."""
-    invalid_form = await _start_step(hass, "connect_existing")
+    invalid_form = await _start_step(hass, "add_panel")
     with patch(
         "custom_components.panel_assistant.config_flow.normalize_address",
         side_effect=InvalidAddressError,
@@ -306,24 +324,33 @@ async def test_connect_existing_expected_errors(hass: HomeAssistant) -> None:
             invalid_form["flow_id"], {CONF_ADDRESS: "bad"}
         )
 
-    unavailable_form = await _start_step(hass, "connect_existing")
-    with patch(
-        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
-        AsyncMock(side_effect=CannotConnectError),
+    # Only a non-standard port is connect-only; on 8888 a health failure is
+    # followed by the read-only ADB probe instead of a connect error.
+    unavailable_form = await _start_step(hass, "add_panel")
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
+            AsyncMock(),
+        ) as probe_mock,
     ):
         unavailable = await hass.config_entries.flow.async_configure(
-            unavailable_form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            unavailable_form["flow_id"], {CONF_ADDRESS: "panel.local:8123"}
         )
 
-    assert invalid["step_id"] == "connect_existing"
+    assert invalid["step_id"] == "add_panel"
     assert invalid["errors"] == {"base": "invalid_address"}
-    assert unavailable["step_id"] == "connect_existing"
+    assert unavailable["step_id"] == "add_panel"
     assert unavailable["errors"] == {"base": "cannot_connect"}
+    probe_mock.assert_not_awaited()
 
 
 async def test_connect_existing_unexpected_error(hass: HomeAssistant) -> None:
     """Unexpected attach failures do not escape the flow."""
-    form = await _start_step(hass, "connect_existing")
+    form = await _start_step(hass, "add_panel")
     with patch(
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         AsyncMock(side_effect=RuntimeError("unexpected")),
@@ -621,7 +648,7 @@ async def test_install_rejects_invalid_address_before_network_calls(
     """An invalid target returns to the install form without probing it."""
     health_mock = AsyncMock()
     probe_mock = AsyncMock()
-    form = await _start_step(hass, "install_or_upgrade")
+    form = await _start_step(hass, "add_panel")
     with (
         patch(
             "custom_components.panel_assistant.config_flow.normalize_address",
@@ -640,8 +667,8 @@ async def test_install_rejects_invalid_address_before_network_calls(
             form["flow_id"], {CONF_ADDRESS: "bad"}
         )
 
-    assert result["step_id"] == "install_or_upgrade"
-    assert result["errors"] == {"base": "invalid_install_address"}
+    assert result["step_id"] == "add_panel"
+    assert result["errors"] == {"base": "invalid_address"}
     assert result["description_placeholders"] == {
         "panel_access_url": (
             "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
@@ -685,13 +712,13 @@ async def test_install_network_refusal_precedes_all_panel_contact(
             probe_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "install_or_upgrade"
+    assert result["step_id"] == "add_panel"
     assert result["errors"] == {"base": expected_error}
     health_mock.assert_not_awaited()
     probe_mock.assert_not_awaited()
@@ -713,7 +740,7 @@ async def test_install_uses_pinned_address_for_health_and_adb(
         ),
     ):
         client_class.return_value.async_get_health = health_mock
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "Panel.local"}
         )
@@ -742,13 +769,14 @@ async def test_install_existing_panel_requires_confirmation(
             probe_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         confirm = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: " PANEL.local "}
         )
 
-        assert confirm["type"] is FlowResultType.FORM
-        assert confirm["step_id"] == "confirm_existing"
+        assert confirm["type"] is FlowResultType.MENU
+        assert confirm["step_id"] == "found_panel"
+        assert confirm["menu_options"] == ["connect_found", "add_panel"]
         assert confirm["description_placeholders"] == {
             "address": "panel.local",
             "version": "0.9.0",
@@ -756,7 +784,7 @@ async def test_install_existing_panel_requires_confirmation(
         assert not hass.config_entries.async_entries(DOMAIN)
         probe_mock.assert_not_awaited()
 
-        result = await hass.config_entries.flow.async_configure(confirm["flow_id"], {})
+        result = await _connect_found(hass, confirm)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "alpha"
@@ -775,14 +803,14 @@ async def test_install_existing_panel_rechecks_health_before_create(
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         confirm = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
-        result = await hass.config_entries.flow.async_configure(confirm["flow_id"], {})
+        result = await _connect_found(hass, confirm)
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "confirm_existing"
+    assert result["step_id"] == "add_panel"
     assert result["errors"] == {"base": "cannot_connect"}
     assert health_mock.await_count == 2
     assert not hass.config_entries.async_entries(DOMAIN)
@@ -797,7 +825,7 @@ async def test_install_existing_panel_revalidates_pin_before_confirmation(
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         confirm = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
@@ -809,12 +837,10 @@ async def test_install_existing_panel_revalidates_pin_before_confirmation(
                 )
             ),
         ):
-            result = await hass.config_entries.flow.async_configure(
-                confirm["flow_id"], {}
-            )
+            result = await _connect_found(hass, confirm)
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "confirm_existing"
+    assert result["step_id"] == "add_panel"
     assert result["errors"] == {"base": "install_target_changed"}
     assert health_mock.await_count == 1
     assert not hass.config_entries.async_entries(DOMAIN)
@@ -829,41 +855,124 @@ async def test_install_existing_panel_handles_unexpected_confirmation_failure(
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         confirm = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
-        result = await hass.config_entries.flow.async_configure(confirm["flow_id"], {})
+        result = await _connect_found(hass, confirm)
 
-    assert result["step_id"] == "confirm_existing"
+    assert result["step_id"] == "add_panel"
     assert result["errors"] == {"base": "unknown"}
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_install_rejects_an_http_port_as_an_adb_port(
+async def test_found_panel_back_option_returns_to_prefilled_address_form(
     hass: HomeAssistant,
 ) -> None:
-    """The install target keeps fixed HTTP and ADB ports as separate protocols."""
-    health_mock = AsyncMock()
+    """Going back from a found panel keeps the typed address and connects nothing."""
+    health_mock = AsyncMock(return_value=HEALTH)
+    with patch(
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        form = await _start_step(hass, "add_panel")
+        found = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: " PANEL.local "}
+        )
+        assert found["step_id"] == "found_panel"
+        back = await hass.config_entries.flow.async_configure(
+            found["flow_id"], {"next_step_id": "add_panel"}
+        )
+
+    assert back["type"] is FlowResultType.FORM
+    assert back["step_id"] == "add_panel"
+    assert back["errors"] == {}
+    [address_key] = back["data_schema"].schema
+    assert address_key == CONF_ADDRESS
+    assert address_key.description == {"suggested_value": "panel.local"}
+    assert health_mock.await_count == 1
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_connect_found_failure_returns_to_address_form_and_can_retry(
+    hass: HomeAssistant,
+) -> None:
+    """A failed connect lands on the prefilled address form, never a dead end."""
+    # Found, failed connect, found again, connect, then the new entry's refresh.
+    health_mock = AsyncMock(
+        side_effect=[HEALTH, CannotConnectError, HEALTH, HEALTH, HEALTH]
+    )
+    with patch(
+        "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+        health_mock,
+    ):
+        form = await _start_step(hass, "add_panel")
+        found = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+        failed = await _connect_found(hass, found)
+
+        assert failed["type"] is FlowResultType.FORM
+        assert failed["step_id"] == "add_panel"
+        assert failed["errors"] == {"base": "cannot_connect"}
+        [address_key] = failed["data_schema"].schema
+        assert address_key.description == {"suggested_value": "panel.local"}
+        assert not hass.config_entries.async_entries(DOMAIN)
+
+        again = await hass.config_entries.flow.async_configure(
+            failed["flow_id"], {CONF_ADDRESS: "panel.local"}
+        )
+        result = await _connect_found(hass, again)
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {CONF_ADDRESS: "panel.local"}
+
+
+@pytest.mark.parametrize("healthy", [True, False], ids=["healthy", "unreachable"])
+async def test_install_rejects_an_http_port_as_an_adb_port(
+    hass: HomeAssistant, install_network_pin: SimpleNamespace, healthy: bool
+) -> None:
+    """A non-standard port is connect-only: health alone, never pin, job or ADB."""
+    health_mock = (
+        AsyncMock(return_value=HEALTH)
+        if healthy
+        else AsyncMock(side_effect=CannotConnectError)
+    )
     probe_mock = AsyncMock()
+    manager_mock = AsyncMock()
     with (
         patch(
-            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
-            health_mock,
-        ),
+            "custom_components.panel_assistant.config_flow.HaPaneldClient"
+        ) as client_class,
         patch(
             "custom_components.panel_assistant.config_flow.async_probe_install_target",
             probe_mock,
         ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
+            manager_mock,
+        ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        client_class.return_value.async_get_health = health_mock
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local:5555"}
         )
 
-    assert result["step_id"] == "install_or_upgrade"
-    assert result["errors"] == {"base": "invalid_install_address"}
-    health_mock.assert_not_awaited()
+    if healthy:
+        assert result["type"] is FlowResultType.MENU
+        assert result["step_id"] == "found_panel"
+        assert result["description_placeholders"] == {
+            "address": "panel.local:5555",
+            "version": "0.9.0",
+        }
+    else:
+        assert result["step_id"] == "add_panel"
+        assert result["errors"] == {"base": "cannot_connect"}
+    health_mock.assert_awaited_once()
+    assert client_class.call_args.args[1].stored_value == "panel.local:5555"
+    install_network_pin.pin.assert_not_awaited()
+    manager_mock.assert_not_awaited()
     probe_mock.assert_not_awaited()
 
 
@@ -876,11 +985,14 @@ async def test_install_existing_duplicate_address_is_rejected(
         "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
         health_mock,
     ):
-        connect = await _start_step(hass, "connect_existing")
-        first = await hass.config_entries.flow.async_configure(
-            connect["flow_id"], {CONF_ADDRESS: "PANEL.local"}
+        connect = await _start_step(hass, "add_panel")
+        first = await _connect_found(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                connect["flow_id"], {CONF_ADDRESS: "PANEL.local"}
+            ),
         )
-        install = await _start_step(hass, "install_or_upgrade")
+        install = await _start_step(hass, "add_panel")
         duplicate = await hass.config_entries.flow.async_configure(
             install["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
@@ -911,7 +1023,7 @@ async def test_install_unavailable_duplicate_address_is_rejected_before_probe(
             probe_mock,
         ),
     ):
-        install = await _start_step(hass, "install_or_upgrade")
+        install = await _start_step(hass, "add_panel")
         duplicate = await hass.config_entries.flow.async_configure(
             install["flow_id"], {CONF_ADDRESS: "PANEL.local"}
         )
@@ -952,12 +1064,15 @@ async def test_install_candidate_readiness_is_non_mutating_until_confirmation(
             release_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        user_input = {CONF_ADDRESS: "Panel.local"}
-        if empty_candidate:
-            user_input["release_candidate"] = ""
+        form = await _start_step(hass, "add_panel")
+        choose = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "Panel.local"}
+        )
+        assert choose["step_id"] == "choose_version"
+        release_mock.assert_not_awaited()
+        # An omitted choice takes the schema default, the newest stable release.
         confirm = await hass.config_entries.flow.async_configure(
-            form["flow_id"], user_input
+            choose["flow_id"], {"release_candidate": ""} if empty_candidate else {}
         )
 
         assert confirm["type"] is FlowResultType.FORM
@@ -1018,12 +1133,15 @@ async def test_install_classification_error_can_retry_to_candidate(
             AsyncMock(return_value=RELEASE),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         refused = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
-        recovered = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        recovered = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
 
     assert refused["errors"] == {"base": "adb_unreachable"}
@@ -1058,7 +1176,7 @@ async def test_install_candidate_without_identity_fails_closed(
             release_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
@@ -1091,13 +1209,13 @@ async def test_install_classification_refusals_return_to_address_form(
             AsyncMock(return_value=_probe(state)),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "install_or_upgrade"
+    assert result["step_id"] == "add_panel"
     assert result["errors"] == {"base": expected_error}
     assert not hass.config_entries.async_entries(DOMAIN)
 
@@ -1126,10 +1244,14 @@ async def test_install_unauthorized_requires_physical_approval_without_creating_
             AsyncMock(return_value=RELEASE),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        result = await hass.config_entries.flow.async_configure(
+        form = await _start_step(hass, "add_panel")
+        choose = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "Panel.local"}
         )
+        assert choose["step_id"] == "choose_version"
+        assert choose["description_placeholders"] == {"address": "panel.local"}
+        signer_mock.assert_not_awaited()
+        result = await _choose_version(hass, choose)
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "authorize_adb"
@@ -1169,9 +1291,12 @@ async def test_install_authorization_retry_uses_persistent_signer(
             AsyncMock(return_value=RELEASE),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        authorize = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        authorize = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         result = await hass.config_entries.flow.async_configure(
             authorize["flow_id"], {}
@@ -1212,9 +1337,12 @@ async def test_install_authorization_revalidates_pin_before_loading_key(
             AsyncMock(return_value=RELEASE),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        authorize = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        authorize = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         with patch(
             "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
@@ -1301,9 +1429,12 @@ async def test_install_authorization_approval_reaches_release_preview(
             release_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        authorize = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        authorize = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         result = await hass.config_entries.flow.async_configure(
             authorize["flow_id"], {}
@@ -1352,9 +1483,12 @@ async def test_install_authorization_credential_storage_error_is_actionable(
             AsyncMock(return_value=RELEASE),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        authorize = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        authorize = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         result = await hass.config_entries.flow.async_configure(
             authorize["flow_id"], {}
@@ -1414,9 +1548,12 @@ async def test_install_authorization_failures_create_no_config_entry(
             release_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        authorize = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        authorize = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         result = await hass.config_entries.flow.async_configure(
             authorize["flow_id"], {}
@@ -1454,13 +1591,16 @@ async def test_install_candidate_release_resolution_failure_is_non_mutating(
             AsyncMock(side_effect=ReleaseResolutionError),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        result = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        result = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "install_or_upgrade"
+    assert result["step_id"] == "choose_version"
     assert result["errors"] == {"base": "cannot_resolve_release"}
     assert not hass.config_entries.async_entries(DOMAIN)
 
@@ -1490,11 +1630,15 @@ async def test_unexpected_release_failure_is_not_misclassified(
             AsyncMock(side_effect=RuntimeError("unexpected")),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        result = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        result = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
 
+    assert result["step_id"] == "choose_version"
     assert result["errors"] == {"base": "unknown"}
     assert not hass.config_entries.async_entries(DOMAIN)
 
@@ -1529,13 +1673,13 @@ async def test_install_unexpected_failures_are_safe(
             probe_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "install_or_upgrade"
+    assert result["step_id"] == "add_panel"
     assert result["errors"] == {"base": "unknown"}
     assert not hass.config_entries.async_entries(DOMAIN)
 
@@ -1544,7 +1688,7 @@ async def test_install_unexpected_failures_are_safe(
     "step_method",
     [
         "async_step_authorize_adb",
-        "async_step_confirm_existing",
+        "async_step_connect_found",
         "async_step_confirm_install_candidate",
     ],
 )
@@ -1618,23 +1762,56 @@ def _rc_release() -> ReleaseArtifact:
         "v0.9.7-rc03",
         "v0.9.7-rc3\n",
         "v0.9.7-rc" + "3" * 60,
+        "v0.9.8-rc1",
     ],
 )
 async def test_invalid_rc_selection_precedes_all_contact(
     hass: HomeAssistant, tag: object
 ) -> None:
+    """A malformed or unoffered RC is refused before any release or key work."""
     flow = HaPaneldConfigFlow()
     flow.hass = hass
-    with patch(
-        "custom_components.panel_assistant.config_flow.async_pin_install_target",
-        AsyncMock(),
-    ) as pin:
-        result = await flow.async_step_install_or_upgrade(
-            {CONF_ADDRESS: "panel.local", "release_candidate": tag}
-        )
+    manager = _manager_for(_receipt(InstallPhase.APPROVED))
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
+            AsyncMock(return_value=CANDIDATE),
+        ) as probe,
+        patch(
+            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            AsyncMock(),
+        ) as rc,
+        patch(
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            AsyncMock(),
+        ) as stable,
+        patch(
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
+            AsyncMock(),
+        ) as credential,
+    ):
+        choose = await flow.async_step_add_panel({CONF_ADDRESS: "panel.local"})
+        assert choose["step_id"] == "choose_version"
+        # Called directly: HA's selector would reject most of these before the
+        # step, so this proves the step's own guard.
+        result = await flow.async_step_choose_version({"release_candidate": tag})
     assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "choose_version"
     assert result["errors"] == {"release_candidate": "invalid_release_candidate"}
-    pin.assert_not_awaited()
+    assert probe.await_count == 1
+    rc.assert_not_awaited()
+    stable.assert_not_awaited()
+    credential.assert_not_awaited()
+    manager.async_create_or_join.assert_not_awaited()
+    assert flow._pending_release is None
 
 
 async def test_rc_selection_requires_exact_translated_consent_and_frozen_plan(
@@ -1679,12 +1856,14 @@ async def test_rc_selection_requires_exact_translated_consent_and_frozen_plan(
         ),
         patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        assert "release_candidate" in form["data_schema"].schema
-        preview = await hass.config_entries.flow.async_configure(
-            form["flow_id"],
-            {CONF_ADDRESS: "panel.local", "release_candidate": selected.tag},
+        form = await _start_step(hass, "add_panel")
+        assert "release_candidate" not in form["data_schema"].schema
+        choose = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
+        assert "release_candidate" in choose["data_schema"].schema
+        rc.assert_not_awaited()
+        preview = await _choose_version(hass, choose, selected.tag)
         assert preview["step_id"] == "confirm_install_rc"
         assert preview["description_placeholders"]["tag"] == selected.tag
         assert preview["description_placeholders"]["sha256"] == selected.sha256
@@ -1727,20 +1906,25 @@ async def test_rc_resolution_failure_never_falls_back_or_creates_credential(
             AsyncMock(),
         ) as credential,
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        result = await hass.config_entries.flow.async_configure(
-            form["flow_id"],
-            {CONF_ADDRESS: "panel.local", "release_candidate": "v0.9.7-rc3"},
+        form = await _start_step(hass, "add_panel")
+        result = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
+            "v0.9.7-rc3",
         )
+    assert result["step_id"] == "choose_version"
     assert result["errors"] == {"base": "cannot_resolve_release"}
     rc.assert_awaited_once()
     stable.assert_not_awaited()
     credential.assert_not_awaited()
 
 
-async def test_rc_requested_on_installed_panel_only_connects(
-    hass: HomeAssistant,
+async def test_installed_panel_only_connects_without_release_work(
+    hass: HomeAssistant, install_release_catalog: AsyncMock
 ) -> None:
+    """A healthy panel is connected without asking for, or resolving, a release."""
     with (
         patch(
             "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
@@ -1759,25 +1943,25 @@ async def test_rc_requested_on_installed_panel_only_connects(
             AsyncMock(),
         ) as stable,
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
-            form["flow_id"],
-            {CONF_ADDRESS: "panel.local", "release_candidate": "v0.9.7-rc3"},
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
-        assert result["step_id"] == "confirm_existing"
-        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        assert result["step_id"] == "found_panel"
+        result = await _connect_found(hass, result)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {CONF_ADDRESS: "panel.local"}
     adb.assert_not_awaited()
     rc.assert_not_awaited()
     stable.assert_not_awaited()
+    install_release_catalog.assert_not_awaited()
 
 
-@pytest.mark.parametrize("requested", ["", "v0.9.7-rc3", "v0.9.7-rc4"])
 @pytest.mark.parametrize("active_tag", ["v0.9.7", "v0.9.7-rc3"])
-async def test_active_job_does_not_switch_release(
-    hass: HomeAssistant, requested: str, active_tag: str
+async def test_active_job_resumes_with_its_own_release(
+    hass: HomeAssistant, active_tag: str, install_release_catalog: AsyncMock
 ) -> None:
+    """An active job resumes its original release; no version is ever asked."""
     receipt = replace(
         _receipt(InstallPhase.APPROVED),
         artifact=replace(
@@ -1815,21 +1999,19 @@ async def test_active_job_does_not_switch_release(
         ) as stable,
         patch.object(HaPaneldConfigFlow, "_async_show_install_progress", progress),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
-            form["flow_id"],
-            {CONF_ADDRESS: "panel.local", "release_candidate": requested},
+            form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )
-    if requested and requested != active_tag:
-        assert result["type"] is FlowResultType.FORM
-        assert result["errors"] == {"base": "install_release_conflict"}
-        progress.assert_not_awaited()
-    else:
-        progress.assert_awaited_once_with(receipt)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "install_worker_stopped"
+    progress.assert_awaited_once_with(receipt)
+    assert progress.await_args.args[0].artifact.release_tag == active_tag
     health.assert_not_awaited()
     adb.assert_not_awaited()
     rc.assert_not_awaited()
     stable.assert_not_awaited()
+    install_release_catalog.assert_not_awaited()
     manager.async_create_or_join.assert_not_awaited()
 
 
@@ -1970,9 +2152,12 @@ async def test_descriptorless_unauthorized_release_never_loads_a_credential(
             verify_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        preview = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        preview = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         result = await hass.config_entries.flow.async_configure(preview["flow_id"], {})
 
@@ -1983,14 +2168,72 @@ async def test_descriptorless_unauthorized_release_never_loads_a_credential(
         "tag": RELEASE.tag,
         "sha256": RELEASE.sha256,
     }
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "preview_only_release"
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "choose_version"
     credential_mock.assert_not_awaited()
     durable_mock.assert_not_awaited()
     signer_mock.assert_not_awaited()
     verify_mock.assert_not_awaited()
     manager.async_create_or_join.assert_not_awaited()
     assert len(probe_mock.await_args.args) == 1
+
+
+async def test_release_preview_only_returns_to_choose_version(
+    hass: HomeAssistant,
+) -> None:
+    """A legacy release is not a dead end: another release can still be chosen."""
+    manager = _manager_for(_receipt(InstallPhase.APPROVED))
+    credential_mock = AsyncMock()
+    stable_mock = AsyncMock(return_value=LEGACY_RELEASE)
+    rc_mock = AsyncMock(return_value=_rc_release())
+    with (
+        patch(
+            "custom_components.panel_assistant.config_flow.async_get_install_job_manager",
+            AsyncMock(return_value=manager),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.HaPaneldClient.async_get_health",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_probe_install_target",
+            AsyncMock(return_value=CANDIDATE),
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_resolve_stable_release",
+            stable_mock,
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_resolve_rc_release",
+            rc_mock,
+        ),
+        patch(
+            "custom_components.panel_assistant.config_flow.async_get_adb_credential",
+            credential_mock,
+        ),
+    ):
+        form = await _start_step(hass, "add_panel")
+        preview = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
+        )
+        assert preview["step_id"] == "release_preview_only"
+        back = await hass.config_entries.flow.async_configure(preview["flow_id"], {})
+
+        assert back["type"] is FlowResultType.FORM
+        assert back["step_id"] == "choose_version"
+        assert back["errors"] is None
+        assert back["description_placeholders"] == {"address": "panel.local"}
+        rc_preview = await _choose_version(hass, back, "v0.9.7-rc3")
+
+    assert rc_preview["step_id"] == "confirm_install_rc"
+    assert rc_preview["description_placeholders"]["tag"] == "v0.9.7-rc3"
+    stable_mock.assert_awaited_once()
+    rc_mock.assert_awaited_once()
+    credential_mock.assert_not_awaited()
+    manager.async_create_or_join.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -2036,9 +2279,12 @@ async def test_signed_confirmation_rejects_every_target_identity_drift(
             AsyncMock(return_value=CREDENTIAL),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        preview = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        preview = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         result = await hass.config_entries.flow.async_configure(preview["flow_id"], {})
 
@@ -2082,9 +2328,12 @@ async def test_confirmation_late_duplicate_guard_precedes_all_contact(
             credential_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        preview = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        preview = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         MockConfigEntry(domain=DOMAIN, data={CONF_ADDRESS: "panel.local"}).add_to_hass(
             hass
@@ -2126,9 +2375,12 @@ async def test_signed_confirmation_pin_drift_precedes_credentials_and_job(
             credential_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        preview = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        preview = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         with patch(
             "custom_components.panel_assistant.config_flow.async_revalidate_install_target",
@@ -2194,9 +2446,12 @@ async def test_install_progress_removal_detaches_without_cancelling_worker(
             AsyncMock(return_value=CREDENTIAL),
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
-        preview = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {CONF_ADDRESS: "panel.local"}
+        form = await _start_step(hass, "add_panel")
+        preview = await _choose_version(
+            hass,
+            await hass.config_entries.flow.async_configure(
+                form["flow_id"], {CONF_ADDRESS: "panel.local"}
+            ),
         )
         progress = await hass.config_entries.flow.async_configure(
             preview["flow_id"], {}
@@ -2346,7 +2601,7 @@ async def test_existing_job_reattaches_before_any_panel_or_release_contact(
             credential_mock,
         ),
     ):
-        form = await _start_step(hass, "install_or_upgrade")
+        form = await _start_step(hass, "add_panel")
         progress = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local"}
         )

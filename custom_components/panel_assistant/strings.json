@@ -5,47 +5,45 @@
     "step": {
       "user": {
         "title": "Set up a panel",
-        "description": "Install ha-paneld on a new panel or connect a panel that is already running it.",
+        "description": "Add a panel on your network, or install ha-paneld on one plugged into this computer.",
         "menu_options": {
-          "install_usb": "Install using USB on this browser",
-          "install_or_upgrade": "Install ha-paneld on a panel",
-          "connect_existing": "Connect an existing ha-paneld installation"
+          "add_panel": "Add a panel on your network",
+          "install_usb": "Install using USB on this computer"
         },
         "menu_option_descriptions": {
-          "install_usb": "Connect the panel by USB to this computer, not to the Home Assistant server.",
-          "install_or_upgrade": "Let Home Assistant inspect and install a clean panel over Android Debug Bridge (ADB).",
-          "connect_existing": "Add a healthy installation. A later integration version will manage updates after connection."
+          "add_panel": "Enter the panel's address. Home Assistant connects it if ha-paneld is running, or offers to install ha-paneld if it isn't.",
+          "install_usb": "Plug the panel into this computer, not into the Home Assistant server."
         }
       },
       "install_usb": {
         "title": "Install using USB",
         "description": "[Open the USB installer]({usb_install_url}). Connect the panel to the device running this browser, not to the Home Assistant server. Use a browser with WebUSB support and enable USB debugging on the panel.\n\nThe experimental installer supports clean installations only. Existing installations are not overwritten. Afterwards, complete setup on the panel and return here to connect the existing installation. Submit returns to the setup menu."
       },
-      "install_or_upgrade": {
-        "title": "Install ha-paneld",
-        "description": "Before continuing, find the panel's IP address, keep physical access to its screen and enable network ADB on port 5555 using the [model-specific panel access guide]({panel_access_url}). Root access is not required. Enter the hostname or IP address below. Home Assistant first checks for an existing installation, then uses ADB only for a clean first installation whose exact release can be verified.",
+      "add_panel": {
+        "title": "Add a panel",
+        "description": "Enter the panel's hostname or IP address. If ha-paneld isn't installed yet, first turn on network ADB on port 5555 using the [model-specific panel access guide]({panel_access_url}). Root access is not required.",
         "data": {
-          "address": "Panel hostname or IP address",
-          "release_candidate": "Release"
-        },
-        "data_description": {
-          "release_candidate": "Choose the latest stable release or a published release candidate (RC) for testing. RCs may contain bugs. The default also resumes an existing job with its original release. When only resume is offered, no new stable installation is available. This does not upgrade an installed panel."
+          "address": "Panel hostname or IP address"
         }
       },
-      "connect_existing": {
-        "title": "Connect an existing panel",
-        "description": "Enter the hostname or IP address of a panel already running ha-paneld.",
+      "found_panel": {
+        "title": "ha-paneld is running on this panel",
+        "description": "Found ha-paneld {version} at {address}. Once it's connected, its updates appear in Home Assistant.",
+        "menu_options": {
+          "connect_found": "Connect this panel",
+          "add_panel": "Use a different address"
+        }
+      },
+      "choose_version": {
+        "title": "Choose a version",
+        "description": "ha-paneld isn't installed on {address} yet. Choose the version to install. Test versions may contain bugs.",
         "data": {
-          "address": "Panel address"
+          "release_candidate": "Version"
         }
       },
       "confirm_discovery": {
         "title": "Confirm discovered panel",
         "description": "Home Assistant found a ha-paneld installation at {address}. Submit to verify it is still the same panel and add it as {panel_name}. No panel settings will change."
-      },
-      "confirm_existing": {
-        "title": "ha-paneld is already installed",
-        "description": "A healthy ha-paneld {version} installation was found at {address}. Submit to connect it to Home Assistant. A later integration version will add update management. No installation will be performed, even if a release candidate tag was entered."
       },
       "authorize_adb": {
         "title": "Authorize Home Assistant on the panel",
@@ -61,7 +59,7 @@
       },
       "release_preview_only": {
         "title": "Release cannot be installed automatically",
-        "description": "Panel {address} is eligible for further inspection, and release {version} ({tag}, SHA-256 {sha256}) was authenticated. This release has no signed installation descriptor, so Home Assistant will not create an ADB credential, download the APK, or change the panel."
+        "description": "Panel {address} is eligible for further inspection, and release {version} ({tag}, SHA-256 {sha256}) was authenticated. This release has no signed installation descriptor, so Home Assistant will not create an ADB credential, download the APK, or change the panel. Submit to choose another version."
       },
       "install_result": {
         "title": "Finish panel setup",
@@ -69,7 +67,7 @@
       }
     },
     "progress": {
-      "installing": "Installing and verifying ha-paneld at {address}. Leave this dialog open to finish automatically. You may close it and Home Assistant will keep the installation job running, but it cannot add the device until you reopen Settings → Devices & services → Add integration, select Panel Assistant, choose Install ha-paneld on a panel and enter the same address. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
+      "installing": "Installing and verifying ha-paneld at {address}. Leave this dialog open to finish automatically. You may close it and Home Assistant will keep the installation job running, but it cannot add the device until you reopen Settings → Devices & services → Add integration, select Panel Assistant, choose Add a panel on your network and enter the same address. After Home Assistant adds the device, complete ha-paneld's guided setup on the panel."
     },
     "error": {
       "cannot_connect": "Unable to connect to a valid ha-paneld health endpoint.",
@@ -88,8 +86,7 @@
       "retained_or_ambiguous": "The panel may contain a retained ha-paneld package record or its package state could not be proven absent. No panel change was made. Retry once if the connection was unstable; otherwise follow the provisioning safety and recovery guide linked from the integration documentation. Do not uninstall or reset the app without a verified backup.",
       "incompatible": "The ha-paneld package was not found, but the panel's Android SDK or processor architecture is not supported. No APK was downloaded or installed.",
       "cannot_resolve_release": "An install candidate was found, but Home Assistant could not resolve and verify the selected ha-paneld release. No APK was downloaded or installed. Check internet access and, if testing a release candidate, that the exact tag is published with its signed assets. No other release will be substituted.",
-      "invalid_release_candidate": "Select an available release candidate from the list, or use the default stable/resume option.",
-      "install_release_conflict": "An existing installation job owns this panel with a different release. Its version cannot be changed here. Select the default option to resume that job.",
+      "invalid_release_candidate": "Choose a version from the list.",
       "install_candidate_changed": "The panel identity or clean package state changed after the preview. No installation job was created. Start again after checking the panel.",
       "install_plan_rejected": "The panel and signed release could not be bound into a safe installation plan. No installation job was created.",
       "install_job_conflict": "A different installation job already owns this panel identity. No second job was created.",
@@ -97,14 +94,13 @@
       "install_finalization_busy": "Another setup dialog is completing this panel. Wait for it to finish, then retry if needed.",
       "install_finalization_retry": "The installation completed, but a final read-only network, ADB, or health check is temporarily unavailable. Check the panel and retry; the installation will not run again.",
       "unknown": "Unexpected error",
-      "release_catalog_unavailable": "Home Assistant could not load published releases. Check internet access, then submit to retry or resume a saved job. You can also return to connect an existing installation.",
-      "release_catalog_empty": "No eligible installation releases are currently published. Submit to check again or resume a saved job, or return to connect an existing installation.",
-      "release_selection_required": "Release choices have been refreshed. Select an available release to continue; the resume-only option cannot start a new installation."
+      "release_catalog_unavailable": "Home Assistant couldn't load the list of versions. Check its internet access, then submit to try again.",
+      "release_catalog_empty": "No versions are published yet. Submit to check again.",
+      "release_selection_required": "Choose a version from the list."
     },
     "abort": {
       "already_configured": "This panel is already configured.",
       "invalid_discovery": "The discovered panel did not prove to be the same healthy ha-paneld installation. No Home Assistant entry or panel setting was changed.",
-      "preview_only_release": "The authenticated release has no signed installation descriptor. No ADB credential was created, no APK was downloaded, and no panel state changed.",
       "install_cancelled": "The installation was cancelled before an APK was installed. No Home Assistant entry was created. To try again, add the Panel Assistant integration and enter the same panel address.",
       "install_cancelled_after_staging_cleanup": "The installation was cancelled and the staged APK was removed before installation. No Home Assistant entry was created. To try again, add the Panel Assistant integration and enter the same panel address.",
       "install_authorization_failed": "Home Assistant could not safely load or validate its stored ADB credential. No APK was installed. Check Home Assistant's storage and logs, then add the Panel Assistant integration and enter the same address to try again.",
@@ -162,13 +158,6 @@
     },
     "update_did_not_return": {
       "message": "The panel did not return after the update"
-    }
-  },
-  "selector": {
-    "release_channel": {
-      "options": {
-        "resume_existing": "Resume existing job only"
-      }
     }
   }
 }

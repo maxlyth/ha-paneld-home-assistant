@@ -113,20 +113,17 @@ async def test_native_status_and_exception_translations(
     config_strings = await async_get_translations(hass, language, "config", {DOMAIN})
     entity_strings = await async_get_translations(hass, language, "entity", {DOMAIN})
     error_strings = await async_get_translations(hass, language, "exceptions", {DOMAIN})
-    selector_strings = await async_get_translations(
-        hass, language, "selector", {DOMAIN}
-    )
     assert (
-        selector_strings.get(
-            f"component.{DOMAIN}.selector.release_channel.options.resume_existing"
+        config_strings.get(
+            f"component.{DOMAIN}.config.step.found_panel.menu_options.connect_found"
         )
         == {
-            "en": "Resume existing job only",
-            "de": "Nur bestehenden Auftrag fortsetzen",
-            "es": "Solo reanudar un trabajo existente",
-            "fr": "Reprendre une tâche existante uniquement",
-            "it": "Riprendi solo un’attività esistente",  # noqa: RUF001
-            "zh-Hans": "仅继续现有任务",
+            "en": "Connect this panel",
+            "de": "Dieses Panel verbinden",
+            "es": "Conectar este panel",
+            "fr": "Connecter ce panneau",
+            "it": "Collega questo pannello",
+            "zh-Hans": "连接此面板",
         }[language]
     )
     sensor = HaPaneldStatusSensor(

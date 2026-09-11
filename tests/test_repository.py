@@ -303,7 +303,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
         "it.json",
         "zh-Hans.json",
     ]
-    assert len(english) == 94
+    assert len(english) == 89
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)
@@ -364,17 +364,24 @@ def test_install_confirmation_keeps_each_fact_on_its_own_line(
 def test_rc_selection_and_confirmation_are_keyed_and_explicit() -> None:
     strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
     steps = strings["config"]["step"]
-    help_text = steps["install_or_upgrade"]["data_description"]["release_candidate"]
+    version = steps["choose_version"]
     warning = steps["confirm_install_rc"]["description"]
-    assert "Choose the latest stable release" in help_text
-    assert "published release candidate (RC)" in help_text
+    assert version["data"] == {"release_candidate": "Version"}
+    assert "Test versions may contain bugs" in version["description"]
     assert "not a stable release" in warning
     assert "may contain bugs" in warning
     assert "{version}" in warning and "{tag}" in warning and "{sha256}" in warning
-    assert (
-        "even if a release candidate tag was entered"
-        in steps["confirm_existing"]["description"]
-    )
+
+
+def test_setup_starts_from_the_address_and_never_strands_a_running_panel() -> None:
+    """One network path; a panel that already runs ha-paneld can connect or go back."""
+    strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
+    steps = strings["config"]["step"]
+    assert set(steps["user"]["menu_options"]) == {"add_panel", "install_usb"}
+    assert steps["add_panel"]["data"] == {"address": "Panel hostname or IP address"}
+    assert set(steps["found_panel"]["menu_options"]) == {"connect_found", "add_panel"}
+    for removed in ("install_or_upgrade", "connect_existing", "confirm_existing"):
+        assert removed not in steps
 
 
 def test_runtime_harness_health_fixture_uses_production_grammar() -> None:
@@ -414,7 +421,7 @@ def test_install_flow_copy_covers_first_time_handoffs() -> None:
     strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
     config = strings["config"]
     steps = config["step"]
-    install = steps["install_or_upgrade"]["description"]
+    install = steps["add_panel"]["description"]
     progress = config["progress"]["installing"]
     all_errors = " ".join(config["error"].values())
 

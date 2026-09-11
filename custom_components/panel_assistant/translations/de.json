@@ -5,47 +5,45 @@
     "step": {
       "user": {
         "title": "Panel einrichten",
-        "description": "Installiere ha-paneld auf einem neuen Panel oder verbinde ein Panel, auf dem es bereits ausgeführt wird.",
+        "description": "Füge ein Panel in deinem Netzwerk hinzu oder installiere ha-paneld auf einem Panel, das an diesen Computer angeschlossen ist.",
         "menu_options": {
-          "install_usb": "Über USB an diesem Browser installieren",
-          "install_or_upgrade": "ha-paneld auf einem Panel installieren",
-          "connect_existing": "Vorhandene ha-paneld-Installation verbinden"
+          "add_panel": "Panel im Netzwerk hinzufügen",
+          "install_usb": "Über USB an diesem Computer installieren"
         },
         "menu_option_descriptions": {
-          "install_usb": "Verbinden Sie das Panel per USB mit diesem Computer, nicht mit dem Server von Home Assistant.",
-          "install_or_upgrade": "Lasse Home Assistant ein sauberes Panel per Android Debug Bridge (ADB) prüfen und installieren.",
-          "connect_existing": "Füge eine funktionsfähige Installation hinzu. Eine spätere Integrationsversion verwaltet nach der Verbindung Updates."
+          "add_panel": "Gib die Adresse des Panels ein. Home Assistant verbindet es, wenn ha-paneld läuft, oder bietet an, ha-paneld zu installieren.",
+          "install_usb": "Schließe das Panel an diesen Computer an, nicht an den Server von Home Assistant."
         }
       },
       "install_usb": {
         "title": "Über USB installieren",
         "description": "[USB-Installer öffnen]({usb_install_url}). Verbinden Sie das Panel mit dem Gerät, auf dem dieser Browser läuft, nicht mit dem Server von Home Assistant. Verwenden Sie einen Browser mit WebUSB-Unterstützung und aktivieren Sie USB-Debugging am Panel.\n\nDer experimentelle Installer unterstützt nur Neuinstallationen. Bestehende Installationen werden nicht überschrieben. Schließen Sie anschließend die Einrichtung am Panel ab und wählen Sie hier die Verbindung mit einer bestehenden Installation. Absenden kehrt zur Auswahl zurück."
       },
-      "install_or_upgrade": {
-        "title": "ha-paneld installieren",
-        "description": "Bevor du fortfährst, ermittle die IP-Adresse des Panels, behalte physischen Zugriff auf seinen Bildschirm und aktiviere mithilfe der [modellspezifischen Anleitung für den Panelzugriff]({panel_access_url}) Netzwerk-ADB auf Port 5555. Root-Zugriff ist nicht erforderlich. Gib unten den Hostnamen oder die IP-Adresse ein. Home Assistant prüft zuerst, ob bereits eine Installation vorhanden ist, und verwendet ADB dann nur für eine saubere Erstinstallation, deren exaktes Release verifiziert werden kann.",
+      "add_panel": {
+        "title": "Panel hinzufügen",
+        "description": "Gib den Hostnamen oder die IP-Adresse des Panels ein. Wenn ha-paneld noch nicht installiert ist, aktiviere zuerst Netzwerk-ADB auf Port 5555 mithilfe der [modellspezifischen Anleitung für den Panelzugriff]({panel_access_url}). Root-Zugriff ist nicht erforderlich.",
         "data": {
-          "address": "Hostname oder IP-Adresse des Panels",
-          "release_candidate": "Version"
-        },
-        "data_description": {
-          "release_candidate": "Wählen Sie die neueste stabile Version oder einen veröffentlichten Release Candidate (RC) zum Testen. RCs können Fehler enthalten. Die Standardauswahl setzt auch einen bestehenden Auftrag mit seiner ursprünglichen Version fort. Wenn nur Fortsetzen angeboten wird, ist keine neue stabile Installation verfügbar. Installierte Panels werden nicht aktualisiert."
+          "address": "Hostname oder IP-Adresse des Panels"
         }
       },
-      "connect_existing": {
-        "title": "Vorhandenes Panel verbinden",
-        "description": "Gib den Hostnamen oder die IP-Adresse eines Panels ein, auf dem ha-paneld bereits ausgeführt wird.",
+      "found_panel": {
+        "title": "ha-paneld läuft auf diesem Panel",
+        "description": "ha-paneld {version} wurde unter {address} gefunden. Nach dem Verbinden erscheinen seine Updates in Home Assistant.",
+        "menu_options": {
+          "connect_found": "Dieses Panel verbinden",
+          "add_panel": "Andere Adresse verwenden"
+        }
+      },
+      "choose_version": {
+        "title": "Version wählen",
+        "description": "ha-paneld ist auf {address} noch nicht installiert. Wähle die zu installierende Version. Testversionen können Fehler enthalten.",
         "data": {
-          "address": "Paneladresse"
+          "release_candidate": "Version"
         }
       },
       "confirm_discovery": {
         "title": "Gefundenes Panel bestätigen",
         "description": "Home Assistant hat eine ha-paneld-Installation unter {address} gefunden. Sende das Formular ab, um zu prüfen, dass es noch dasselbe Panel ist, und füge es als {panel_name} hinzu. Es werden keine Panel-Einstellungen geändert."
-      },
-      "confirm_existing": {
-        "title": "ha-paneld ist bereits installiert",
-        "description": "Unter {address} wurde eine funktionsfähige Installation von ha-paneld {version} gefunden. Wähle „Absenden“, um sie mit Home Assistant zu verbinden. Eine spätere Integrationsversion wird eine Updateverwaltung hinzufügen. Es wird keine Installation durchgeführt, auch wenn ein Release-Candidate-Tag eingegeben wurde."
       },
       "authorize_adb": {
         "title": "Home Assistant auf dem Panel autorisieren",
@@ -61,7 +59,7 @@
       },
       "release_preview_only": {
         "title": "Release kann nicht automatisch installiert werden",
-        "description": "Das Panel {address} kann weiter geprüft werden, und das Release {version} ({tag}, SHA-256 {sha256}) wurde authentifiziert. Dieses Release hat keine signierte Installationsbeschreibung. Daher erstellt Home Assistant keine ADB-Anmeldedaten, lädt die APK nicht herunter und ändert das Panel nicht."
+        "description": "Das Panel {address} kann weiter geprüft werden, und das Release {version} ({tag}, SHA-256 {sha256}) wurde authentifiziert. Dieses Release hat keine signierte Installationsbeschreibung. Daher erstellt Home Assistant keine ADB-Anmeldedaten, lädt die APK nicht herunter und ändert das Panel nicht. Sende das Formular ab, um eine andere Version zu wählen."
       },
       "install_result": {
         "title": "Panel-Einrichtung abschließen",
@@ -69,7 +67,7 @@
       }
     },
     "progress": {
-      "installing": "ha-paneld wird unter {address} installiert und verifiziert. Lass diesen Dialog geöffnet, damit der Vorgang automatisch abgeschlossen wird. Du kannst ihn schließen; Home Assistant führt den Installationsauftrag weiter aus, kann das Gerät jedoch erst hinzufügen, wenn du Einstellungen → Geräte & Dienste → Integration hinzufügen erneut öffnest, Panel Assistant auswählst, „ha-paneld auf einem Panel installieren“ wählst und dieselbe Adresse eingibst. Nachdem Home Assistant das Gerät hinzugefügt hat, schließe die geführte Einrichtung von ha-paneld auf dem Panel ab."
+      "installing": "ha-paneld wird unter {address} installiert und verifiziert. Lass diesen Dialog geöffnet, damit der Vorgang automatisch abgeschlossen wird. Du kannst ihn schließen; Home Assistant führt den Installationsauftrag weiter aus, kann das Gerät jedoch erst hinzufügen, wenn du Einstellungen → Geräte & Dienste → Integration hinzufügen erneut öffnest, Panel Assistant auswählst, „Panel im Netzwerk hinzufügen“ wählst und dieselbe Adresse eingibst. Nachdem Home Assistant das Gerät hinzugefügt hat, schließe die geführte Einrichtung von ha-paneld auf dem Panel ab."
     },
     "error": {
       "cannot_connect": "Es konnte keine Verbindung zu einem gültigen Funktionsstatus-Endpunkt von ha-paneld hergestellt werden.",
@@ -88,8 +86,7 @@
       "retained_or_ambiguous": "Das Panel enthält möglicherweise einen zurückbehaltenen Paketeintrag von ha-paneld, oder es konnte nicht nachgewiesen werden, dass das Paket nicht vorhanden ist. Am Panel wurde nichts geändert. Versuche es einmal erneut, falls die Verbindung instabil war; folge andernfalls der in der Integrationsdokumentation verlinkten Anleitung zur sicheren Bereitstellung und Wiederherstellung. Deinstalliere die App nicht und setze sie nicht zurück, wenn keine verifizierte Sicherung vorhanden ist.",
       "incompatible": "Das ha-paneld-Paket wurde nicht gefunden, aber das Android SDK oder die Prozessorarchitektur des Panels wird nicht unterstützt. Es wurde keine APK heruntergeladen oder installiert.",
       "cannot_resolve_release": "Ein Installationskandidat wurde gefunden, aber Home Assistant konnte das ausgewählte ha-paneld-Release nicht auflösen und verifizieren. Es wurde keine APK heruntergeladen oder installiert. Prüfe den Internetzugang und bei einem Test mit einem Release Candidate, ob das exakte Tag mit seinen signierten Artefakten veröffentlicht wurde. Es wird kein anderes Release verwendet.",
-      "invalid_release_candidate": "Wählen Sie einen verfügbaren Release Candidate aus der Liste oder die Standardoption für stabile Version/Fortsetzen.",
-      "install_release_conflict": "Ein bestehender Installationsauftrag belegt dieses Panel mit einer anderen Version. Die Version kann hier nicht geändert werden. Wählen Sie die Standardoption, um den Auftrag fortzusetzen.",
+      "invalid_release_candidate": "Wähle eine Version aus der Liste.",
       "install_candidate_changed": "Die Panelidentität oder der saubere Paketzustand hat sich nach der Vorschau geändert. Es wurde kein Installationsauftrag erstellt. Prüfe das Panel und beginne danach erneut.",
       "install_plan_rejected": "Das Panel und das signierte Release konnten nicht zu einem sicheren Installationsplan verknüpft werden. Es wurde kein Installationsauftrag erstellt.",
       "install_job_conflict": "Ein anderer Installationsauftrag beansprucht bereits diese Panelidentität. Es wurde kein zweiter Auftrag erstellt.",
@@ -97,14 +94,13 @@
       "install_finalization_busy": "Ein anderer Einrichtungsdialog schließt die Einrichtung dieses Panels gerade ab. Warte, bis er fertig ist, und versuche es bei Bedarf erneut.",
       "install_finalization_retry": "Die Installation wurde abgeschlossen, aber eine abschließende, nur lesende Prüfung des Netzwerks, von ADB oder des Funktionsstatus ist vorübergehend nicht verfügbar. Prüfe das Panel und versuche es erneut; die Installation wird nicht noch einmal ausgeführt.",
       "unknown": "Unerwarteter Fehler",
-      "release_catalog_unavailable": "Home Assistant konnte veröffentlichte Versionen nicht laden. Prüfen Sie den Internetzugang und senden Sie erneut, um es zu wiederholen oder einen Auftrag fortzusetzen. Sie können auch zurückkehren und eine bestehende Installation verbinden.",
-      "release_catalog_empty": "Derzeit sind keine geeigneten Installationsversionen veröffentlicht. Senden Sie erneut, um zu prüfen oder einen Auftrag fortzusetzen, oder verbinden Sie eine bestehende Installation.",
-      "release_selection_required": "Die Versionsauswahl wurde aktualisiert. Wählen Sie eine verfügbare Version. Die Option zum Fortsetzen kann keine neue Installation starten."
+      "release_catalog_unavailable": "Home Assistant konnte die Versionsliste nicht laden. Prüfe die Internetverbindung und sende das Formular dann erneut ab.",
+      "release_catalog_empty": "Es sind noch keine Versionen veröffentlicht. Sende das Formular ab, um erneut zu prüfen.",
+      "release_selection_required": "Wähle eine Version aus der Liste."
     },
     "abort": {
       "already_configured": "Dieses Panel ist bereits konfiguriert.",
       "invalid_discovery": "Das gefundene Panel konnte nicht als dieselbe fehlerfreie ha-paneld-Installation bestätigt werden. Es wurden weder ein Home Assistant-Eintrag noch Panel-Einstellungen geändert.",
-      "preview_only_release": "Das authentifizierte Release hat keine signierte Installationsbeschreibung. Es wurden keine ADB-Anmeldedaten erstellt, keine APK heruntergeladen und kein Panelzustand geändert.",
       "install_cancelled": "Die Installation wurde abgebrochen, bevor eine APK installiert wurde. Es wurde kein Home Assistant-Eintrag erstellt. Füge für einen erneuten Versuch die Panel Assistant-Integration hinzu und gib dieselbe Paneladresse ein.",
       "install_cancelled_after_staging_cleanup": "Die Installation wurde abgebrochen und die bereitgestellte APK vor der Installation entfernt. Es wurde kein Home Assistant-Eintrag erstellt. Füge für einen erneuten Versuch die Panel Assistant-Integration hinzu und gib dieselbe Paneladresse ein.",
       "install_authorization_failed": "Home Assistant konnte seine gespeicherten ADB-Anmeldedaten nicht sicher laden oder validieren. Es wurde keine APK installiert. Prüfe den Speicher und die Protokolle von Home Assistant. Füge dann die Panel Assistant-Integration hinzu und gib dieselbe Adresse ein, um es erneut zu versuchen.",
@@ -149,12 +145,5 @@
     "update_not_accepted": { "message": "Das Panel hat die Update-Anfrage nicht angenommen" },
     "update_not_complete": { "message": "Das Panel-Update wurde nicht abgeschlossen" },
     "update_did_not_return": { "message": "Das Panel ist nach dem Update nicht zurückgekehrt" }
-  },
-  "selector": {
-    "release_channel": {
-      "options": {
-        "resume_existing": "Nur bestehenden Auftrag fortsetzen"
-      }
-    }
   }
 }

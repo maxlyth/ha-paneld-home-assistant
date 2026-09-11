@@ -5,47 +5,45 @@
     "step": {
       "user": {
         "title": "设置面板",
-        "description": "在新面板上安装 ha-paneld，或连接已在运行 ha-paneld 的面板。",
+        "description": "添加网络中的面板，或在连接到这台计算机的面板上安装 ha-paneld。",
         "menu_options": {
-          "install_usb": "通过此浏览器使用 USB 安装",
-          "install_or_upgrade": "在面板上安装 ha-paneld",
-          "connect_existing": "连接现有的 ha-paneld 安装"
+          "add_panel": "添加网络中的面板",
+          "install_usb": "在这台计算机上通过 USB 安装"
         },
         "menu_option_descriptions": {
-          "install_usb": "通过 USB 将面板连接到这台计算机，而不是 Home Assistant 服务器。",
-          "install_or_upgrade": "让 Home Assistant 通过 Android Debug Bridge (ADB) 检查面板当前是否没有已安装的 ha-paneld 软件包或残留记录，并在符合条件时进行安装。",
-          "connect_existing": "添加运行正常的现有安装。连接后，后续版本的集成将提供更新管理功能。"
+          "add_panel": "输入面板地址。如果 ha-paneld 正在运行，Home Assistant 会连接它；如果没有，会提供安装 ha-paneld。",
+          "install_usb": "将面板连接到这台计算机，而不是 Home Assistant 服务器。"
         }
       },
       "install_usb": {
         "title": "使用 USB 安装",
         "description": "[打开 USB 安装程序]({usb_install_url})。将面板连接到运行此浏览器的设备，而不是 Home Assistant 服务器。请使用支持 WebUSB 的浏览器，并在面板上启用 USB 调试。\n\n此实验性安装程序仅支持全新安装，不会覆盖现有安装。完成后，请在面板上完成设置，再返回此处连接现有安装。点击提交可返回设置菜单。"
       },
-      "install_or_upgrade": {
-        "title": "安装 ha-paneld",
-        "description": "继续之前，请找到面板的 IP 地址，确保可以实际操作其屏幕，并按照[特定型号的面板访问指南]({panel_access_url})在端口 5555 上启用网络 ADB。不需要 root 权限。请在下方输入主机名或 IP 地址。Home Assistant 会先检查是否已有安装，只有在能够验证确切版本，并确认面板当前没有已安装的 ha-paneld 软件包或残留记录时，才会使用 ADB 执行首次安装。",
+      "add_panel": {
+        "title": "添加面板",
+        "description": "输入面板的主机名或 IP 地址。如果尚未安装 ha-paneld，请先按照[适用于具体型号的面板访问指南]({panel_access_url})在端口 5555 上开启网络 ADB。不需要 root 权限。",
         "data": {
-          "address": "面板主机名或 IP 地址",
-          "release_candidate": "版本"
-        },
-        "data_description": {
-          "release_candidate": "选择最新稳定版或已发布的候选版本（RC）进行测试。RC 可能存在错误。默认选项也可使用原始版本继续现有任务。如果仅提供继续任务选项，则无法开始新的稳定版安装。这不会升级已安装的面板。"
+          "address": "面板主机名或 IP 地址"
         }
       },
-      "connect_existing": {
-        "title": "连接现有面板",
-        "description": "输入已在运行 ha-paneld 的面板主机名或 IP 地址。",
+      "found_panel": {
+        "title": "此面板正在运行 ha-paneld",
+        "description": "在 {address} 找到 ha-paneld {version}。连接后，它的更新会显示在 Home Assistant 中。",
+        "menu_options": {
+          "connect_found": "连接此面板",
+          "add_panel": "使用其他地址"
+        }
+      },
+      "choose_version": {
+        "title": "选择版本",
+        "description": "{address} 上尚未安装 ha-paneld。请选择要安装的版本。测试版本可能包含错误。",
         "data": {
-          "address": "面板地址"
+          "release_candidate": "版本"
         }
       },
       "confirm_discovery": {
         "title": "确认发现的面板",
         "description": "Home Assistant 在 {address} 找到了 ha-paneld 安装。提交以验证它仍是同一面板，并将其添加为 {panel_name}。不会更改任何面板设置。"
-      },
-      "confirm_existing": {
-        "title": "已安装 ha-paneld",
-        "description": "在 {address} 找到运行正常的 ha-paneld {version}。提交以将其连接到 Home Assistant。后续版本的集成将增加更新管理功能。即使输入了候选版本标签，也不会执行安装。"
       },
       "authorize_adb": {
         "title": "在面板上授权 Home Assistant",
@@ -61,7 +59,7 @@
       },
       "release_preview_only": {
         "title": "无法自动安装此版本",
-        "description": "面板 {address} 符合进一步检查条件，版本 {version}（{tag}，SHA-256 {sha256}）也已通过真实性验证。此版本没有签名的安装描述文件，因此 Home Assistant 不会创建 ADB 凭据、下载 APK 或更改面板。"
+        "description": "面板 {address} 符合进一步检查条件，版本 {version}（{tag}，SHA-256 {sha256}）也已通过真实性验证。此版本没有签名的安装描述文件，因此 Home Assistant 不会创建 ADB 凭据、下载 APK 或更改面板。提交即可选择其他版本。"
       },
       "install_result": {
         "title": "完成面板设置",
@@ -69,7 +67,7 @@
       }
     },
     "progress": {
-      "installing": "正在 {address} 安装并验证 ha-paneld。请保持此对话框打开，安装将自动完成。您可以关闭对话框，Home Assistant 会继续运行安装任务，但必须重新打开“设置 → 设备与服务 → 添加集成”，选择 Panel Assistant，再选择“在面板上安装 ha-paneld”并输入相同地址，才能添加设备。Home Assistant 添加设备后，请在面板上完成 ha-paneld 的引导式设置。"
+      "installing": "正在 {address} 安装并验证 ha-paneld。请保持此对话框打开，安装将自动完成。您可以关闭对话框，Home Assistant 会继续运行安装任务，但必须重新打开“设置 → 设备与服务 → 添加集成”，选择 Panel Assistant，再选择“添加网络中的面板”并输入相同地址，才能添加设备。Home Assistant 添加设备后，请在面板上完成 ha-paneld 的引导式设置。"
     },
     "error": {
       "cannot_connect": "无法连接到有效的 ha-paneld 健康检查端点。",
@@ -88,8 +86,7 @@
       "retained_or_ambiguous": "面板可能保留了 ha-paneld 软件包记录，或无法证明面板上不存在该软件包。未更改面板。如果连接不稳定，请重试一次；否则，请按照集成文档中链接的配置安全与恢复指南操作。在备份经过验证之前，请勿卸载或重置应用。",
       "incompatible": "未找到 ha-paneld 软件包，但面板的 Android SDK 或处理器架构不受支持。未下载或安装 APK。",
       "cannot_resolve_release": "已找到可安装的候选版本，但 Home Assistant 无法解析并验证所选的 ha-paneld 版本。未下载或安装 APK。请检查互联网连接；如果测试候选版本，请确认确切标签及其带签名的发布资源已发布。不会改用其他版本。",
-      "invalid_release_candidate": "请从列表中选择可用的候选版本，或使用默认的稳定版/继续任务选项。",
-      "install_release_conflict": "现有安装任务正在使用其他版本处理此面板，无法在此更改版本。请选择默认选项以继续该任务。",
+      "invalid_release_candidate": "请从列表中选择一个版本。",
       "install_candidate_changed": "预览后，面板身份或软件包的安装及残留状态发生了变化。未创建安装任务。请检查面板后重新开始。",
       "install_plan_rejected": "无法将面板和签名版本绑定为安全的安装计划。未创建安装任务。",
       "install_job_conflict": "已有其他安装任务占用了此面板身份。未创建第二个任务。",
@@ -97,14 +94,13 @@
       "install_finalization_busy": "另一个设置对话框正在完成此面板的设置。请等待其完成，如有需要再重试。",
       "install_finalization_retry": "安装已完成，但最终的只读网络、ADB 或健康检查暂时不可用。请检查面板并重试；安装不会再次运行。",
       "unknown": "出现意外错误",
-      "release_catalog_unavailable": "Home Assistant 无法加载已发布的版本。请检查互联网连接，然后提交以重试或继续已保存的任务。也可以返回并连接现有安装。",
-      "release_catalog_empty": "目前没有已发布且符合安装条件的版本。请提交以重新检查或继续已保存的任务，或返回并连接现有安装。",
-      "release_selection_required": "可用版本已刷新。请选择一个可用版本以继续；仅继续任务选项不能开始新的安装。"
+      "release_catalog_unavailable": "Home Assistant 无法加载版本列表。请检查其互联网连接，然后提交重试。",
+      "release_catalog_empty": "目前还没有发布任何版本。提交即可再次检查。",
+      "release_selection_required": "请从列表中选择一个版本。"
     },
     "abort": {
       "already_configured": "此面板已配置。",
       "invalid_discovery": "发现的面板无法证明它是同一健康的 ha-paneld 安装。未更改 Home Assistant 条目或面板设置。",
-      "preview_only_release": "已通过真实性验证的版本没有签名的安装描述文件。未创建 ADB 凭据，未下载 APK，也未更改面板状态。",
       "install_cancelled": "安装流程已在 APK 安装前取消。未创建 Home Assistant 条目。要重试，请添加 Panel Assistant 集成并输入相同的面板地址。",
       "install_cancelled_after_staging_cleanup": "安装已取消，并在安装前移除了暂存的 APK。未创建 Home Assistant 条目。要重试，请添加 Panel Assistant 集成并输入相同的面板地址。",
       "install_authorization_failed": "Home Assistant 无法安全加载或验证其存储的 ADB 凭据。未安装 APK。请检查 Home Assistant 的存储和日志，然后添加 Panel Assistant 集成并输入相同地址以重试。",
@@ -149,12 +145,5 @@
     "update_not_accepted": { "message": "面板未接受更新请求" },
     "update_not_complete": { "message": "面板更新未完成" },
     "update_did_not_return": { "message": "更新后面板未恢复连接" }
-  },
-  "selector": {
-    "release_channel": {
-      "options": {
-        "resume_existing": "仅继续现有任务"
-      }
-    }
   }
 }

@@ -119,6 +119,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _pending_friendly_name: str | None = None
     _discovery_title: str | None = None
     _pending_probe: InstallTargetProbe | None = None
+    _pending_probe_state: str | None = None
     _pending_release: ReleaseArtifact | None = None
     _pending_rc_tag: str | None = None
     _pending_install_target: PinnedPanelTarget | None = None
@@ -137,14 +138,14 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Let the user choose whether to bootstrap or connect a panel."""
+        """Let the user add a panel by its address or install one over USB."""
         # HA loads dependencies before the first flow, but domain async_setup
         # need not run until an entry exists. USB delivery must be ready now.
         async_register_browser_delivery(self.hass)
         await async_register_browser_panel(self.hass)
         return self.async_show_menu(
             step_id="user",
-            menu_options=["install_usb", "install_or_upgrade", "connect_existing"],
+            menu_options=["add_panel", "install_usb"],
         )
 
     async def async_step_install_usb(
@@ -157,33 +158,6 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="install_usb",
             data_schema=vol.Schema({}),
             description_placeholders={"usb_install_url": f"/{PANEL_PATH}"},
-        )
-
-    async def async_step_connect_existing(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Connect to a panel that is already running ha-paneld."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                address = normalize_address(user_input[CONF_ADDRESS])
-                client = HaPaneldClient(async_get_clientsession(self.hass), address)
-                health = await client.async_get_health()
-            except InvalidAddressError:
-                errors["base"] = "invalid_address"
-            except CannotConnectError, InvalidResponseError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected exception while validating ha-paneld")
-                errors["base"] = "unknown"
-            else:
-                return self._async_create_panel_entry(address, health)
-
-        return self.async_show_form(
-            step_id="connect_existing",
-            data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
-            errors=errors,
         )
 
     async def async_step_zeroconf(
@@ -330,49 +304,81 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    def _show_install_address_form(
+    def _show_add_panel_form(
         self,
         user_input: dict[str, Any] | None,
         errors: dict[str, str],
     ) -> ConfigFlowResult:
-        """Show the install form with its fixed trusted documentation link."""
+        """Ask only for the panel's address; what happens next depends on the panel."""
+        return self.async_show_form(
+            step_id="add_panel",
+            data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
+            errors=errors,
+            description_placeholders={"panel_access_url": _PANEL_ACCESS_GUIDE_URL},
+        )
+
+    def _show_choose_version(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Offer the newest stable release first, then published test releases."""
         releases = self._install_releases or []
         stable = next(
             (release for release in releases if not release["prerelease"]), None
         )
         options: list[SelectOptionDict] = [
-            {
-                "value": "",
-                "label": (
-                    f"{stable['tag']} (stable)"
-                    if stable is not None
-                    else "resume_existing"
-                ),
-            },
+            *(
+                [SelectOptionDict(value="", label=f"{stable['tag']} (recommended)")]
+                if stable is not None
+                else []
+            ),
             *[
-                SelectOptionDict(value=release["tag"], label=f"{release['tag']} (RC)")
+                SelectOptionDict(
+                    value=release["tag"], label=f"{release['tag']} (test version)"
+                )
                 for release in releases
                 if release["prerelease"]
             ],
         ]
-        schema = _DATA_SCHEMA.extend(
-            {
-                vol.Optional(_CONF_RELEASE_CANDIDATE, default=""): SelectSelector(
-                    SelectSelectorConfig(
-                        options=options,
-                        mode=SelectSelectorMode.DROPDOWN,
-                        translation_key="release_channel",
+        # With nothing to choose, an empty form still submits, which reloads.
+        schema = (
+            vol.Schema(
+                {
+                    vol.Required(
+                        _CONF_RELEASE_CANDIDATE, default=options[0]["value"]
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=options, mode=SelectSelectorMode.DROPDOWN
+                        )
                     )
-                )
-            }
+                }
+            )
+            if options
+            else vol.Schema({})
         )
         if self._release_catalog_error and not errors:
             errors = {"base": self._release_catalog_error}
         return self.async_show_form(
-            step_id="install_or_upgrade",
-            data_schema=self.add_suggested_values_to_schema(schema, user_input),
+            step_id="choose_version",
+            data_schema=schema,
             errors=errors,
-            description_placeholders={"panel_access_url": _PANEL_ACCESS_GUIDE_URL},
+            description_placeholders={
+                "address": self._pending_address.stored_value
+                if self._pending_address is not None
+                else ""
+            },
+        )
+
+    def _show_found_panel(self) -> ConfigFlowResult:
+        """Offer to connect a panel that already runs ha-paneld, or go back."""
+        assert self._pending_address is not None
+        assert self._pending_health is not None
+        return self.async_show_menu(
+            step_id="found_panel",
+            menu_options=["connect_found", "add_panel"],
+            description_placeholders={
+                "address": self._pending_address.stored_value,
+                "version": self._pending_health.version,
+            },
         )
 
     async def _async_load_install_releases(self) -> None:
@@ -389,178 +395,215 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 None if self._install_releases else "release_catalog_empty"
             )
 
-    async def async_step_install_or_upgrade(
+    def _reset_pending_panel(self) -> None:
+        """Forget everything learned about a previously entered address."""
+        self._pending_address = None
+        self._pending_health = None
+        self._pending_probe = None
+        self._pending_probe_state = None
+        self._pending_release = None
+        self._pending_rc_tag = None
+        self._pending_install_target = None
+        self._pending_job_id = None
+
+    async def async_step_add_panel(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Classify a panel before any installation or repair is attempted."""
+        """Look at the panel first, then connect, install, or say what is missing."""
         errors: dict[str, str] = {}
 
-        if user_input is None and self._install_releases is None:
+        if user_input is None:
+            previous = self._pending_address
+            self._reset_pending_panel()
+            return self._show_add_panel_form(
+                {CONF_ADDRESS: previous.stored_value} if previous else None, errors
+            )
+
+        self._reset_pending_panel()
+        try:
+            address = normalize_address(user_input[CONF_ADDRESS])
+            self._async_abort_entries_match({CONF_ADDRESS: address.stored_value})
+        except InvalidAddressError:
+            return self._show_add_panel_form(user_input, {"base": "invalid_address"})
+
+        if address.port != DEFAULT_PORT:
+            # Installation only uses the standard port, so another port can only
+            # be a panel that already runs ha-paneld.
+            return await self._async_check_running_panel(address, user_input)
+
+        try:
+            target = await async_pin_install_target(self.hass, address)
+        except InstallNetworkError as err:
+            return self._show_add_panel_form(
+                user_input, {"base": _install_network_error(err)}
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected exception while pinning install target")
+            return self._show_add_panel_form(user_input, {"base": "unknown"})
+
+        self._pending_address = address
+        self._pending_install_target = target
+        try:
+            manager = await async_get_install_job_manager(self.hass)
+            active = await manager.async_find_active(
+                address.stored_value, target.pinned.stored_value
+            )
+        except InstallJobError:
+            return self._show_add_panel_form(
+                user_input, {"base": "install_receipt_error"}
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected exception while loading an install receipt")
+            return self._show_add_panel_form(user_input, {"base": "unknown"})
+        if active is not None:
+            # An install already started here resumes with its original release.
+            self._pending_job_id = active.job_id
+            if active.phase is InstallPhase.HEALTHY_UNCLAIMED:
+                return await self.async_step_install_result()
+            return await self._async_show_install_progress(active)
+
+        client = HaPaneldClient(async_get_clientsession(self.hass), target.pinned)
+        try:
+            health = await client.async_get_health()
+        except CannotConnectError, InvalidResponseError:
+            pass
+        except Exception:
+            _LOGGER.exception(
+                "Unexpected exception while checking for an existing ha-paneld"
+            )
+            return self._show_add_panel_form(user_input, {"base": "unknown"})
+        else:
+            self._pending_health = health
+            return self._show_found_panel()
+
+        try:
+            # The first probe deliberately has no key. Discovering an authorization
+            # requirement must remain read-only; only the explicit authorization
+            # step may create and offer HA's durable key.
+            probe = await async_probe_install_target(target.pinned)
+        except Exception:
+            _LOGGER.exception("Unexpected exception while classifying install target")
+            return self._show_add_panel_form(user_input, {"base": "unknown"})
+
+        state = probe.state.value
+        if state == "install_candidate" and (
+            _install_candidate_placeholders(probe) is None
+        ):
+            state = "retained_or_ambiguous"
+        if state in ("adb_unauthorized", "install_candidate"):
+            self._pending_probe = probe if state == "install_candidate" else None
+            self._pending_probe_state = state
+            return await self.async_step_choose_version()
+        errors["base"] = {
+            "adb_unreachable": "adb_unreachable",
+            "installed": "installed_without_health",
+            "retained_or_ambiguous": "retained_or_ambiguous",
+            "incompatible": "incompatible",
+        }.get(state, "unknown")
+        return self._show_add_panel_form(user_input, errors)
+
+    async def _async_check_running_panel(
+        self, address: PanelAddress, user_input: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Find ha-paneld on a non-standard port, where nothing can be installed."""
+        try:
+            health = await HaPaneldClient(
+                async_get_clientsession(self.hass), address
+            ).async_get_health()
+        except CannotConnectError, InvalidResponseError:
+            return self._show_add_panel_form(user_input, {"base": "cannot_connect"})
+        except Exception:
+            _LOGGER.exception("Unexpected exception while validating ha-paneld")
+            return self._show_add_panel_form(user_input, {"base": "unknown"})
+        self._pending_address = address
+        self._pending_health = health
+        return self._show_found_panel()
+
+    async def async_step_found_panel(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the found panel again, or start over if nothing was found."""
+        if self._pending_address is None or self._pending_health is None:
+            return await self.async_step_add_panel()
+        return self._show_found_panel()
+
+    async def async_step_connect_found(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Connect the panel that was found, checking it is still the same one."""
+        if self._pending_address is None:
+            return self.async_abort(reason="unknown")
+        back = {CONF_ADDRESS: self._pending_address.stored_value}
+        try:
+            pinned = self._pending_address
+            if self._pending_install_target is not None:
+                target = await async_revalidate_install_target(
+                    self.hass, self._pending_install_target
+                )
+                pinned = target.pinned
+            health = await HaPaneldClient(
+                async_get_clientsession(self.hass), pinned
+            ).async_get_health()
+        except InstallNetworkError as err:
+            return self._show_add_panel_form(
+                back, {"base": _install_network_error(err)}
+            )
+        except CannotConnectError, InvalidResponseError:
+            return self._show_add_panel_form(back, {"base": "cannot_connect"})
+        except Exception:
+            _LOGGER.exception(
+                "Unexpected exception while confirming existing ha-paneld"
+            )
+            return self._show_add_panel_form(back, {"base": "unknown"})
+        return self._async_create_panel_entry(self._pending_address, health)
+
+    async def async_step_choose_version(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick the release for a clean panel, then authorize or preview it."""
+        if (
+            self._pending_address is None
+            or self._pending_install_target is None
+            or self._pending_probe_state is None
+        ):
+            return self.async_abort(reason="unknown")
+        if user_input is None:
+            if self._install_releases is None or self._release_catalog_error:
+                await self._async_load_install_releases()
+            return self._show_choose_version()
+        if self._release_catalog_error:
+            # The person saw no versions, so this submit is "try again": load the
+            # list afresh and let them choose from what is now offered.
             await self._async_load_install_releases()
+            return self._show_choose_version()
 
-        if user_input is not None:
-            self._pending_address = None
-            self._pending_health = None
-            self._pending_probe = None
-            self._pending_release = None
-            self._pending_rc_tag = None
-            self._pending_install_target = None
-            self._pending_job_id = None
-            rc_tag = user_input.get(_CONF_RELEASE_CANDIDATE, "")
-            if rc_tag != "":
-                if not is_rc_release_tag(rc_tag):
-                    return self._show_install_address_form(
-                        user_input,
-                        {_CONF_RELEASE_CANDIDATE: "invalid_release_candidate"},
-                    )
-                self._pending_rc_tag = rc_tag
-            try:
-                address = normalize_address(user_input[CONF_ADDRESS])
-                if address.port != DEFAULT_PORT:
-                    raise InvalidAddressError
-                self._async_abort_entries_match({CONF_ADDRESS: address.stored_value})
-            except InvalidAddressError:
-                errors["base"] = "invalid_install_address"
-            else:
-                try:
-                    target = await async_pin_install_target(self.hass, address)
-                except InstallNetworkError as err:
-                    errors["base"] = _install_network_error(err)
-                except Exception:
-                    _LOGGER.exception(
-                        "Unexpected exception while pinning install target"
-                    )
-                    errors["base"] = "unknown"
-                else:
-                    self._pending_address = address
-                    self._pending_install_target = target
-                    try:
-                        manager = await async_get_install_job_manager(self.hass)
-                        active = await manager.async_find_active(
-                            address.stored_value, target.pinned.stored_value
-                        )
-                    except InstallJobError:
-                        errors["base"] = "install_receipt_error"
-                        active = None
-                    except Exception:
-                        _LOGGER.exception(
-                            "Unexpected exception while loading an install receipt"
-                        )
-                        errors["base"] = "unknown"
-                        active = None
-                    if errors:
-                        return self._show_install_address_form(user_input, errors)
-                    if active is not None:
-                        if (
-                            self._pending_rc_tag is not None
-                            and self._pending_rc_tag != active.artifact.release_tag
-                        ):
-                            return self._show_install_address_form(
-                                user_input, {"base": "install_release_conflict"}
-                            )
-                        self._pending_job_id = active.job_id
-                        if active.phase is InstallPhase.HEALTHY_UNCLAIMED:
-                            return await self.async_step_install_result()
-                        return await self._async_show_install_progress(active)
-
-                    client = HaPaneldClient(
-                        async_get_clientsession(self.hass), target.pinned
-                    )
-                    try:
-                        health = await client.async_get_health()
-                    except CannotConnectError, InvalidResponseError:
-                        if self._install_releases is not None and (
-                            self._release_catalog_error
-                            or (
-                                self._pending_rc_tag is None
-                                and not any(
-                                    not release["prerelease"]
-                                    for release in self._install_releases
-                                )
-                            )
-                        ):
-                            await self._async_load_install_releases()
-                            return self._show_install_address_form(
-                                user_input,
-                                {}
-                                if self._release_catalog_error
-                                else {"base": "release_selection_required"},
-                            )
-                        try:
-                            # The first probe deliberately has no key. Discovering an
-                            # authorization requirement must remain read-only; only the
-                            # explicit next step may create and offer HA's durable key.
-                            probe = await async_probe_install_target(target.pinned)
-                        except Exception:
-                            _LOGGER.exception(
-                                "Unexpected exception while classifying install target"
-                            )
-                            errors["base"] = "unknown"
-                        else:
-                            state = probe.state.value
-                            if state == "adb_unauthorized":
-                                release_result = (
-                                    await self._async_resolve_install_release(
-                                        user_input=user_input
-                                    )
-                                )
-                                if release_result is not None:
-                                    return release_result
-                                if self._pending_release is None:
-                                    errors["base"] = "unknown"
-                                elif self._pending_release.descriptor is None:  # type: ignore[unreachable]
-                                    return self._show_release_preview_only()
-                                else:
-                                    return self._show_authorize_adb()
-                            if state == "install_candidate":
-                                placeholders = _install_candidate_placeholders(probe)
-                                if placeholders is None:
-                                    errors["base"] = "retained_or_ambiguous"
-                                else:
-                                    release_result = (
-                                        await self._async_resolve_install_release(
-                                            user_input=user_input
-                                        )
-                                    )
-                                    if release_result is not None:
-                                        return release_result
-                                    self._pending_probe = probe
-                                    if self._pending_release is None:
-                                        errors["base"] = "unknown"
-                                    elif self._pending_release.descriptor is None:  # type: ignore[unreachable]
-                                        return self._show_release_preview_only()
-                                    else:
-                                        return self._show_install_candidate_preview()
-                            else:
-                                errors["base"] = {
-                                    "adb_unreachable": "adb_unreachable",
-                                    "installed": "installed_without_health",
-                                    "retained_or_ambiguous": "retained_or_ambiguous",
-                                    "incompatible": "incompatible",
-                                }.get(state, "unknown")
-                    except Exception:
-                        _LOGGER.exception(
-                            "Unexpected exception while checking for an existing "
-                            "ha-paneld"
-                        )
-                        errors["base"] = "unknown"
-                    else:
-                        # Preserve endpoint identity even though entry creation is
-                        # deferred until the user confirms the already-installed panel.
-                        self._async_abort_entries_match(
-                            {CONF_ADDRESS: address.stored_value}
-                        )
-                        self._pending_health = health
-                        return self.async_show_form(
-                            step_id="confirm_existing",
-                            data_schema=vol.Schema({}),
-                            description_placeholders={
-                                "address": address.stored_value,
-                                "version": self._pending_health.version,
-                            },
-                        )
-
-        return self._show_install_address_form(user_input, errors)
+        tag = user_input.get(_CONF_RELEASE_CANDIDATE, "")
+        releases = self._install_releases or []
+        offered = {r["tag"] for r in releases if r["prerelease"]}
+        if tag != "" and (not is_rc_release_tag(tag) or tag not in offered):
+            return self._show_choose_version(
+                {_CONF_RELEASE_CANDIDATE: "invalid_release_candidate"}
+            )
+        if tag == "" and not any(not r["prerelease"] for r in releases):
+            return self._show_choose_version({"base": "release_selection_required"})
+        self._pending_rc_tag = tag or None
+        try:
+            session = async_get_clientsession(self.hass)
+            self._pending_release = (
+                await async_resolve_stable_release(session)
+                if self._pending_rc_tag is None
+                else await async_resolve_rc_release(session, self._pending_rc_tag)
+            )
+        except ReleaseResolutionError:
+            return self._show_choose_version({"base": "cannot_resolve_release"})
+        except Exception:
+            _LOGGER.exception("Unexpected exception while resolving ha-paneld release")
+            return self._show_choose_version({"base": "unknown"})
+        if self._pending_release.descriptor is None:
+            return self._show_release_preview_only()
+        if self._pending_probe_state == "adb_unauthorized":
+            return self._show_authorize_adb()
+        return self._show_install_candidate_preview()
 
     async def async_step_authorize_adb(
         self, user_input: dict[str, Any] | None = None
@@ -622,48 +665,6 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 "address": self._pending_address.stored_value
                 if self._pending_address is not None
                 else ""
-            },
-            errors=errors,
-        )
-
-    async def async_step_confirm_existing(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Confirm connecting a panel that already runs ha-paneld."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            if self._pending_address is None or self._pending_install_target is None:
-                return self.async_abort(reason="unknown")
-            try:
-                target = await async_revalidate_install_target(
-                    self.hass, self._pending_install_target
-                )
-                client = HaPaneldClient(
-                    async_get_clientsession(self.hass), target.pinned
-                )
-                health = await client.async_get_health()
-            except InstallNetworkError as err:
-                errors["base"] = _install_network_error(err)
-            except CannotConnectError, InvalidResponseError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected exception while confirming existing ha-paneld"
-                )
-                errors["base"] = "unknown"
-            else:
-                return self._async_create_panel_entry(self._pending_address, health)
-
-        return self.async_show_form(
-            step_id="confirm_existing",
-            data_schema=vol.Schema({}),
-            description_placeholders={
-                "address": self._pending_address.stored_value
-                if self._pending_address is not None
-                else "",
-                "version": self._pending_health.version
-                if self._pending_health is not None
-                else "",
             },
             errors=errors,
         )
@@ -790,7 +791,9 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         if self._pending_address is None or self._pending_release is None:
             return self.async_abort(reason="unknown")
         if user_input is not None:
-            return self.async_abort(reason="preview_only_release")
+            # This release can't be installed here; let the person pick another.
+            self._pending_release = None
+            return self._show_choose_version()
         return self._show_release_preview_only()
 
     def _show_release_preview_only(self) -> ConfigFlowResult:
@@ -807,28 +810,6 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
                 "sha256": self._pending_release.sha256,
             },
         )
-
-    async def _async_resolve_install_release(
-        self,
-        *,
-        user_input: dict[str, Any],
-    ) -> ConfigFlowResult | None:
-        """Resolve the release before any durable credential may be requested."""
-        try:
-            session = async_get_clientsession(self.hass)
-            self._pending_release = (
-                await async_resolve_stable_release(session)
-                if self._pending_rc_tag is None
-                else await async_resolve_rc_release(session, self._pending_rc_tag)
-            )
-        except ReleaseResolutionError:
-            return self._show_install_address_form(
-                user_input, {"base": "cannot_resolve_release"}
-            )
-        except Exception:
-            _LOGGER.exception("Unexpected exception while resolving ha-paneld release")
-            return self._show_install_address_form(user_input, {"base": "unknown"})
-        return None
 
     async def _async_show_install_progress(
         self, receipt: InstallJobReceipt
