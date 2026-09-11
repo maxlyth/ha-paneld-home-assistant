@@ -4,7 +4,8 @@ import { readShell } from './shell-session.mjs';
 import { buildPathState, parsePathState, buildStagedObservation, parseStagedObservation,
   buildStagedPreparation, parseStagedPreparation } from './staging-contract.mjs';
 import { uploadApk } from './usb-upload.mjs';
-import { buildInstall, parseInstall, buildLaunch, parseLaunch } from './install-contract.mjs';
+import { buildInstall, parseInstall, buildLaunch, parseLaunch, buildAppReady,
+  parseAppReady } from './install-contract.mjs';
 import { inspectInstalledApk } from './installed-observation.mjs';
 import { readUsbHealth } from './usb-health.mjs';
 import { readUsbSetup } from './usb-setup.mjs';
@@ -109,6 +110,10 @@ export function createUsbTransactionPorts({ adb, usbDevice, authenticate,
       } else {
         installed = await inspectInstalledApk(adb, release.descriptor, guard);
         if (installed && receipt.phase === 'launching') {
+          // Whether or not it reports listening in time, the strict read below decides.
+          const n = nonce();
+          parseAppReady(await readShell(adb, buildAppReady(n), { timeoutMs: 75000, maximum: 4096 }), n);
+          guard();
           healthy = await readUsbHealth(adb, release.descriptor, { ensureCurrent: guard, quarantine: stop });
         }
       }

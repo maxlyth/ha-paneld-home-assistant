@@ -215,7 +215,8 @@ connect.addEventListener('click', async () => {
           ensureCurrent();
           return verified;
         },
-        quarantine: () => quarantine(),
+        // The step reports its own cause next; until then say nothing more specific.
+        quarantine: () => quarantine(INSTALL_MESSAGES.installErrorGeneric),
         onUploadProgress(sent, total) {
           if (sent >= total) {
             progress('stepFinishingCopy', 50);

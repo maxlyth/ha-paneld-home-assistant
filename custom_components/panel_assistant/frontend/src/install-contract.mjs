@@ -59,6 +59,21 @@ export function parseInstall(body, nonce) {
 }
 
 /** As in the reference, activity-manager diagnostic text is never returned. */
+// A first launch on a slow panel can take well over five seconds to bring its
+// web server up, and a refused connection meanwhile is expected, not a fault.
+// Wait here, read-only, for the app to be listening before the one strict
+// health read. The loop is bounded: 30 checks two seconds apart.
+export function buildAppReady(nonce) {
+  checkId(nonce);
+  return `echo HAPANELD_READY_BEGIN:${nonce}; i=0; r=1; while [ $i -lt 30 ]; do ` +
+    `if { ss -ltn 2>/dev/null; netstat -ltn 2>/dev/null; } | grep -q ':8888 '; then r=0; break; fi; ` +
+    `i=$((i+1)); sleep 2; done; echo HAPANELD_READY_END:${nonce}:$r`;
+}
+export function parseAppReady(body, nonce) {
+  const { lines, status } = parseSection(body, nonce, 'READY');
+  if (lines.length !== 0 || ![0, 1].includes(status)) fail();
+  return status === 0;
+}
 export function parseLaunch(body, nonce) {
   const { status } = parseSection(body, nonce, 'LAUNCH');
   if (status === 0) return 'started';
