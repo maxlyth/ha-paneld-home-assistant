@@ -9,6 +9,7 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 
 from . import HaPaneldConfigEntry
+from .const import INTEGRATION_BUILD
 
 _ENTRY_KEYS_TO_REDACT = {CONF_ADDRESS}
 _HEALTH_KEYS_TO_REDACT = {"panel_id", "discovery_id"}
@@ -25,6 +26,7 @@ def _diagnostics(entry: HaPaneldConfigEntry) -> dict[str, Any]:
     """Build diagnostics only from cached data."""
     snapshot = entry.runtime_data.coordinator.data
     return {
+        "integration_build": INTEGRATION_BUILD,
         "entry": async_redact_data(dict(entry.data), _ENTRY_KEYS_TO_REDACT),
         "last_update_success": entry.runtime_data.coordinator.last_update_success,
         "health": async_redact_data(snapshot.health.as_dict(), _HEALTH_KEYS_TO_REDACT),
