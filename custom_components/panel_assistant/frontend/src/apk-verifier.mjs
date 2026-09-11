@@ -16,9 +16,10 @@ export class ApkVerificationError extends Error {
  * This authenticates exact content against the signed release descriptor, not
  * Android's APK signing block, target compatibility or installation readiness.
  * No network retrieval is performed. A Uint8Array must not use shared memory.
+ * `verificationKey` replaces the embedded release key in tests only.
  */
-export async function verifyApkBundle(bundle, apk, options = {}) {
-  const { descriptor } = await verifyReleaseBundle(bundle, options);
+export async function verifyApkBundle(bundle, apk, options = {}, verificationKey = undefined) {
+  const { descriptor } = await verifyReleaseBundle(bundle, options, verificationKey);
   try {
     let size;
     if (apk instanceof Blob) {

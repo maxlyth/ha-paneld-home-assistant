@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -585,3 +587,56 @@ async def test_download_maps_network_failure() -> None:
 
     with pytest.raises(BuildFeedError):
         await async_download_build(session, _download_build())  # type: ignore[arg-type]
+
+
+# --- one fixture, two verifiers ------------------------------------------------
+
+_GOLDEN = (
+    Path(__file__).parents[1]
+    / "custom_components"
+    / "panel_assistant"
+    / "frontend"
+    / "tests"
+    / "fixtures"
+)
+
+
+def test_golden_feed_is_accepted_here_exactly_as_the_browser_accepts_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The browser tests verify these same bytes; both verifiers must agree."""
+    monkeypatch.setattr(
+        release,
+        "_RELEASE_PUBLIC_KEY_PEM",
+        (_GOLDEN / "build-feed-golden.pub.pem").read_bytes(),
+    )
+    body = (_GOLDEN / "build-feed-golden.json").read_bytes()
+    signature = base64.b64decode(
+        (_GOLDEN / "build-feed-golden.json.sig.b64").read_text(encoding="ascii")
+    )
+    url = URL("https://builds.example/maintainer.json")
+    feed = parse_build_feed(body, signature, url)
+    assert [build.version_code for build in feed.builds] == [772, 771, 770]
+    apk = (_GOLDEN / "build-feed-golden-772.apk.txt").read_bytes()
+    assert hashlib.sha256(apk).hexdigest() == feed.builds[0].apk_sha256
+    mutated = bytearray(body)
+    mutated[len(mutated) // 2] ^= 0x01
+    with pytest.raises(BuildFeedError):
+        parse_build_feed(bytes(mutated), signature, url)
+
+
+def test_a_non_string_channel_is_refused_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A list where a channel name belongs is a bad feed, not a TypeError."""
+    monkeypatch.setattr(build_feed, "_verify_detached_signature", lambda *_: None)
+    body = (
+        json.dumps(
+            {"builds": [], "channel": ["maintainer"], "schema": build_feed.FEED_SCHEMA},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    with pytest.raises(BuildFeedError):
+        parse_build_feed(body, b"s" * 256, URL("https://h/x.json"))

@@ -153,3 +153,55 @@ test('rejects unsafe destinations and existing fragments before opening', async 
     await assert.rejects(handle.completion, { code: 'invalid_destination' });
   }
 });
+const feedMetadata = () => ({
+  id: 'c'.repeat(32), tag: 'build-772', feed: btoa('{"builds":[]}\n'),
+  feed_signature: btoa('f'.repeat(256)), apk_size: 3, apk_sha256: 'b'.repeat(64),
+});
+test('a dev build is requested by its build tag and delivered as the signed feed', async () => {
+  const f = fixture([json(feedMetadata()), new Response('apk')], { rcTag: 'build-772' });
+  assert.equal(new URLSearchParams(f.opened.url.hash.slice(1)).get('rc'), 'build-772');
+  f.send('ready'); await tick(); await tick();
+  assert.deepEqual(JSON.parse(f.calls[0][1].body), { release_candidate: 'build-772' });
+  assert.equal(f.calls[1][0], `/api/panel_assistant/usb/release/${'c'.repeat(32)}/apk`);
+  const [message] = f.posts[0];
+  assert.deepEqual(Object.keys(message.bundle), ['tag', 'feed', 'feedSignature']);
+  assert.equal(message.bundle.tag, 'build-772');
+  assert.equal(new TextDecoder().decode(message.bundle.feed), '{"builds":[]}\n');
+  assert.equal(message.bundle.feedSignature.length, 256);
+  f.send('verified'); await f.handle.completion;
+  f.handle.cancel();
+});
+test('a signed feed at its full 256 KiB fits the feed response bound', async () => {
+  const m = feedMetadata(); m.feed = btoa('x'.repeat(256 * 1024));
+  // Python's default separators add a space after every comma and colon.
+  const body = JSON.stringify(m).replace(/","|":/g, (s) => `${s[0]}${s[1]} ${s.slice(2)}`);
+  const f = fixture([new Response(body, { headers: { 'Content-Type': 'application/json' } }), new Response('apk')], { rcTag: 'build-772' });
+  f.send('ready'); await tick(); await tick();
+  assert.equal(f.posts[0][0].bundle.feed.length, 256 * 1024);
+  f.send('verified'); await f.handle.completion;
+  f.handle.cancel();
+});
+for (const [name, rcTag, mutate] of [
+  ['GitHub fields for a feed tag', 'build-772', () => metadata()],
+  ['GitHub fields named with the feed tag', 'build-772', () => ({ ...metadata(), tag: 'build-772' })],
+  ['feed fields for an RC tag', 'v1.2.3-rc2', () => ({ ...feedMetadata(), tag: 'v1.2.3-rc2' })],
+  ['feed fields for stable', null, () => ({ ...feedMetadata(), tag: 'v1.2.3' })],
+  ['both shapes at once', 'build-772', () => ({ ...metadata(), ...feedMetadata() })],
+  ['another build', 'build-772', () => ({ ...feedMetadata(), tag: 'build-771' })],
+  ['an oversized feed', 'build-772', () => ({ ...feedMetadata(), feed: btoa('x'.repeat(256 * 1024 + 1)) })],
+  ['a short feed signature', 'build-772', () => ({ ...feedMetadata(), feed_signature: btoa('f'.repeat(255)) })],
+  ['an empty feed', 'build-772', () => ({ ...feedMetadata(), feed: '' })],
+]) {
+  test(`rejects ${name} before APK request`, async () => {
+    const f = fixture([json(mutate())], { rcTag });
+    f.send('ready'); await assert.rejects(f.handle.completion, { code: 'invalid_response' });
+    assert.equal(f.calls.length, 1); assert.equal(f.posts.length, 0);
+  });
+}
+test('refuses a build tag outside the grammar before opening', async () => {
+  for (const rcTag of ['build-0', 'build-0772', 'build-2147483648', 'build-772\n', 'build-']) {
+    const windowObject = { removeEventListener() {}, open() { assert.fail('must not open'); } };
+    const handle = startReleaseHandoff({ fetchWithAuth() {} }, 'https://installer.example/', { windowObject, rcTag });
+    await assert.rejects(handle.completion, { code: 'invalid_request' });
+  }
+});

@@ -40,3 +40,11 @@ test('the setup read opens the same service as the health read', async () => {
   await readUsbSetup(adb, { quarantine: () => {} }).catch(() => {});
   assert.deepEqual(adb.opened, [PANEL_HTTP_SERVICE]);
 });
+
+test('the health read recognises a dev build by its free-form versionName', async () => {
+  const devBuild = 'ha-paneld 0.9.7-rc3+dev.1 panel=hall_panel build=771 cfg=0123abcd\n';
+  assert.equal(await readUsbHealth(strictPanel(ok(devBuild)), { versionName: '0.9.7-rc3+dev.1' }, { quarantine: () => {} }), true);
+  assert.equal(await readUsbHealth(strictPanel(ok(devBuild)), { versionName: '0.9.7-rc3' }, { quarantine: () => {} }), false);
+  await assert.rejects(readUsbHealth(strictPanel(ok(devBuild)), { versionName: '0.9.7 rc3' }, { quarantine: () => {} }),
+    { code: 'invalid_request' });
+});

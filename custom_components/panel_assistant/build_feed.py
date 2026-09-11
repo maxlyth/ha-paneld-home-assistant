@@ -216,6 +216,19 @@ def _canonical(document: Any) -> bytes:
     ).encode("ascii")
 
 
+def _database_range_valid(value: object) -> bool:
+    """The same database range rule a release descriptor must meet."""
+    match = (
+        _DATABASE_COMPATIBILITY_PATTERN.fullmatch(value)
+        if isinstance(value, str)
+        else None
+    )
+    if match is None or any(len(group) > 10 for group in match.groups()):
+        return False
+    low, high = int(match.group(1)), int(match.group(2))
+    return 1 <= low <= high <= _MAX_ANDROID_VERSION_CODE
+
+
 def _parse_build(entry: Any, feed_url: URL) -> FeedBuild:
     if not isinstance(entry, dict) or entry.keys() != _BUILD_FIELDS:
         raise BuildFeedError
@@ -242,8 +255,7 @@ def _parse_build(entry: Any, feed_url: URL) -> FeedBuild:
         or _COMMIT_PATTERN.fullmatch(commit) is None
         or not isinstance(published, str)
         or _PUBLISHED_PATTERN.fullmatch(published) is None
-        or not isinstance(compatibility, str)
-        or _DATABASE_COMPATIBILITY_PATTERN.fullmatch(compatibility) is None
+        or not _database_range_valid(compatibility)
         or entry["packageId"] != _PACKAGE_ID
         or entry["signerCertificateSha256"] != _RELEASE_SIGNER_CERTIFICATE_SHA256
         or entry["launchComponent"] != _LAUNCH_COMPONENT
@@ -288,6 +300,7 @@ def parse_build_feed(body: bytes, signature: bytes, feed_url: URL) -> BuildFeed:
         not isinstance(document, dict)
         or document.keys() != _FEED_FIELDS
         or document["schema"] != FEED_SCHEMA
+        or not isinstance(document["channel"], str)
         or document["channel"] not in FEED_CHANNELS
         or not isinstance(document["builds"], list)
         or len(document["builds"]) > _MAX_FEED_BUILDS

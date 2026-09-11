@@ -1,4 +1,5 @@
 import { verifyApkBundle } from './apk-verifier.mjs';
+import { MAX_FEED_BYTES, MAX_TAG_LENGTH, isBuildTag, isRcTag } from './release-identity.mjs';
 
 const fail = () => { throw new Error('handoff_invalid'); };
 const keys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) &&
@@ -12,17 +13,22 @@ export function handoffOptions(hash) {
   const url = new URL(origin);
   if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin ||
       !/^[0-9a-f]{32}$/.test(nonce) || nonce.length !== 32 ||
-      (rc !== '' && (!/^v[0-9]+\.[0-9]+\.[0-9]+-rc[1-9][0-9]*$/.test(rc) || rc.length > 64))) fail();
+      (rc !== '' && !isRcTag(rc) && !isBuildTag(rc))) fail();
   return Object.freeze({ origin, nonce, expectedRcTag: rc || null });
 }
 
-function snapshot(message) {
+// A feed build arrives as the signed feed; a GitHub release as its four signed
+// files. The tag Home Assistant named decides which shape is acceptable.
+const GITHUB_BYTES = { checksum: 512, checksumSignature: 256, descriptor: 4096, descriptorSignature: 256 };
+const FEED_BYTES = { feed: MAX_FEED_BYTES, feedSignature: 256 };
+
+function snapshot(message, expectedRcTag) {
+  const limits = isBuildTag(expectedRcTag) ? FEED_BYTES : GITHUB_BYTES;
   if (!keys(message, ['type', 'nonce', 'bundle', 'apk']) ||
-      !keys(message.bundle, ['tag', 'checksum', 'checksumSignature', 'descriptor', 'descriptorSignature'])) fail();
+      !keys(message.bundle, ['tag', ...Object.keys(limits)])) fail();
   const bundle = { tag: message.bundle.tag };
-  if (typeof bundle.tag !== 'string' || bundle.tag.length > 64) fail();
-  for (const [key, maximum] of Object.entries({ checksum: 512, checksumSignature: 256,
-    descriptor: 4096, descriptorSignature: 256 })) {
+  if (typeof bundle.tag !== 'string' || bundle.tag.length > MAX_TAG_LENGTH) fail();
+  for (const [key, maximum] of Object.entries(limits)) {
     const value = message.bundle[key];
     if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > maximum ||
         (typeof SharedArrayBuffer !== 'undefined' && value.buffer instanceof SharedArrayBuffer)) fail();
@@ -37,8 +43,10 @@ function snapshot(message) {
 
 // The opener is a delivery source, not a release authority. Authenticate again
 // locally before enabling connection, then again at transaction boundaries.
+// `verificationKey` replaces the embedded release key in tests only.
 export function receiveReleaseHandoff({ windowObject = window,
-  options = handoffOptions(windowObject.location.hash), timeoutMs = 300000 } = {}) {
+  options = handoffOptions(windowObject.location.hash), timeoutMs = 300000,
+  verificationKey = undefined } = {}) {
   if (!options || !windowObject.opener || !windowObject.isSecureContext ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) fail();
   const source = windowObject.opener;
@@ -60,11 +68,11 @@ export function receiveReleaseHandoff({ windowObject = window,
         event.data?.type !== 'ha-paneld/usb-bundle' || event.data?.nonce !== options.nonce) return;
     received = true;
     try {
-      const selected = snapshot(event.data);
+      const selected = snapshot(event.data, options.expectedRcTag);
       const authenticate = async () => {
         if (stopped) fail();
         const release = await verifyApkBundle(selected.bundle, selected.apk,
-          { expectedRcTag: options.expectedRcTag });
+          { expectedRcTag: options.expectedRcTag }, verificationKey);
         if (stopped) fail();
         return release;
       };

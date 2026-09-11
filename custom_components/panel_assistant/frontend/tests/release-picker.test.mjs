@@ -111,3 +111,28 @@ test('installer destination changes invalidate selection and non-admin users nev
   assert.equal(calls, 2);
   assert.equal(f.element('start').disabled, true);
 });
+test('dev builds are labelled by name, stable stays the default, and a chosen build is passed like an RC', async () => {
+  const feed = { tag: 'build-772', prerelease: true, name: '0.9.7-rc4 build 772' };
+  const f = fixture(async () => response([stable, rc, feed]));
+  await tick();
+  assert.deepEqual(f.element('release').children.map(option => option.textContent),
+    ['Choose a version', '1.2.3 (recommended)', '1.2.4-rc1 (test version)', '0.9.7-rc4 build 772 (dev build)']);
+  assert.deepEqual(f.element('release').children.map(option => option.value), ['', stable.tag, rc.tag, feed.tag]);
+  assert.equal(f.element('release').value, stable.tag);
+  let opened;
+  globalThis.window = { crypto: webcrypto, location: { origin: 'http://ha.example' }, addEventListener() {}, removeEventListener() {}, open(url) { opened = new URL(url); return { closed: false }; } };
+  f.element('release').value = feed.tag;
+  f.element('release').listeners.change();
+  f.element('start').listeners.click();
+  assert.equal(new URLSearchParams(opened.hash.slice(1)).get('rc'), feed.tag);
+  f.panel.disconnectedCallback();
+  await tick();
+});
+test('a catalogue of only dev builds never auto-selects', async () => {
+  const f = fixture(async () => response([{ tag: 'build-772', prerelease: true, name: '0.9.7-rc4 build 772' }]));
+  await tick();
+  assert.deepEqual(f.element('release').children.map(option => option.textContent),
+    ['Choose a version', '0.9.7-rc4 build 772 (dev build)']);
+  assert.equal(f.element('release').value, '');
+  assert.equal(f.element('start').disabled, true);
+});

@@ -1,13 +1,17 @@
+import { MAX_FEED_BYTES, MAX_TAG_LENGTH, isBuildTag, isRcTag, isStableTag } from './release-identity.mjs';
+
 const API = '/api/panel_assistant/usb/release';
 const MAX_APK = 64 * 1024 * 1024;
 // A reloaded installer window (a back button, a refresh) asks again with the
 // same nonce. The verified bytes stay available to it this long, and no longer
 // than the window stays open.
 const SERVE_MS = 30 * 60 * 1000;
-const STABLE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const RC = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$/;
 const FIELDS = ['id', 'tag', 'checksum', 'checksum_signature', 'descriptor',
   'descriptor_signature', 'apk_size', 'apk_sha256'];
+// A feed build is described by the signed feed itself, never by GitHub's files.
+const FEED_FIELDS = ['id', 'tag', 'feed', 'feed_signature', 'apk_size', 'apk_sha256'];
+const MAX_METADATA = 8192;
+const MAX_FEED_METADATA = Math.ceil(MAX_FEED_BYTES / 3) * 4 + MAX_METADATA;
 const matches = (pattern, value) => typeof value === 'string' && pattern.exec(value)?.[0] === value;
 const keys = (value, expected) => value !== null && typeof value === 'object' &&
   !Array.isArray(value) && Object.keys(value).length === expected.length &&
@@ -109,14 +113,19 @@ export function startReleaseHandoff(hass, installerUrl, {
       });
       requireValid(!finished, 'cancelled');
       requireValid(response.headers.get('content-type')?.split(';')[0].trim() === 'application/json');
-      const metadata = JSON.parse(await (await readBounded(response, 8192, controller.signal)).text());
+      const feed = isBuildTag(rcTag);
+      const metadata = JSON.parse(await (await readBounded(response,
+        feed ? MAX_FEED_METADATA : MAX_METADATA, controller.signal)).text());
       requireValid(!finished, 'cancelled');
-      requireValid(keys(metadata, FIELDS) && matches(/[0-9a-f]{32}/, metadata.id) &&
-        typeof metadata.tag === 'string' && metadata.tag.length <= 64 &&
-        (rcTag === null ? matches(STABLE, metadata.tag) : metadata.tag === rcTag) &&
+      requireValid(keys(metadata, feed ? FEED_FIELDS : FIELDS) && matches(/[0-9a-f]{32}/, metadata.id) &&
+        typeof metadata.tag === 'string' && metadata.tag.length <= MAX_TAG_LENGTH &&
+        (rcTag === null ? isStableTag(metadata.tag) : metadata.tag === rcTag) &&
         matches(/[0-9a-f]{64}/, metadata.apk_sha256) &&
         Number.isSafeInteger(metadata.apk_size) && metadata.apk_size > 0 && metadata.apk_size <= MAX_APK);
-      const bundle = {
+      const bundle = feed ? {
+        tag: metadata.tag, feed: decode(metadata.feed, MAX_FEED_BYTES),
+        feedSignature: decode(metadata.feed_signature, 256, true),
+      } : {
         tag: metadata.tag, checksum: decode(metadata.checksum, 512),
         checksumSignature: decode(metadata.checksum_signature, 256, true),
         descriptor: decode(metadata.descriptor, 4096),
@@ -153,7 +162,7 @@ export function startReleaseHandoff(hass, installerUrl, {
   }
   try {
     requireValid(hass && typeof hass.fetchWithAuth === 'function' &&
-      (rcTag === null || (rcTag.length <= 64 && matches(RC, rcTag))) &&
+      (rcTag === null || isRcTag(rcTag) || isBuildTag(rcTag)) &&
       Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300000, 'invalid_request');
     const url = new URL(installerUrl);
     requireValid(!url.username && !url.password && !url.hash &&

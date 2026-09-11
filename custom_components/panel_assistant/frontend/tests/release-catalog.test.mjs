@@ -29,6 +29,39 @@ for (const [name, value] of [
   ['too many', { releases: Array.from({ length: 31 }, (_, index) => ({ tag: `v1.2.4-rc${index + 1}`, prerelease: true })) }],
 ]) test(`refuses ${name}`, () => assert.throws(() => parseReleaseCatalog(value)));
 
+const feed = { tag: 'build-772', prerelease: true, name: '0.9.7-rc4 build 772' };
+const older = { tag: 'build-771', prerelease: true, name: '0.9.7-rc3+dev.1 build 771' };
+test('accepts dev builds from the signed feed after GitHub releases', () => {
+  const releases = [stable, rc, feed, older];
+  const result = parseReleaseCatalog({ releases });
+  assert.deepEqual(result, releases);
+  assert.ok(result.every(Object.isFrozen));
+  // Thirty GitHub releases and a full feed of 500 builds, within the byte bound.
+  const full = [...Array.from({ length: 30 }, (_, index) => ({ tag: `v1.2.4-rc${index + 1}`, prerelease: true })),
+    ...Array.from({ length: 500 }, (_, index) => ({ tag: `build-${2147483647 - index}`, prerelease: true,
+      name: `${'9'.repeat(64)} build ${2147483647 - index}` }))];
+  assert.equal(parseReleaseCatalog({ releases: full }).length, 530);
+  assert.ok(JSON.stringify({ releases: full }, null, 2).length <= 128 * 1024);
+});
+for (const [name, value] of [
+  ['feed build marked stable', { ...feed, prerelease: false }],
+  ['feed build extra key', { ...feed, url: 'https://example.com' }],
+  ['feed build without a name', { tag: feed.tag, prerelease: true }],
+  ['name for another build', { ...feed, name: '0.9.7-rc4 build 771' }],
+  ['name without a build number', { ...feed, name: '0.9.7-rc4' }],
+  ['name with a space in the version', { ...feed, name: '0.9.7 rc4 build 772' }],
+  ['name with an invalid version', { ...feed, name: '-0.9.7 build 772' }],
+  ['non-string name', { ...feed, name: 772 }],
+  ['GitHub tag with a name', { ...rc, name: '1.2.4-rc1 build 1' }],
+  ['leading-zero build tag', { ...feed, tag: 'build-0772', name: '0.9.7-rc4 build 0772' }],
+  ['build number above the Android bound', { ...feed, tag: 'build-2147483648', name: '0.9.7-rc4 build 2147483648' }],
+]) test(`refuses ${name}`, () => assert.throws(() => parseReleaseCatalog({ releases: [stable, value] })));
+test('refuses a duplicate or 501st feed build', () => {
+  assert.throws(() => parseReleaseCatalog({ releases: [feed, feed] }));
+  assert.throws(() => parseReleaseCatalog({ releases: Array.from({ length: 501 }, (_, index) => ({
+    tag: `build-${index + 1}`, prerelease: true, name: `0.9.7 build ${index + 1}` })) }));
+});
+
 test('fetches authenticated fixed route and parses catalogue', async () => {
   let args;
   const result = await fetchReleaseCatalog({ fetchWithAuth: async (...input) => { args = input; return json({ releases: [stable, rc] }); } });
@@ -43,8 +76,8 @@ for (const [name, response] of [
   ['status', () => new Response('{}', { status: 403 })],
   ['content type', () => new Response('{}')],
   ['invalid JSON', () => new Response('{', { headers: { 'Content-Type': 'application/json' } })],
-  ['oversized body', () => new Response(' '.repeat(8193), { headers: { 'Content-Type': 'application/json' } })],
-  ['oversized length', () => new Response('{}', { headers: { 'Content-Type': 'application/json', 'Content-Length': '8193' } })],
+  ['oversized body', () => new Response(' '.repeat(128 * 1024 + 1), { headers: { 'Content-Type': 'application/json' } })],
+  ['oversized length', () => new Response('{}', { headers: { 'Content-Type': 'application/json', 'Content-Length': String(128 * 1024 + 1) } })],
   ['incorrect length', () => new Response('{}', { headers: { 'Content-Type': 'application/json', 'Content-Length': '3' } })],
 ]) test(`fetch refuses ${name}`, async () => {
   await assert.rejects(fetchReleaseCatalog({ fetchWithAuth: async () => response() }));

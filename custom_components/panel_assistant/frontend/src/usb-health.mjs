@@ -1,5 +1,6 @@
 import { readBounded } from './bounded-stream.mjs';
 import { PANEL_HTTP_SERVICE } from './panel-http.mjs';
+import { isBuildVersionName } from './release-identity.mjs';
 
 export class UsbHealthError extends Error {
   constructor(code) { super(code); this.name = 'UsbHealthError'; this.code = code; }
@@ -8,7 +9,9 @@ const fail = code => { throw new UsbHealthError(code); };
 const malformed = () => fail('health_malformed');
 const encoder = new TextEncoder();
 const versionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
-const validVersion = value => typeof value === 'string' && value.length <= 63 && versionPattern.test(value) && !value.includes('\n');
+const releaseVersion = value => typeof value === 'string' && value.length <= 63 && versionPattern.test(value) && !value.includes('\n');
+// A dev build from the signed feed reports its own versionName, which is free-form.
+const validVersion = value => releaseVersion(value) || isBuildVersionName(value);
 const knownFields = new Set(['panel', 'build', 'cfg', 'ha', 'ha_src', 'ha_refused', 'ha_net', 'ha_resp', 'ha_net_p95', 'ha_net_n', 'ha_net_miss', 'ha_net_age']);
 
 // The native endpoint returns a text line, not a JSON status document.
@@ -28,7 +31,7 @@ function healthVersion(body) {
   const build = fields.get('build');
   if (!/^[a-z0-9](?:[a-z0-9_]*[a-z0-9])?$/.test(fields.get('panel') ?? '') ||
       !/^[0-9a-f]{8}$/.test(fields.get('cfg') ?? '') ||
-      !(validVersion(build) || (typeof build === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(build) && BigInt(build) <= 9223372036854775807n))) malformed();
+      !(releaseVersion(build) || (typeof build === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(build) && BigInt(build) <= 9223372036854775807n))) malformed();
   return tokens[1];
 }
 

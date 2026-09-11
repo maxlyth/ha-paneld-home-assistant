@@ -1,20 +1,36 @@
-const MAX_CHOICES = 30;
-const MAX_BYTES = 8192;
-const STABLE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const RC = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc[1-9][0-9]*$/;
+import { buildLabel, buildTagVersionCode, isBuildVersionName, isRcTag, isStableTag } from './release-identity.mjs';
+
+// GitHub lists at most 30 releases; a signed build feed holds at most 500 builds.
+const MAX_GITHUB_CHOICES = 30;
+const MAX_FEED_CHOICES = 500;
+const MAX_BYTES = 128 * 1024;
 const keys = (value, expected) => value !== null && typeof value === 'object' &&
   !Array.isArray(value) && Object.keys(value).length === expected.length &&
   expected.every(key => Object.hasOwn(value, key));
 function requireValid(value) { if (!value) throw new Error('Invalid release catalogue'); }
 
+// A feed build is always a test build, named "<versionName> build <versionCode>".
+function feedName(release) {
+  const code = buildTagVersionCode(release.tag);
+  const versionName = typeof release.name === 'string' ? release.name.split(' ')[0] : null;
+  return code !== null && release.prerelease === true && isBuildVersionName(versionName) &&
+    release.name === buildLabel(versionName, code);
+}
+
 export function parseReleaseCatalog(value) {
-  requireValid(keys(value, ['releases']) && Array.isArray(value.releases) && value.releases.length <= MAX_CHOICES);
+  requireValid(keys(value, ['releases']) && Array.isArray(value.releases) &&
+    value.releases.length <= MAX_GITHUB_CHOICES + MAX_FEED_CHOICES);
   const seen = new Set();
-  let stableCount = 0;
+  let stableCount = 0, githubCount = 0, feedCount = 0;
   return Object.freeze(value.releases.map(release => {
+    if (keys(release, ['tag', 'prerelease', 'name'])) {
+      requireValid(feedName(release) && !seen.has(release.tag) && ++feedCount <= MAX_FEED_CHOICES);
+      seen.add(release.tag);
+      return Object.freeze({ tag: release.tag, prerelease: true, name: release.name });
+    }
     requireValid(keys(release, ['tag', 'prerelease']) && typeof release.prerelease === 'boolean' &&
-      typeof release.tag === 'string' && release.tag.length <= 64 &&
-      (release.prerelease ? RC : STABLE).exec(release.tag)?.[0] === release.tag && !seen.has(release.tag));
+      (release.prerelease ? isRcTag(release.tag) : isStableTag(release.tag)) && !seen.has(release.tag) &&
+      ++githubCount <= MAX_GITHUB_CHOICES);
     seen.add(release.tag);
     if (!release.prerelease) requireValid(++stableCount <= 1);
     return Object.freeze({ tag: release.tag, prerelease: release.prerelease });

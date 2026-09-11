@@ -15,6 +15,7 @@ export const HA_INSTALL_MESSAGES = Object.freeze({
   choose: 'Choose a version',
   recommended: 'recommended',
   testing: 'test version',
+  devBuild: 'dev build',
   retry: 'Try again',
   start: 'Continue',
   cancel: 'Cancel',
@@ -119,9 +120,11 @@ export class HaPaneldUsbInstallPanel extends HTMLElement {
       for (const release of releases) {
         const option = document.createElement('option');
         option.value = release.tag;
+        // A dev build from the signed feed is named by version and build number.
         const note = release.tag === recommended ? HA_INSTALL_MESSAGES.recommended
-          : release.prerelease ? HA_INSTALL_MESSAGES.testing : '';
-        option.textContent = `${release.tag.replace(/^v/, '')}${note ? ` (${note})` : ''}`;
+          : release.name ? HA_INSTALL_MESSAGES.devBuild
+            : release.prerelease ? HA_INSTALL_MESSAGES.testing : '';
+        option.textContent = `${release.name ?? release.tag.replace(/^v/, '')}${note ? ` (${note})` : ''}`;
         select.append(option);
       }
       select.value = recommended;
