@@ -159,7 +159,7 @@ test('an already installed build is announced, not failed', () => {
   const source = readFileSync(new URL('../src/install-main.mjs', import.meta.url), 'utf8');
   const branch = source.slice(source.indexOf('if (!receipt && preview.adopt)'));
   assert.ok(branch.length < source.length, 'the adopt branch exists');
-  const block = branch.slice(0, branch.indexOf('}'));
+  const block = branch.slice(0, branch.indexOf('if (receipt) await installAll()'));
   assert.match(block, /screen\.alreadyInstalledHeading/);
   assert.match(block, /screen\.alreadyInstalledBody/);
   assert.match(block, /screen\.continueSetup/);
