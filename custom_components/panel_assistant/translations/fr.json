@@ -144,6 +144,9 @@
     "update_rejected": { "message": "Le panneau a refusé la demande de mise à jour" },
     "update_not_accepted": { "message": "Le panneau n'a pas accepté la demande de mise à jour" },
     "update_not_complete": { "message": "La mise à jour du panneau ne s'est pas terminée" },
-    "update_did_not_return": { "message": "Le panneau n'est pas revenu après la mise à jour" }
+    "update_did_not_return": { "message": "Le panneau n'est pas revenu après la mise à jour" },
+    "panel_backup_failed": { "message": "Le panneau n'a pas pu être sauvegardé, rien n'a donc été installé" },
+    "build_verification_failed": { "message": "Le build ne correspondait pas au flux de builds signé, rien n'a donc été installé" },
+    "upload_disabled": { "message": "Le panneau n'accepte pas les envois d'applications ; activez l'envoi d'APK dans ses paramètres" }
   }
 }

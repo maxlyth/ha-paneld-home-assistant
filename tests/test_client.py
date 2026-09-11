@@ -16,13 +16,17 @@ from custom_components.panel_assistant.client import (
     InvalidAddressError,
     InvalidResponseError,
     PanelHealth,
+    StagedApk,
     UpdateApprovalRequiredError,
     UpdateBusyError,
     UpdateRejectedError,
+    UploadDisabledError,
     is_newer_stable_version,
     normalize_address,
+    parse_diag_version,
     parse_health_response,
     parse_panel_install_status,
+    parse_staged_apk,
 )
 from custom_components.panel_assistant.const import (
     MAX_STATUS_CAPABILITIES,
@@ -825,3 +829,221 @@ async def test_client_rejects_oversized_valid_status_document() -> None:
 
     with pytest.raises(InvalidResponseError):
         await client.async_get_status()
+
+
+# --- maintainer build feed: diagnostics, backup, staged upload ---------------
+
+
+_DIAG = "ha-paneld diagnostics — 0.9.7-rc3 (build 707)\n[captured] ...\n"
+_SIGNER = "ac6193307fb0b70113aae205d7549406f96e063bc5491b67b1d5694a34b0e339"
+_PREVIEW = {
+    "ok": True,
+    "token": "tok-1",
+    "package": "io.github.maxlyth.hapaneld",
+    "version": "0.9.7-rc4",
+    "signer": _SIGNER,
+}
+
+
+def _client(session: _FakeSession) -> HaPaneldClient:
+    return HaPaneldClient(session, normalize_address("panel.local"))  # type: ignore[arg-type]
+
+
+def test_parse_diag_version_reads_name_and_build() -> None:
+    """The diagnostics header carries the running version name and build number."""
+    assert parse_diag_version(_DIAG.encode()) == ("0.9.7-rc3", 707)
+    assert parse_diag_version(_DIAG.replace("\n", "\r\n", 1).encode()) == (
+        "0.9.7-rc3",
+        707,
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"",
+        b"[captured] ...\n",
+        "\nha-paneld diagnostics — 0.9.7-rc3 (build 707)\n".encode(),
+        "other diagnostics — 0.9.7-rc3 (build 707)\n".encode(),
+        b"ha-paneld diagnostics - 0.9.7-rc3 (build 707)\n",
+        "ha-paneld diagnostics — 0.9.7-rc3 (build 0707)\n".encode(),
+        "ha-paneld diagnostics — 0.9.7-rc3 (build 707) extra\n".encode(),
+        "ha-paneld diagnostics — 0.9.7 rc3 (build 707)\n".encode(),
+        b"\xff\xfe\n",
+    ],
+)
+def test_parse_diag_version_refuses_other_first_lines(body: bytes) -> None:
+    """A missing or non-matching first line is not a build number."""
+    with pytest.raises(InvalidResponseError):
+        parse_diag_version(body)
+
+
+async def test_client_reads_the_version_code_from_diag() -> None:
+    """The build number comes from the versioned diagnostics route."""
+    session = _FakeSession(body=_DIAG.encode())
+
+    assert await _client(session).async_get_version_code() == ("0.9.7-rc3", 707)
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/diag"
+    assert kwargs["allow_redirects"] is False
+
+
+def test_parse_staged_apk_accepts_the_fixed_preview() -> None:
+    """A preview is ok:true plus four printable strings."""
+    staged = parse_staged_apk(json.dumps(_PREVIEW).encode())
+
+    assert staged == StagedApk(
+        token="tok-1",
+        package="io.github.maxlyth.hapaneld",
+        version="0.9.7-rc4",
+        signer=_SIGNER,
+    )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"ok": False},
+        {"ok": "true"},
+        {"ok": None},
+        {"token": None},
+        {"package": 7},
+        {"version": ""},
+        {"signer": "x" * 257},
+        {"version": "0.9.7 rc4"},
+        {"package": "io.githubé"},
+        {"signer": "abc\x00"},
+        {"token": "tok/1"},
+    ],
+)
+def test_parse_staged_apk_refuses_anything_else(replacement: dict[str, Any]) -> None:
+    """Missing, empty, long, non-printable or non-string fields are refused."""
+    document = {**_PREVIEW, **replacement}
+    document = {key: value for key, value in document.items() if value is not None}
+
+    with pytest.raises(InvalidResponseError):
+        parse_staged_apk(json.dumps(document).encode())
+
+
+def test_parse_staged_apk_refuses_a_non_object() -> None:
+    """Only a JSON object is a preview."""
+    with pytest.raises(InvalidResponseError):
+        parse_staged_apk(b"[]")
+
+
+async def test_stage_uploads_raw_bytes_and_returns_the_preview() -> None:
+    """The APK is posted as the raw request body to the staging route."""
+    session = _FakeSession(body=json.dumps(_PREVIEW).encode())
+    apk = b"PK\x03\x04apk"
+
+    staged = await _client(session).async_stage_apk(apk)
+
+    assert staged.token == "tok-1"
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/install/apk"
+    assert kwargs["data"] == apk
+    assert isinstance(kwargs["data"], bytes)
+    assert kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (403, UploadDisabledError),
+        (409, UpdateBusyError),
+        (400, UpdateRejectedError),
+        (500, CannotConnectError),
+    ],
+)
+async def test_stage_maps_panel_refusals(status: int, error: type[Exception]) -> None:
+    """Each staging refusal keeps its own meaning."""
+    with pytest.raises(Exception) as raised:
+        await _client(_FakeSession(status=status, body=b"{}")).async_stage_apk(b"apk")
+
+    assert type(raised.value) is error
+
+
+async def test_commit_accepts_a_started_install() -> None:
+    """Committing names only the staged token."""
+    session = _FakeSession(body=b'{"status":"started"}')
+
+    await _client(session).async_commit_apk("tok-1")
+
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/install/apk/commit"
+    assert kwargs["data"] == {"token": "tok-1"}
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "error"),
+    [
+        (200, b'{"status":"busy"}', UpdateBusyError),
+        (
+            202,
+            b'{"error":"approval-required","approval_id":"opaque"}',
+            UpdateApprovalRequiredError,
+        ),
+        (403, b"{}", UploadDisabledError),
+        (400, b"{}", UpdateRejectedError),
+        (500, b"{}", CannotConnectError),
+    ],
+)
+async def test_commit_maps_panel_refusals(
+    status: int, body: bytes, error: type[Exception]
+) -> None:
+    """Only a started install is success."""
+    with pytest.raises(Exception) as raised:
+        await _client(_FakeSession(status=status, body=body)).async_commit_apk("tok-1")
+
+    assert type(raised.value) is error
+
+
+async def test_discard_posts_the_token() -> None:
+    """A discard names the staged token on the discard route."""
+    session = _FakeSession(status=404, body=b"{}")
+
+    await _client(session).async_discard_apk("tok-1")
+
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/install/apk/discard"
+    assert kwargs["data"] == {"token": "tok-1"}
+
+
+async def test_backup_returns_bytes_and_allows_plaintext() -> None:
+    """The backup is requested as a plaintext archive and returned verbatim."""
+    session = _FakeSession(body=b"PK\x03\x04zip")
+
+    assert await _client(session).async_backup_panel() == b"PK\x03\x04zip"
+    assert session.request is not None
+    url, kwargs = session.request
+    assert str(url) == "http://panel.local:8888/api/v1/backup"
+    assert kwargs["data"]["allow_plaintext"] == "1"
+    assert kwargs["data"] == {"allow_plaintext": "1", "include_companion": "false"}
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "error"),
+    [
+        (
+            202,
+            b'{"error":"approval-required","approval_id":"opaque"}',
+            UpdateApprovalRequiredError,
+        ),
+        (409, b"{}", UpdateBusyError),
+        (400, b"{}", UpdateRejectedError),
+        (500, b"{}", CannotConnectError),
+        (200, b"", CannotConnectError),
+    ],
+)
+async def test_backup_maps_panel_refusals(
+    status: int, body: bytes, error: type[Exception]
+) -> None:
+    """Only a non-empty 200 is a backup."""
+    with pytest.raises(Exception) as raised:
+        await _client(_FakeSession(status=status, body=body)).async_backup_panel()
+
+    assert type(raised.value) is error

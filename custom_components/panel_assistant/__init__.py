@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
@@ -15,9 +16,11 @@ from homeassistant.helpers.typing import ConfigType
 
 from .browser_delivery import async_register_browser_delivery
 from .browser_panel import async_register_browser_panel
+from .build_feed import BuildFeedError, normalize_feed_url
 from .client import HaPaneldClient, normalize_address
 from .const import DOMAIN
 from .coordinator import HaPaneldDataUpdateCoordinator
+from .feed_coordinator import CONF_BUILD_FEED, DATA_BUILD_FEED, BuildFeedCoordinator
 from .install_executor import (
     InstallExecutor,
     async_get_install_executor,
@@ -31,7 +34,12 @@ from .install_jobs import (
 from .update_coordinator import PanelUpdateCoordinator
 
 PLATFORMS = [Platform.SENSOR, Platform.UPDATE]
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+# Panels are config entries. The one YAML key is an optional build
+# feed; without it nothing is ever fetched from anywhere but GitHub releases.
+CONFIG_SCHEMA = vol.Schema(
+    {vol.Optional(DOMAIN): vol.Schema({vol.Optional(CONF_BUILD_FEED): cv.string})},
+    extra=vol.ALLOW_EXTRA,
+)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -39,6 +47,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register browser delivery independently of panel config entries."""
     async_register_browser_delivery(hass)
     await async_register_browser_panel(hass)
+    feed = config.get(DOMAIN, {}).get(CONF_BUILD_FEED)
+    if feed is not None:
+        try:
+            feed_url = normalize_feed_url(feed)
+        except BuildFeedError:
+            _LOGGER.error(
+                "Ignoring %s: it must be a plain https URL to a .json feed",
+                CONF_BUILD_FEED,
+            )
+        else:
+            coordinator = BuildFeedCoordinator(hass, feed_url)
+            hass.data.setdefault(DOMAIN, {})[DATA_BUILD_FEED] = coordinator
+            hass.async_create_background_task(
+                coordinator.async_refresh(), f"{DOMAIN} first build feed read"
+            )
     return True
 
 

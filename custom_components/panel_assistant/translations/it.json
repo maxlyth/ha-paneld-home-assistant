@@ -144,6 +144,9 @@
     "update_rejected": { "message": "Il pannello ha rifiutato la richiesta di aggiornamento" },
     "update_not_accepted": { "message": "Il pannello non ha accettato la richiesta di aggiornamento" },
     "update_not_complete": { "message": "L'aggiornamento del pannello non è stato completato" },
-    "update_did_not_return": { "message": "Il pannello non è tornato disponibile dopo l'aggiornamento" }
+    "update_did_not_return": { "message": "Il pannello non è tornato disponibile dopo l'aggiornamento" },
+    "panel_backup_failed": { "message": "Non è stato possibile eseguire il backup del pannello, quindi non è stato installato nulla" },
+    "build_verification_failed": { "message": "La build non corrispondeva al feed delle build firmato, quindi non è stato installato nulla" },
+    "upload_disabled": { "message": "Il pannello non accetta caricamenti di app; attiva il caricamento APK nelle sue impostazioni" }
   }
 }

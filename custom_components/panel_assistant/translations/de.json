@@ -144,6 +144,9 @@
     "update_rejected": { "message": "Das Panel hat die Update-Anfrage abgelehnt" },
     "update_not_accepted": { "message": "Das Panel hat die Update-Anfrage nicht angenommen" },
     "update_not_complete": { "message": "Das Panel-Update wurde nicht abgeschlossen" },
-    "update_did_not_return": { "message": "Das Panel ist nach dem Update nicht zurückgekehrt" }
+    "update_did_not_return": { "message": "Das Panel ist nach dem Update nicht zurückgekehrt" },
+    "panel_backup_failed": { "message": "Das Panel konnte nicht gesichert werden, daher wurde nichts installiert" },
+    "build_verification_failed": { "message": "Der Build stimmte nicht mit dem signierten Build-Feed überein, daher wurde nichts installiert" },
+    "upload_disabled": { "message": "Das Panel nimmt keine App-Uploads an; aktiviere den APK-Upload in seinen Einstellungen" }
   }
 }

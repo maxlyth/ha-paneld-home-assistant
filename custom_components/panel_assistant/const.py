@@ -28,6 +28,11 @@ STATUS_PATH = "/api/v1/status"
 UPDATE_OWNER_HEADER = "X-Panel-Assistant-Update-Owner"
 INSTALL_COMPONENT_PATH = "/api/v1/install/component"
 INSTALL_STATUS_PATH = "/api/v1/install/status"
+APK_STAGE_PATH = "/api/v1/install/apk"
+APK_COMMIT_PATH = "/api/v1/install/apk/commit"
+APK_DISCARD_PATH = "/api/v1/install/apk/discard"
+BACKUP_PATH = "/api/v1/backup"
+DIAG_PATH = "/api/v1/diag"
 
 
 def update_unique_id(entry_id: str) -> str:

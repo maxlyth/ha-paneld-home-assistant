@@ -144,6 +144,9 @@
     "update_rejected": { "message": "El panel rechazó la solicitud de actualización" },
     "update_not_accepted": { "message": "El panel no aceptó la solicitud de actualización" },
     "update_not_complete": { "message": "La actualización del panel no se completó" },
-    "update_did_not_return": { "message": "El panel no volvió después de la actualización" }
+    "update_did_not_return": { "message": "El panel no volvió después de la actualización" },
+    "panel_backup_failed": { "message": "No se pudo hacer una copia de seguridad del panel, así que no se instaló nada" },
+    "build_verification_failed": { "message": "La compilación no coincidía con el feed de compilaciones firmado, así que no se instaló nada" },
+    "upload_disabled": { "message": "El panel no acepta subidas de apps; activa la subida de APK en su configuración" }
   }
 }

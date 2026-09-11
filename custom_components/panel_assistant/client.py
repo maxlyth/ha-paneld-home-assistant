@@ -12,8 +12,13 @@ from aiohttp import ClientError, ClientSession, ClientTimeout
 from yarl import URL
 
 from .const import (
+    APK_COMMIT_PATH,
+    APK_DISCARD_PATH,
+    APK_STAGE_PATH,
+    BACKUP_PATH,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT_SECONDS,
+    DIAG_PATH,
     HEALTH_PATH,
     INSTALL_COMPONENT_PATH,
     INSTALL_STATUS_PATH,
@@ -87,6 +92,10 @@ class UpdateRejectedError(HaPaneldError):
 
 class UpdateBusyError(UpdateRejectedError):
     """Raised when another panel-owned destructive operation is active."""
+
+
+class UploadDisabledError(UpdateRejectedError):
+    """Raised when the panel does not accept app uploads."""
 
 
 class UpdateApprovalRequiredError(UpdateRejectedError):
@@ -330,6 +339,65 @@ def parse_update_approval_response(body: bytes) -> NoReturn:
     raise UpdateRejectedError
 
 
+_MAX_DIAG_BYTES = 256 * 1024
+_MAX_BACKUP_BYTES = 64 * 1024 * 1024
+_BACKUP_TIMEOUT_SECONDS = 120.0
+# The panel allows 600 s to receive an upload; stop just after it gives up.
+_UPLOAD_TIMEOUT_SECONDS = 630.0
+_DIAG_FIRST_LINE = re.compile(
+    r"ha-paneld diagnostics \u2014 ([0-9A-Za-z][0-9A-Za-z._+-]{0,63}) "
+    r"\(build ([1-9][0-9]{0,9})\)"
+)
+_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
+
+
+@dataclass(frozen=True, slots=True)
+class StagedApk:
+    """What the panel says about an upload it has staged but not installed."""
+
+    token: str
+    package: str
+    version: str
+    signer: str
+
+
+def parse_diag_version(body: bytes) -> tuple[str, int]:
+    """Read the version name and build number from the diagnostics header."""
+    first, _, _rest = body.partition(b"\n")
+    try:
+        line = first.decode("utf-8").rstrip("\r")
+    except UnicodeDecodeError as err:
+        raise InvalidResponseError from err
+    match = _DIAG_FIRST_LINE.fullmatch(line)
+    if match is None:
+        raise InvalidResponseError
+    code = int(match.group(2))
+    if code > _MAX_ANDROID_LONG:
+        raise InvalidResponseError
+    return match.group(1), code
+
+
+def parse_staged_apk(body: bytes) -> StagedApk:
+    """Accept only the fixed preview fields, each short and printable."""
+    document = _load_json_object(body)
+    if document.get("ok") is not True:
+        raise InvalidResponseError
+    fields: list[str] = []
+    for key in ("token", "package", "version", "signer"):
+        value = document.get(key)
+        if (
+            not isinstance(value, str)
+            or not 0 < len(value) <= 256
+            or any(not " " < character <= "~" for character in value)
+        ):
+            raise InvalidResponseError
+        fields.append(value)
+    token, package, version, signer = fields
+    if _TOKEN_PATTERN.fullmatch(token) is None:
+        raise InvalidResponseError
+    return StagedApk(token=token, package=package, version=version, signer=signer)
+
+
 class HaPaneldClient:
     """Bounded client for one ha-paneld panel's stable control-plane contracts."""
 
@@ -390,7 +458,11 @@ class HaPaneldClient:
         return bytes(body)
 
     async def _async_post_bounded(
-        self, url: URL, form: dict[str, str], maximum_bytes: int
+        self,
+        url: URL,
+        form: dict[str, str] | bytes,
+        maximum_bytes: int,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> tuple[int, bytes]:
         try:
             async with self._session.post(
@@ -398,7 +470,7 @@ class HaPaneldClient:
                 data=form,
                 allow_redirects=False,
                 headers={"Cache-Control": "no-cache"},
-                timeout=ClientTimeout(total=DEFAULT_TIMEOUT_SECONDS),
+                timeout=ClientTimeout(total=timeout_seconds),
             ) as response:
                 body = bytearray()
                 async for chunk in response.content.iter_chunked(maximum_bytes + 1):
@@ -462,3 +534,77 @@ class HaPaneldClient:
         if 400 <= status < 500:
             raise UpdateRejectedError
         raise CannotConnectError
+
+    async def async_get_version_code(self) -> tuple[str, int]:
+        """Read the running app's version name and build number.
+
+        No JSON contract carries the build number; the diagnostics dump names it
+        on its first line, which is the same text the panel's own UI shows.
+        """
+        body = await self._async_get_bounded(
+            self.address.base_url.with_path(DIAG_PATH), _MAX_DIAG_BYTES
+        )
+        return parse_diag_version(body)
+
+    async def async_backup_panel(self) -> bytes:
+        """Take the panel's own settings backup before it is changed."""
+        status, body = await self._async_post_bounded(
+            self.address.base_url.with_path(BACKUP_PATH),
+            {"allow_plaintext": "1", "include_companion": "false"},
+            _MAX_BACKUP_BYTES,
+            _BACKUP_TIMEOUT_SECONDS,
+        )
+        if status == 200 and body:
+            return body
+        if status == 202:
+            parse_update_approval_response(body)
+        if status == 409:
+            raise UpdateBusyError
+        if 400 <= status < 500:
+            raise UpdateRejectedError
+        raise CannotConnectError
+
+    async def async_stage_apk(self, apk: bytes) -> StagedApk:
+        """Upload app bytes for the panel to inspect before anything installs."""
+        status, body = await self._async_post_bounded(
+            self.address.base_url.with_path(APK_STAGE_PATH),
+            apk,
+            MAX_INSTALL_RESPONSE_BYTES,
+            _UPLOAD_TIMEOUT_SECONDS,
+        )
+        if status == 200:
+            return parse_staged_apk(body)
+        if status == 403:
+            raise UploadDisabledError
+        if status == 409:
+            raise UpdateBusyError
+        # 4xx, plus "no root" (503) and "no space" (507), are the panel saying no.
+        if 400 <= status < 500 or status in (503, 507):
+            raise UpdateRejectedError
+        raise CannotConnectError
+
+    async def async_commit_apk(self, token: str) -> None:
+        """Install exactly the staged upload the caller inspected."""
+        status, body = await self._async_post_bounded(
+            self.address.base_url.with_path(APK_COMMIT_PATH),
+            {"token": token},
+            MAX_INSTALL_RESPONSE_BYTES,
+        )
+        if status == 200:
+            parse_update_start_response(body)
+            return
+        if status == 202:
+            parse_update_approval_response(body)
+        if status == 403:
+            raise UploadDisabledError
+        if 400 <= status < 500:
+            raise UpdateRejectedError
+        raise CannotConnectError
+
+    async def async_discard_apk(self, token: str) -> None:
+        """Delete a staged upload that must not be installed."""
+        await self._async_post_bounded(
+            self.address.base_url.with_path(APK_DISCARD_PATH),
+            {"token": token},
+            MAX_INSTALL_RESPONSE_BYTES,
+        )

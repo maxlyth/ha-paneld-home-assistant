@@ -158,6 +158,15 @@
     },
     "update_did_not_return": {
       "message": "The panel did not return after the update"
+    },
+    "panel_backup_failed": {
+      "message": "The panel could not be backed up, so nothing was installed"
+    },
+    "build_verification_failed": {
+      "message": "The build did not match the signed build feed, so nothing was installed"
+    },
+    "upload_disabled": {
+      "message": "The panel does not accept app uploads; turn on APK upload in its settings"
     }
   }
 }
