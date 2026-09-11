@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +19,10 @@ STATIC_PATH = Path(__file__).parent / "static"
 STATIC_URL = "/panel_assistant/usb"
 PANEL_PATH = "panel-assistant-usb"
 FLEET_PANEL_PATH = "panel-assistant"
-INSTALLER_URL = "https://install.panel-assistant.io/"
+DEFAULT_INSTALLER_URL = "https://install.panel-assistant.io/"
+# A self-hosted or development installer can replace the published one. The browser
+# side still refuses anything that is not HTTPS or plain HTTP on localhost.
+INSTALLER_URL = os.environ.get("PANEL_ASSISTANT_INSTALLER_URL", DEFAULT_INSTALLER_URL)
 
 
 @dataclass

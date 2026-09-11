@@ -159,3 +159,21 @@ async def test_retry_preserves_completed_steps(hass, monkeypatch, failure_step):
     await browser_panel.async_register_browser_panel(hass)
     assert static.await_count == (2 if failure_step == "static" else 1)
     assert panel.await_count == (3 if failure_step == "panel" else 2)
+
+
+def test_installer_address_defaults_to_published_and_can_be_self_hosted(monkeypatch):
+    """Self-hosters and development instances point Home Assistant at their own copy."""
+    import importlib
+
+    monkeypatch.delenv("PANEL_ASSISTANT_INSTALLER_URL", raising=False)
+    assert importlib.reload(browser_panel).INSTALLER_URL == (
+        "https://install.panel-assistant.io/"
+    )
+    monkeypatch.setenv("PANEL_ASSISTANT_INSTALLER_URL", "https://installer.example/")
+    try:
+        assert importlib.reload(browser_panel).INSTALLER_URL == (
+            "https://installer.example/"
+        )
+    finally:
+        monkeypatch.delenv("PANEL_ASSISTANT_INSTALLER_URL")
+        importlib.reload(browser_panel)
