@@ -48,8 +48,8 @@ export function setupUrl(address) {
 export async function readSetupUrl(adb, newNonce) {
   const nonce = newNonce();
   try {
-    const bytes = await readShell(adb, buildAddressProbe(nonce), { maximum: 8192, timeoutMs: 5000 });
-    return setupUrl(parsePanelAddress(new TextDecoder().decode(bytes), nonce));
+    const text = await readShell(adb, buildAddressProbe(nonce), { maximum: 8192, timeoutMs: 5000 });
+    return setupUrl(parsePanelAddress(text, nonce));
   } catch {
     // Not knowing the address is never a failure: setup continues on the panel.
     return null;

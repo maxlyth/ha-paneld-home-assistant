@@ -1,4 +1,5 @@
 import {parseSetupObservation} from './setup-observation.mjs';
+import { PANEL_HTTP_SERVICE } from './panel-http.mjs';
 const fail = () => { throw new Error('setup_response_invalid'); };
 const encode = new TextEncoder();
 const ascii = bytes => {
@@ -62,7 +63,7 @@ export async function readUsbSetup(adb, {ensureCurrent = () => {}, quarantine,
   let socket, writer, reader, stopped = false, timer;
   const guard = () => { if (stopped) fail(); ensureCurrent(); };
   const operation = (async () => {
-    guard(); socket = await adb.createSocket('tcp:8888');
+    guard(); socket = await adb.createSocket(PANEL_HTTP_SERVICE);
     if (stopped) { void Promise.resolve().then(() => socket.close()).catch(() => {}); fail(); }
     guard(); writer = socket.writable.getWriter();
     await writer.write(encode.encode('GET /api/v1/setup HTTP/1.1\r\nHost: 127.0.0.1:8888\r\nConnection: close\r\n\r\n'));

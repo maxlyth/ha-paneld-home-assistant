@@ -1,4 +1,5 @@
 import { readBounded } from './bounded-stream.mjs';
+import { PANEL_HTTP_SERVICE } from './panel-http.mjs';
 
 export class UsbHealthError extends Error {
   constructor(code) { super(code); this.name = 'UsbHealthError'; this.code = code; }
@@ -82,7 +83,7 @@ export async function readUsbHealth(adb, descriptor, {
   const guard = () => { if (stopped) fail('health_unavailable'); ensureCurrent(); };
   const operation = (async () => {
     guard();
-    socket = await adb.createSocket('tcp:8888');
+    socket = await adb.createSocket(PANEL_HTTP_SERVICE);
     if (stopped) {
       void Promise.resolve().then(() => socket.close()).catch(() => {});
       fail('health_unavailable');
