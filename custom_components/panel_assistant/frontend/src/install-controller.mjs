@@ -47,7 +47,26 @@ export function createInstallController({ store, ports, locks = globalThis.navig
         const release = await ports.authenticate();
         guard();
         if (release?.kind !== 'authenticated-apk-bytes') fail('artifact_changed');
-        const receipt = await store.load(deviceKey);
+        let receipt = await store.load(deviceKey);
+        if (receipt?.phase === 'healthy') {
+          // A finished job only resumes (permissions, then setup) while the
+          // panel still runs exactly its app. If another release was chosen,
+          // or the app has changed since, the job is history: retire it so it
+          // can never lock the panel out of a new install.
+          const current = canonical(receipt.artifact) === canonical(release.descriptor) &&
+            (await ports.inspect(receipt, release))?.installed === true;
+          guard();
+          if (!current) {
+            const finished = receipt;
+            await locks.request(`ha-paneld-usb:${deviceKey}`, {mode: 'exclusive', ifAvailable: true},
+              async lock => {
+                if (!lock) fail('transaction_busy');
+                await store.retire(deviceKey, finished.revision);
+              });
+            guard();
+            receipt = null;
+          }
+        }
         if (receipt && canonical(receipt.artifact) !== canonical(release.descriptor)) fail('artifact_changed');
         // Actual ports validate the live target and installed/clean state. A
         // not-yet-created job may use the target only for read-only inspection.

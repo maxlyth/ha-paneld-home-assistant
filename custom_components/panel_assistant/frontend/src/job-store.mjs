@@ -207,6 +207,26 @@ export async function openJobStore(name = 'ha-paneld-usb-jobs-v1') {
         };
       });
     },
+    // A finished job is history, not work: once the panel no longer runs its
+    // app it must not stand in the way of the next install. Only `healthy`
+    // can be retired, and only at the exact revision the caller inspected.
+    async retire(deviceKey, expectedRevision) {
+      keyValid(deviceKey);
+      if (!integer(expectedRevision, 0, Number.MAX_SAFE_INTEGER)) fail();
+      return transaction('readwrite', (store, done, abort) => {
+        const request = store.get(deviceKey);
+        request.onsuccess = () => {
+          try {
+            if (request.result === undefined) fail('job_conflict');
+            const current = decode(request.result, deviceKey);
+            if (current.revision !== expectedRevision) fail('job_conflict');
+            if (current.phase !== 'healthy') fail('job_transition_invalid');
+            store.delete(deviceKey);
+            done(true);
+          } catch (error) { abort(error); }
+        };
+      });
+    },
     close() { db.close(); },
   });
 }

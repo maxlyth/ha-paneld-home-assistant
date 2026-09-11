@@ -13,7 +13,7 @@ async function fixture() {
   let current = true, grants = 0, lockAvailable = true;
   let grant = async () => {grants++; return {permissionsVerified: true};};
   const controller = createInstallController({store: {load: async () => receipt},
-    ports: {authenticate: async () => release, inspect: async () => {},
+    ports: {authenticate: async () => release, inspect: async () => ({installed: true}),
       commissionPermissions: async (...args) => grant(...args), setup: async () => ({reportedComplete: false})},
     ensureCurrent: () => {if (!current) throw new Error('session_closed');},
     locks: {request: async (name, options, callback) => {
@@ -78,4 +78,41 @@ test('permissions are granted only by the Install press, after the app is health
   // Never on load: installAll only runs from the Install press or a job already under way.
   const onLoad = source.slice(source.lastIndexOf('if (!supported) {'));
   assert.ok(!onLoad.includes('installAll('));
+});
+
+function finishedJobFixture({installed = true, descriptor} = {}) {
+  const artifact = {apkSha256: 'a'.repeat(64)};
+  let stored = {id: 'b'.repeat(32), revision: 6, phase: 'healthy', target, artifact};
+  const retired = [], inspected = [];
+  const release = {kind: 'authenticated-apk-bytes', descriptor: descriptor ?? artifact};
+  const controller = createInstallController({
+    store: {load: async () => stored,
+      retire: async (key, revision) => {retired.push(revision); stored = null;}},
+    ports: {authenticate: async () => release,
+      inspect: async receipt => {inspected.push(receipt.phase); return {installed};}},
+    locks: {request: async (name, options, callback) => callback({})}});
+  return {controller, retired, inspected};
+}
+
+test('a finished job resumes only while the panel still runs its app', async () => {
+  const same = finishedJobFixture({installed: true});
+  const preview = await same.controller.preview(target);
+  assert.equal(preview.receipt.phase, 'healthy', 'permissions and setup can still follow');
+  assert.deepEqual(same.retired, []);
+});
+
+test('a finished job whose app was replaced is retired, not a lock-out', async () => {
+  const changed = finishedJobFixture({installed: false});
+  const preview = await changed.controller.preview(target);
+  assert.equal(preview.receipt, null, 'the next install starts fresh');
+  assert.deepEqual(changed.retired, [6], 'retired at the exact revision inspected');
+  assert.deepEqual(changed.inspected, ['healthy', 'prepared'], 'then inspected as a new install');
+});
+
+test('a finished job for another release is retired without asking the panel about it', async () => {
+  const other = finishedJobFixture({descriptor: {apkSha256: 'f'.repeat(64)}});
+  const preview = await other.controller.preview(target);
+  assert.equal(preview.receipt, null);
+  assert.deepEqual(other.retired, [6]);
+  assert.deepEqual(other.inspected, ['prepared']);
 });
