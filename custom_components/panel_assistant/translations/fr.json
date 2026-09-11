@@ -27,12 +27,25 @@
         }
       },
       "found_panel": {
-        "title": "ha-paneld s'exécute sur ce panneau",
-        "description": "ha-paneld {version} a été trouvé à l'adresse {address}. Une fois connecté, ses mises à jour apparaissent dans Home Assistant.",
+        "title": "ha-paneld est installé mais pas connecté",
+        "description": "L'application ha-paneld {version} est installée et configurée à l'adresse {address}, mais elle n'est pas encore connectée à Home Assistant. Connectez-la pour terminer.",
         "menu_options": {
-          "connect_found": "Connecter ce panneau",
+          "connect_found": "Connecter à Home Assistant",
           "add_panel": "Utiliser une autre adresse"
         }
+      },
+      "found_unconfigured": {
+        "title": "Terminer la configuration de ce panneau",
+        "description": "L'application ha-paneld {version} est installée à l'adresse {address}, mais sa configuration n'est pas terminée et elle n'est pas encore connectée à Home Assistant. Home Assistant peut ouvrir l'assistant de configuration du panneau et connecter le panneau dès que la configuration est terminée.",
+        "menu_options": {
+          "panel_setup": "Ouvrir l'assistant de configuration",
+          "connect_found": "Ignorer la configuration et connecter maintenant",
+          "add_panel": "Utiliser une autre adresse"
+        }
+      },
+      "panel_setup": {
+        "title": "Terminer la configuration du panneau",
+        "description": "Terminez l'assistant de configuration dans la fenêtre qui s'est ouverte. Home Assistant connecte le panneau dès que sa configuration est terminée."
       },
       "choose_version": {
         "title": "Choisir une version",

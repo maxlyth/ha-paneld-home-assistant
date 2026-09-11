@@ -27,12 +27,25 @@
         }
       },
       "found_panel": {
-        "title": "ha-paneld is running on this panel",
-        "description": "Found ha-paneld {version} at {address}. Once it's connected, its updates appear in Home Assistant.",
+        "title": "ha-paneld is installed but not connected",
+        "description": "The ha-paneld app {version} is installed and set up at {address}, but it isn't connected to Home Assistant yet. Connect it to finish.",
         "menu_options": {
-          "connect_found": "Connect this panel",
+          "connect_found": "Connect to Home Assistant",
           "add_panel": "Use a different address"
         }
+      },
+      "found_unconfigured": {
+        "title": "Finish setting up this panel",
+        "description": "The ha-paneld app {version} is installed at {address}, but its setup isn't finished and it isn't connected to Home Assistant yet. Home Assistant can open the panel's setup wizard and connect the panel as soon as setup is done.",
+        "menu_options": {
+          "panel_setup": "Open the setup wizard",
+          "connect_found": "Skip setup and connect now",
+          "add_panel": "Use a different address"
+        }
+      },
+      "panel_setup": {
+        "title": "Finish the panel's setup",
+        "description": "Complete the setup wizard in the window that opened. Home Assistant connects the panel as soon as its setup is done."
       },
       "choose_version": {
         "title": "Choose a version",

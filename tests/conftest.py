@@ -27,4 +27,8 @@ def _stub_panel_update_operation_in_lifecycle_tests(
             "async_get_panel_install_status",
             AsyncMock(return_value=PanelInstallStatus(running=False, component="")),
         )
+        # A found panel reports its setup as done unless a test says otherwise.
+        monkeypatch.setattr(
+            HaPaneldClient, "async_get_setup_complete", AsyncMock(return_value=True)
+        )
     yield

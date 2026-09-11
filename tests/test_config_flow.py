@@ -954,6 +954,9 @@ async def test_install_rejects_an_http_port_as_an_adb_port(
         ),
     ):
         client_class.return_value.async_get_health = health_mock
+        client_class.return_value.async_get_setup_complete = AsyncMock(
+            return_value=True
+        )
         form = await _start_step(hass, "add_panel")
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {CONF_ADDRESS: "panel.local:5555"}

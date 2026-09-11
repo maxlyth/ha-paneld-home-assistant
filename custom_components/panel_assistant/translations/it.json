@@ -27,12 +27,25 @@
         }
       },
       "found_panel": {
-        "title": "ha-paneld è in esecuzione su questo pannello",
-        "description": "Trovato ha-paneld {version} all'indirizzo {address}. Una volta collegato, i suoi aggiornamenti compaiono in Home Assistant.",
+        "title": "ha-paneld è installato ma non collegato",
+        "description": "L'app ha-paneld {version} è installata e configurata all'indirizzo {address}, ma non è ancora collegata a Home Assistant. Collegala per completare.",
         "menu_options": {
-          "connect_found": "Collega questo pannello",
+          "connect_found": "Collega a Home Assistant",
           "add_panel": "Usa un altro indirizzo"
         }
+      },
+      "found_unconfigured": {
+        "title": "Completa la configurazione di questo pannello",
+        "description": "L'app ha-paneld {version} è installata all'indirizzo {address}, ma la sua configurazione non è completa e non è ancora collegata a Home Assistant. Home Assistant può aprire la procedura guidata di configurazione del pannello e collegarlo non appena la configurazione è completa.",
+        "menu_options": {
+          "panel_setup": "Apri la procedura guidata",
+          "connect_found": "Salta la configurazione e collega ora",
+          "add_panel": "Usa un altro indirizzo"
+        }
+      },
+      "panel_setup": {
+        "title": "Completa la configurazione del pannello",
+        "description": "Completa la procedura guidata nella finestra che si è aperta. Home Assistant collega il pannello non appena la sua configurazione è completa."
       },
       "choose_version": {
         "title": "Scegli una versione",

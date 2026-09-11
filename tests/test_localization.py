@@ -118,12 +118,12 @@ async def test_native_status_and_exception_translations(
             f"component.{DOMAIN}.config.step.found_panel.menu_options.connect_found"
         )
         == {
-            "en": "Connect this panel",
-            "de": "Dieses Panel verbinden",
-            "es": "Conectar este panel",
-            "fr": "Connecter ce panneau",
-            "it": "Collega questo pannello",
-            "zh-Hans": "连接此面板",
+            "en": "Connect to Home Assistant",
+            "de": "Mit Home Assistant verbinden",
+            "es": "Conectar a Home Assistant",
+            "fr": "Connecter à Home Assistant",
+            "it": "Collega a Home Assistant",
+            "zh-Hans": "连接到 Home Assistant",
         }[language]
     )
     sensor = HaPaneldStatusSensor(

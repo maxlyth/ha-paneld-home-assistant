@@ -25,6 +25,7 @@ from .const import (
     MAX_HEALTH_RESPONSE_BYTES,
     MAX_INSTALL_RESPONSE_BYTES,
     MAX_STATUS_RESPONSE_BYTES,
+    SETUP_PATH,
     STATUS_PATH,
     UPDATE_OWNER_HEADER,
 )
@@ -340,6 +341,7 @@ def parse_update_approval_response(body: bytes) -> NoReturn:
 
 
 _MAX_DIAG_BYTES = 256 * 1024
+_MAX_SETUP_BYTES = 64 * 1024
 _MAX_BACKUP_BYTES = 64 * 1024 * 1024
 _BACKUP_TIMEOUT_SECONDS = 120.0
 # The panel allows 600 s to receive an upload; stop just after it gives up.
@@ -545,6 +547,21 @@ class HaPaneldClient:
             self.address.base_url.with_path(DIAG_PATH), _MAX_DIAG_BYTES
         )
         return parse_diag_version(body)
+
+    async def async_get_setup_complete(self) -> bool:
+        """Whether the panel's own setup wizard reports itself finished."""
+        body = await self._async_get_bounded(
+            self.address.base_url.with_path(SETUP_PATH), _MAX_SETUP_BYTES
+        )
+        complete = _load_json_object(body).get("complete")
+        if not isinstance(complete, bool):
+            raise InvalidResponseError
+        return complete
+
+    @property
+    def setup_url(self) -> str:
+        """The panel's own setup wizard."""
+        return str(self.address.base_url.with_path("/setup"))
 
     async def async_backup_panel(self) -> bytes:
         """Take the panel's own settings backup before it is changed."""

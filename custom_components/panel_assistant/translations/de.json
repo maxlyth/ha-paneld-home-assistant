@@ -27,12 +27,25 @@
         }
       },
       "found_panel": {
-        "title": "ha-paneld läuft auf diesem Panel",
-        "description": "ha-paneld {version} wurde unter {address} gefunden. Nach dem Verbinden erscheinen seine Updates in Home Assistant.",
+        "title": "ha-paneld ist installiert, aber nicht verbunden",
+        "description": "Die App ha-paneld {version} ist unter {address} installiert und eingerichtet, aber noch nicht mit Home Assistant verbunden. Verbinde sie, um abzuschließen.",
         "menu_options": {
-          "connect_found": "Dieses Panel verbinden",
+          "connect_found": "Mit Home Assistant verbinden",
           "add_panel": "Andere Adresse verwenden"
         }
+      },
+      "found_unconfigured": {
+        "title": "Einrichtung dieses Panels abschließen",
+        "description": "Die App ha-paneld {version} ist unter {address} installiert, aber ihre Einrichtung ist nicht abgeschlossen und sie ist noch nicht mit Home Assistant verbunden. Home Assistant kann den Einrichtungsassistenten des Panels öffnen und das Panel verbinden, sobald die Einrichtung fertig ist.",
+        "menu_options": {
+          "panel_setup": "Einrichtungsassistent öffnen",
+          "connect_found": "Einrichtung überspringen und jetzt verbinden",
+          "add_panel": "Andere Adresse verwenden"
+        }
+      },
+      "panel_setup": {
+        "title": "Einrichtung des Panels abschließen",
+        "description": "Schließe den Einrichtungsassistenten im geöffneten Fenster ab. Home Assistant verbindet das Panel, sobald die Einrichtung fertig ist."
       },
       "choose_version": {
         "title": "Version wählen",

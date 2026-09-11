@@ -3,6 +3,10 @@
 from datetime import timedelta
 
 DOMAIN = "panel_assistant"
+# The public version (manifest.json) only changes when something ships. This
+# build number goes up by one for every build that leaves this repository, so
+# internal builds can be told apart without touching the public version.
+INTEGRATION_BUILD = 1
 
 DEFAULT_PORT = 8888
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
@@ -33,6 +37,7 @@ APK_COMMIT_PATH = "/api/v1/install/apk/commit"
 APK_DISCARD_PATH = "/api/v1/install/apk/discard"
 BACKUP_PATH = "/api/v1/backup"
 DIAG_PATH = "/api/v1/diag"
+SETUP_PATH = "/api/v1/setup"
 
 
 def update_unique_id(entry_id: str) -> str:

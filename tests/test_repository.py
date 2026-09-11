@@ -145,7 +145,7 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "issue_tracker": "https://github.com/panel-assistant/ha-integration/issues",
         "name": "Panel Assistant",
         "requirements": ["adb-shell[async]==0.4.4"],
-        "version": "2026.9.0b0",
+        "version": "1.0.0b1",
         "zeroconf": ["_ha-paneld._tcp.local."],
     }
     assert hacs == {"homeassistant": "2026.8.3", "name": "Panel Assistant"}
@@ -157,19 +157,17 @@ def test_release_version_guard_accepts_current_and_prerelease_versions(
     """Tag admission uses exact raw equality for stable and prerelease versions."""
     verifier = _load_release_version_module()
 
-    verifier.verify_release_version("2026.9.0b0", INTEGRATION / "manifest.json")
+    verifier.verify_release_version("1.0.0b1", INTEGRATION / "manifest.json")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text('{"version":"2026.10.0b1"}', encoding="utf-8")
-    verifier.verify_release_version("2026.10.0b1", manifest)
+    manifest.write_text('{"version":"1.1.0b2"}', encoding="utf-8")
+    verifier.verify_release_version("1.1.0b2", manifest)
 
 
-@pytest.mark.parametrize(
-    "version", ["2026.9.0", "2026.9.1", "2026.12.0b0", "2027.1.0b12"]
-)
-def test_release_version_guard_accepts_calendar_versions(
+@pytest.mark.parametrize("version", ["1.0.0", "1.0.1", "1.2.0b0", "2.0.0b12", "0.9.0"])
+def test_release_version_guard_accepts_semantic_versions(
     tmp_path: Path, version: str
 ) -> None:
-    """Stable and beta releases share unpadded calendar numbering."""
+    """Stable and beta releases share unpadded major.minor.patch numbering."""
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
     _load_release_version_module().verify_release_version(version, manifest)
@@ -178,37 +176,37 @@ def test_release_version_guard_accepts_calendar_versions(
 @pytest.mark.parametrize(
     "version",
     [
-        "0.1.0",
-        "2026.0.0",
-        "2026.13.0",
-        "2026.09.0",
-        "2026.9.00",
-        "2026.9.0b",
-        "2026.9.0b01",
-        "2026.9.0-rc.1",
-        "2026.9.0.dev0",
-        "2026.9.0\n",
+        "1.0",
+        "01.0.0",
+        "1.00.0",
+        "1.0.00",
+        "1.0.0b",
+        "1.0.0b01",
+        "1.0.0-rc.1",
+        "1.0.0.dev0",
+        "1.0.0+7",
+        "1.0.0\n",
     ],
 )
-def test_release_version_guard_rejects_nonrelease_calendar_versions(
+def test_release_version_guard_rejects_nonrelease_versions(
     tmp_path: Path, version: str
 ) -> None:
     """Exact equality alone must not admit malformed or development tags."""
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"version": version}), encoding="utf-8")
-    with pytest.raises(ValueError, match=r"year\.month\.sequence"):
+    with pytest.raises(ValueError, match=r"major\.minor\.patch"):
         _load_release_version_module().verify_release_version(version, manifest)
 
 
 @pytest.mark.parametrize(
     ("tag", "version", "message"),
     [
-        ("v2026.9.0b0", "2026.9.0b0", "must not use a v prefix"),
-        ("V2026.9.0b0", "2026.9.0b0", "must not use a v prefix"),
-        ("0.1.1", "2026.9.0b0", "does not match manifest version"),
-        ("", "2026.9.0b0", "release tag must be non-empty"),
-        ("2026.9.0b0", "", "manifest version must be a non-empty string"),
-        ("2026.9.0b0", 1, "manifest version must be a non-empty string"),
+        ("v1.0.0b1", "1.0.0b1", "must not use a v prefix"),
+        ("V1.0.0b1", "1.0.0b1", "must not use a v prefix"),
+        ("0.1.1", "1.0.0b1", "does not match manifest version"),
+        ("", "1.0.0b1", "release tag must be non-empty"),
+        ("1.0.0b1", "", "manifest version must be a non-empty string"),
+        ("1.0.0b1", 1, "manifest version must be a non-empty string"),
     ],
 )
 def test_release_version_guard_rejects_invalid_pairs(
@@ -238,7 +236,7 @@ def test_release_version_guard_cli_does_not_parse_tag_as_option(tag: str) -> Non
     )
 
     assert result.returncode != 0
-    assert "does not match manifest version '2026.9.0b0'" in result.stderr
+    assert "does not match manifest version '1.0.0b1'" in result.stderr
 
 
 def test_hacs_workflow_runs_release_version_guard_for_tags() -> None:
@@ -303,7 +301,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
         "it.json",
         "zh-Hans.json",
     ]
-    assert len(english) == 92
+    assert len(english) == 99
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)

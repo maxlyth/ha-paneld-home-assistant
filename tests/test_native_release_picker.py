@@ -1,5 +1,6 @@
 """Published release choices and offline native setup behavior."""
 
+import asyncio
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
@@ -284,3 +285,76 @@ async def test_network_setup_offers_and_installs_a_feed_build(hass):
     mocks["rc"].assert_not_awaited()
     mocks["credential"].assert_not_awaited()
     manager.async_create_or_join.assert_not_awaited()
+
+
+async def test_found_panel_offers_its_unfinished_setup_before_connecting(hass):
+    """An unfinished setup is offered first; connecting anyway is the explicit skip."""
+    with (
+        patch(
+            f"{_FLOW}.HaPaneldClient.async_get_health", AsyncMock(return_value=HEALTH)
+        ),
+        patch(
+            f"{_FLOW}.HaPaneldClient.async_get_setup_complete",
+            AsyncMock(return_value=False),
+        ),
+    ):
+        form = await _start_step(hass, "add_panel")
+        found = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local:8889"}
+        )
+        assert found["step_id"] == "found_unconfigured"
+        assert found["menu_options"] == ["panel_setup", "connect_found", "add_panel"]
+        skipped = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {"next_step_id": "connect_found"}
+        )
+    assert skipped["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_setup_wizard_opens_and_the_flow_connects_when_setup_is_done(hass):
+    """Home Assistant opens the wizard and moves on by itself once setup is done."""
+    setup = AsyncMock(side_effect=[False, False, True])
+    with (
+        patch(
+            f"{_FLOW}.HaPaneldClient.async_get_health", AsyncMock(return_value=HEALTH)
+        ),
+        patch(f"{_FLOW}.HaPaneldClient.async_get_setup_complete", setup),
+        patch(f"{_FLOW}._SETUP_POLL_SECONDS", 0),
+    ):
+        form = await _start_step(hass, "add_panel")
+        await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local:8889"}
+        )
+        opened = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {"next_step_id": "panel_setup"}
+        )
+        assert opened["type"] is FlowResultType.EXTERNAL_STEP
+        assert opened["url"] == "http://panel.local:8889/setup"
+        # The watcher runs in the background; wait for it to see setup done.
+        for _ in range(200):
+            if hass.config_entries.flow.async_get(form["flow_id"])["step_id"] == (
+                "connect_found"
+            ):
+                break
+            await asyncio.sleep(0.01)
+        done = await hass.config_entries.flow.async_configure(form["flow_id"])
+    assert done["type"] is FlowResultType.CREATE_ENTRY
+    assert setup.await_count == 3
+
+
+async def test_a_panel_that_cannot_report_setup_connects_as_before(hass):
+    """An older panel without the setup report is treated as set up."""
+    with (
+        patch(
+            f"{_FLOW}.HaPaneldClient.async_get_health", AsyncMock(return_value=HEALTH)
+        ),
+        patch(
+            f"{_FLOW}.HaPaneldClient.async_get_setup_complete",
+            AsyncMock(side_effect=CannotConnectError),
+        ),
+    ):
+        form = await _start_step(hass, "add_panel")
+        found = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {CONF_ADDRESS: "panel.local:8889"}
+        )
+    assert found["step_id"] == "found_panel"
+    assert found["menu_options"] == ["connect_found", "add_panel"]

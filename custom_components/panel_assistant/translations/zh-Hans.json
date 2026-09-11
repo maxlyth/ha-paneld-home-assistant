@@ -27,12 +27,25 @@
         }
       },
       "found_panel": {
-        "title": "此面板正在运行 ha-paneld",
-        "description": "在 {address} 找到 ha-paneld {version}。连接后，它的更新会显示在 Home Assistant 中。",
+        "title": "ha-paneld 已安装但尚未连接",
+        "description": "ha-paneld 应用 {version} 已在 {address} 安装并完成设置，但尚未连接到 Home Assistant。连接它以完成。",
         "menu_options": {
-          "connect_found": "连接此面板",
+          "connect_found": "连接到 Home Assistant",
           "add_panel": "使用其他地址"
         }
+      },
+      "found_unconfigured": {
+        "title": "完成此面板的设置",
+        "description": "ha-paneld 应用 {version} 已安装在 {address}，但其设置尚未完成，也尚未连接到 Home Assistant。Home Assistant 可以打开面板的设置向导，并在设置完成后立即连接面板。",
+        "menu_options": {
+          "panel_setup": "打开设置向导",
+          "connect_found": "跳过设置并立即连接",
+          "add_panel": "使用其他地址"
+        }
+      },
+      "panel_setup": {
+        "title": "完成面板设置",
+        "description": "在打开的窗口中完成设置向导。设置完成后，Home Assistant 会立即连接面板。"
       },
       "choose_version": {
         "title": "选择版本",

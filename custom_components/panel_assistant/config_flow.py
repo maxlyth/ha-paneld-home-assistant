@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import unicodedata
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
+from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -32,6 +34,7 @@ from .browser_panel import PANEL_PATH, async_register_browser_panel
 from .client import (
     CannotConnectError,
     HaPaneldClient,
+    HaPaneldError,
     InvalidAddressError,
     InvalidResponseError,
     PanelAddress,
@@ -103,6 +106,8 @@ _DATA_SCHEMA = vol.Schema(
 )
 _CONF_RELEASE_CANDIDATE = "release_candidate"
 _DATA_DISCOVERY_NAMES = "discovery_names"
+_SETUP_POLL_SECONDS = 3
+_SETUP_WATCH_SECONDS = 60 * 60
 
 
 class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -130,6 +135,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     _removed_release_retry_started = False
     _flow_removed = False
     _install_releases: list[dict[str, Any]] | None = None
+    _setup_watch: asyncio.Task[None] | None = None
     _release_catalog_error: str | None = None
 
     async def async_step_user(
@@ -370,18 +376,81 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
-    def _show_found_panel(self) -> ConfigFlowResult:
-        """Offer to connect a panel that already runs ha-paneld, or go back."""
+    def _found_client(self) -> HaPaneldClient:
+        """Talk to the found panel at its pinned address when there is one."""
+        assert self._pending_address is not None
+        address = (
+            self._pending_install_target.pinned
+            if self._pending_install_target is not None
+            else self._pending_address
+        )
+        return HaPaneldClient(async_get_clientsession(self.hass), address)
+
+    async def _async_show_found_panel(self) -> ConfigFlowResult:
+        """Say the app is installed but not connected, and whether its setup is done.
+
+        A panel whose own setup wizard is unfinished is offered that wizard first;
+        connecting anyway is the explicit way to skip it. A panel too old to
+        report its setup state is treated as set up, as before.
+        """
         assert self._pending_address is not None
         assert self._pending_health is not None
+        try:
+            complete = await self._found_client().async_get_setup_complete()
+        except HaPaneldError:
+            complete = True
         return self.async_show_menu(
-            step_id="found_panel",
-            menu_options=["connect_found", "add_panel"],
+            step_id="found_panel" if complete else "found_unconfigured",
+            menu_options=(
+                ["connect_found", "add_panel"]
+                if complete
+                else ["panel_setup", "connect_found", "add_panel"]
+            ),
             description_placeholders={
                 "address": self._pending_address.stored_value,
                 "version": self._pending_health.version,
             },
         )
+
+    async def async_step_found_unconfigured(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the found panel again, re-reading its setup state."""
+        return await self.async_step_found_panel()
+
+    async def async_step_panel_setup(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Open the panel's setup wizard, then connect it once setup is done."""
+        if self._pending_address is None:
+            return self.async_abort(reason="unknown")
+        if user_input is not None:
+            return self.async_external_step_done(next_step_id="connect_found")
+        if self._setup_watch is None or self._setup_watch.done():
+            self._setup_watch = self.hass.async_create_background_task(
+                self._async_watch_setup(),
+                f"{DOMAIN} watch panel setup {self.flow_id}",
+            )
+        return self.async_external_step(
+            step_id="panel_setup", url=self._found_client().setup_url
+        )
+
+    async def _async_watch_setup(self) -> None:
+        """Move the flow on by itself as soon as the panel reports setup done."""
+        client = self._found_client()
+        deadline = asyncio.get_running_loop().time() + _SETUP_WATCH_SECONDS
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(_SETUP_POLL_SECONDS)
+            try:
+                complete = await client.async_get_setup_complete()
+            except HaPaneldError:
+                continue
+            if complete:
+                with contextlib.suppress(UnknownFlow):
+                    await self.hass.config_entries.flow.async_configure(
+                        flow_id=self.flow_id, user_input={}
+                    )
+                return
 
     async def _async_load_install_releases(self) -> None:
         """Cache the bounded published catalogue for this setup flow."""
@@ -474,7 +543,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             return self._show_add_panel_form(user_input, {"base": "unknown"})
         else:
             self._pending_health = health
-            return self._show_found_panel()
+            return await self._async_show_found_panel()
 
         try:
             # The first probe deliberately has no key. Discovering an authorization
@@ -517,7 +586,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             return self._show_add_panel_form(user_input, {"base": "unknown"})
         self._pending_address = address
         self._pending_health = health
-        return self._show_found_panel()
+        return await self._async_show_found_panel()
 
     async def async_step_found_panel(
         self, user_input: dict[str, Any] | None = None
@@ -525,7 +594,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
         """Show the found panel again, or start over if nothing was found."""
         if self._pending_address is None or self._pending_health is None:
             return await self.async_step_add_panel()
-        return self._show_found_panel()
+        return await self._async_show_found_panel()
 
     async def async_step_connect_found(
         self, user_input: dict[str, Any] | None = None
@@ -1152,6 +1221,8 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
     def async_remove(self) -> None:
         """Detach this UI flow without cancelling the process-owned worker."""
         self._flow_removed = True
+        if self._setup_watch is not None and not self._setup_watch.done():
+            self._setup_watch.cancel()
         if self._progress_waiter is not None and not self._progress_waiter.done():
             self._progress_waiter.cancel()
         self._progress_waiter = None
