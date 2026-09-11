@@ -168,13 +168,18 @@ export async function openJobStore(name = 'ha-paneld-usb-jobs-v1') {
     return receipt;
   }
   return Object.freeze({
-    async create(target, artifact) {
+    // A panel that already runs exactly this signed build needs no copy or
+    // install; its job starts at `installed`, so launch, health, permissions
+    // and setup still run and a repeated install converges instead of refusing.
+    async adopt(target, artifact) { return this.create(target, artifact, 'installed'); },
+    async create(target, artifact, phase = 'prepared') {
+      if (!['prepared', 'installed'].includes(phase)) fail('job_transition_invalid');
       const snapshot = targetSnapshot(target);
       const descriptor = artifactSnapshot(artifact, snapshot);
       const id = [...crypto.getRandomValues(new Uint8Array(16))]
         .map(byte => byte.toString(16).padStart(2, '0')).join('');
       const receipt = validate({ schema: 1, id, deviceKey: await keyFor(snapshot),
-        revision: 0, phase: 'prepared', target: snapshot, artifact: descriptor });
+        revision: 0, phase, target: snapshot, artifact: descriptor });
       return transaction('readwrite', (store, done, abort) => {
         const request = store.add(JSON.stringify(receipt), receipt.deviceKey);
         request.onerror = event => {

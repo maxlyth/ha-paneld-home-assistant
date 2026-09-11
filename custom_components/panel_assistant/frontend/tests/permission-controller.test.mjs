@@ -106,13 +106,51 @@ test('a finished job whose app was replaced is retired, not a lock-out', async (
   const preview = await changed.controller.preview(target);
   assert.equal(preview.receipt, null, 'the next install starts fresh');
   assert.deepEqual(changed.retired, [6], 'retired at the exact revision inspected');
-  assert.deepEqual(changed.inspected, ['healthy', 'prepared'], 'then inspected as a new install');
+  assert.deepEqual(changed.inspected, ['healthy', 'installed', 'prepared'],
+    'then checked for an exact install, then inspected as a new install');
 });
 
 test('a finished job for another release is retired without asking the panel about it', async () => {
-  const other = finishedJobFixture({descriptor: {apkSha256: 'f'.repeat(64)}});
+  const other = finishedJobFixture({installed: false, descriptor: {apkSha256: 'f'.repeat(64)}});
   const preview = await other.controller.preview(target);
   assert.equal(preview.receipt, null);
   assert.deepEqual(other.retired, [6]);
-  assert.deepEqual(other.inspected, ['prepared']);
+  assert.deepEqual(other.inspected, ['installed', 'prepared']);
+});
+
+function freshFixture({installed}) {
+  const artifact = {apkSha256: 'a'.repeat(64)};
+  const created = [], inspected = [];
+  let stored = null;
+  const release = {kind: 'authenticated-apk-bytes', descriptor: artifact};
+  const receiptFor = phase => ({id: 'c'.repeat(32), revision: 0, phase, target, artifact});
+  const controller = createInstallController({
+    store: {load: async () => stored,
+      create: async () => {created.push('prepared'); stored = receiptFor('prepared'); return stored;},
+      adopt: async () => {created.push('installed'); stored = receiptFor('installed'); return stored;},
+      advance: async (key, revision, phase) => (stored = {...stored, revision: revision + 1, phase})},
+    ports: {authenticate: async () => release,
+      inspect: async receipt => {inspected.push(receipt.phase);
+        return {target, clean: !installed, staged: false, installed, healthy: installed};},
+      launch: async () => {}},
+    locks: {request: async (name, options, callback) => callback({})}});
+  return {controller, created, inspected};
+}
+
+test('a panel already running exactly this build is adopted, not refused', async () => {
+  const f = freshFixture({installed: true});
+  const preview = await f.controller.preview(target);
+  assert.equal(preview.adopt, true);
+  assert.deepEqual(f.inspected, ['installed'], 'no clean check that would refuse it');
+  const receipt = await f.controller.run(true);
+  assert.deepEqual(f.created, ['installed'], 'the job starts at installed');
+  assert.equal(receipt.phase, 'healthy', 'then launch and health still run');
+});
+
+test('a clean panel still gets a fresh install from the start', async () => {
+  const f = freshFixture({installed: false});
+  const preview = await f.controller.preview(target);
+  assert.equal(preview.adopt, false);
+  assert.deepEqual(f.inspected, ['installed', 'prepared']);
+  await assert.rejects(f.controller.run(false), /confirmation_required/);
 });

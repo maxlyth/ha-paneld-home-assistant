@@ -88,3 +88,34 @@ test('the job store refuses a feed descriptor whose identity does not match its 
     }
   } finally { delete globalThis.indexedDB; }
 });
+
+test('an adopted job starts at installed and can only go on to launch', async () => {
+  const idb = fakeIndexedDB();
+  globalThis.indexedDB = idb;
+  try {
+    const store = await openJobStore('adopt-test');
+    const receipt = await store.adopt(target, descriptor);
+    assert.equal(receipt.phase, 'installed');
+    await assert.rejects(store.advance(receipt.deviceKey, 0, 'staging'), { code: 'job_transition_invalid' });
+    const launching = await store.advance(receipt.deviceKey, 0, 'launching');
+    assert.equal(launching.phase, 'launching');
+    await assert.rejects(store.create(target, descriptor, 'healthy'), { code: 'job_transition_invalid' });
+    store.close();
+  } finally { delete globalThis.indexedDB; }
+});
+
+test('a finished job is retired only at its exact revision and only when healthy', async () => {
+  const idb = fakeIndexedDB();
+  globalThis.indexedDB = idb;
+  try {
+    const store = await openJobStore('retire-test');
+    const receipt = await store.adopt(target, descriptor);
+    await assert.rejects(store.retire(receipt.deviceKey, 0), { code: 'job_transition_invalid' });
+    await store.advance(receipt.deviceKey, 0, 'launching');
+    await store.advance(receipt.deviceKey, 1, 'healthy');
+    await assert.rejects(store.retire(receipt.deviceKey, 1), { code: 'job_conflict' });
+    await store.retire(receipt.deviceKey, 2);
+    assert.equal(await store.load(receipt.deviceKey), null);
+    store.close();
+  } finally { delete globalThis.indexedDB; }
+});

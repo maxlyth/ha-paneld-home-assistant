@@ -70,11 +70,22 @@ export function createInstallController({ store, ports, locks = globalThis.navig
         if (receipt && canonical(receipt.artifact) !== canonical(release.descriptor)) fail('artifact_changed');
         // Actual ports validate the live target and installed/clean state. A
         // not-yet-created job may use the target only for read-only inspection.
-        const proposed = receipt ?? { phase: 'prepared', target: snapshot, artifact: release.descriptor };
+        // A panel already running exactly this signed build is adopted, not
+        // refused: installing it again must converge. This read comes first
+        // because a refused clean check closes the session.
+        let adopt = false;
+        if (!receipt) {
+          const existing = await ports.inspect(
+            { phase: 'installed', target: snapshot, artifact: release.descriptor }, release);
+          guard();
+          adopt = existing?.installed === true;
+        }
+        const proposed = receipt ?? { phase: adopt ? 'installed' : 'prepared', target: snapshot,
+          artifact: release.descriptor };
         if (['recovery_required', 'cleanup_pending'].includes(proposed.phase)) await ports.inspectRecovery(proposed, release);
-        else await ports.inspect(proposed, release);
+        else if (!adopt) await ports.inspect(proposed, release);
         guard();
-        preview = Object.freeze({ target: snapshot, descriptor: release.descriptor, deviceKey, receipt });
+        preview = Object.freeze({ target: snapshot, descriptor: release.descriptor, deviceKey, receipt, adopt });
         expectedJobId = receipt?.id;
         return preview;
       } finally { busy = false; }
@@ -96,7 +107,8 @@ export function createInstallController({ store, ports, locks = globalThis.navig
         if (receipt && (!selected.receipt || receipt.id !== selected.receipt.id)) fail('job_conflict');
         if (!receipt) {
           if (selected.receipt) fail('transaction_missing');
-          receipt = await store.create(selected.target, release.descriptor);
+          receipt = selected.adopt ? await store.adopt(selected.target, release.descriptor)
+            : await store.create(selected.target, release.descriptor);
         }
         expectedJobId = receipt.id;
         onReceipt(receipt);
