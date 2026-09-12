@@ -1,12 +1,32 @@
 """Constants for the ha-paneld integration."""
 
+import json
 from datetime import timedelta
+from pathlib import Path
+
+from yarl import URL
 
 DOMAIN = "panel_assistant"
+# One definition of this integration's public version: its own manifest.
+INTEGRATION_VERSION: str = json.loads(
+    (Path(__file__).parent / "manifest.json").read_text(encoding="utf-8")
+)["version"]
 # The public version (manifest.json) only changes when something ships. This
 # build number tells builds apart in between: it counts the commits that have
 # changed this integration.
-INTEGRATION_BUILD = 36
+INTEGRATION_BUILD = 37
+
+# Every outward link goes through the site's own redirect rather than a page
+# path, so pages can move. The version and build travel with it, so a later
+# site can route an older Panel Assistant somewhere that still makes sense.
+_HELP_REDIRECT = "https://panel-assistant.io/go/"
+
+
+def help_url(topic: str, **parameters: str) -> str:
+    """Return the site redirect for one help topic, stamped with this version."""
+    query = {"v": INTEGRATION_VERSION, "build": str(INTEGRATION_BUILD), **parameters}
+    return str(URL(_HELP_REDIRECT + topic).with_query(query))
+
 
 DEFAULT_PORT = 8888
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)

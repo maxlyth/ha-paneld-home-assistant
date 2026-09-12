@@ -463,6 +463,23 @@ def test_the_address_screen_links_to_panel_specific_help() -> None:
     description = strings["config"]["step"]["add_panel"]["description"]
     assert "[help for reaching a panel]({panel_help_url})" in description
     flow = (INTEGRATION / "config_flow.py").read_text(encoding="utf-8")
-    assert '"https://panel-assistant.io/manage/troubleshooting/"' in flow
-    assert '"#the-installer-cannot-reach-the-panel"' in flow
-    assert '"panel_help_url": _PANEL_HELP_URL,' in flow
+    assert '"panel_help_url": help_url("panel-unreachable"),' in flow
+
+
+def test_outward_links_are_redirects_stamped_with_this_version() -> None:
+    """Pages move; the site's redirect does not, and it is told who is asking."""
+    from custom_components.panel_assistant.const import (
+        INTEGRATION_BUILD,
+        INTEGRATION_VERSION,
+        help_url,
+    )
+
+    manifest = json.loads((INTEGRATION / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == INTEGRATION_VERSION
+    link = help_url("panel-unreachable")
+    assert link.startswith("https://panel-assistant.io/go/panel-unreachable?")
+    assert f"v={INTEGRATION_VERSION}" in link
+    assert f"build={INTEGRATION_BUILD}" in link
+    assert "model=TPA10" in help_url("panel-unreachable", model="TPA10")
+    source = (INTEGRATION / "const.py").read_text(encoding="utf-8")
+    assert source.count("panel-assistant.io") == 1, "one place names the site"

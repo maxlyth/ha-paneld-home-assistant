@@ -42,7 +42,7 @@ from .client import (
     is_valid_discovery_id,
     normalize_address,
 )
-from .const import DEFAULT_PORT, DOMAIN
+from .const import DEFAULT_PORT, DOMAIN, help_url
 from .install_adb import (
     AdbInstallTarget,
     AdbRootMode,
@@ -80,10 +80,6 @@ _LOGGER = logging.getLogger(__name__)
 _PANEL_ACCESS_GUIDE_URL = (
     "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
     "#gaining-adb--root-access"
-)
-_PANEL_HELP_URL = (
-    "https://panel-assistant.io/manage/troubleshooting/"
-    "#the-installer-cannot-reach-the-panel"
 )
 _CANCELLED_ABORT_REASONS = {
     InstallResultCode.CANCELLED_BY_USER: "install_cancelled",
@@ -324,7 +320,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "panel_access_url": _PANEL_ACCESS_GUIDE_URL,
-                "panel_help_url": _PANEL_HELP_URL,
+                "panel_help_url": help_url("panel-unreachable"),
             },
         )
 

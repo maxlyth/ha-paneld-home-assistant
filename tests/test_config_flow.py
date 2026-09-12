@@ -33,7 +33,7 @@ from custom_components.panel_assistant.config_flow import (
     HaPaneldConfigFlow,
     _install_candidate_placeholders,
 )
-from custom_components.panel_assistant.const import DOMAIN
+from custom_components.panel_assistant.const import DOMAIN, help_url
 from custom_components.panel_assistant.install_adb import (
     InstallAdbError,
     InstallAdbErrorCode,
@@ -674,10 +674,7 @@ async def test_install_rejects_invalid_address_before_network_calls(
             "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
             "#gaining-adb--root-access"
         ),
-        "panel_help_url": (
-            "https://panel-assistant.io/manage/troubleshooting/"
-            "#the-installer-cannot-reach-the-panel"
-        ),
+        "panel_help_url": help_url("panel-unreachable"),
     }
     health_mock.assert_not_awaited()
     probe_mock.assert_not_awaited()
