@@ -77,6 +77,15 @@ jobs:
           python -c "import sys; assert sys.prefix.endswith('ci-venv'), sys.prefix"
       - name: Run lint and formatting checks
         run: ruff check . && ruff format --check .
+      # Restore-keys on purpose: an exact hit is rare because the key moves with
+      # the sources, but even a stale cache saves mypy re-analysing Home Assistant.
+      - name: Restore the type-check cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-ha${{ matrix.home-assistant }}-${{ hashFiles('custom_components/**/*.py', 'pyproject.toml') }}
+          restore-keys: |
+            mypy-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-ha${{ matrix.home-assistant }}-
       - name: Run type checks
         run: mypy custom_components/panel_assistant
       - name: Run tests
