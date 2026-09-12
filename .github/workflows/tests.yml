@@ -8,6 +8,18 @@ on:
 permissions:
   contents: read
 
+# A superseded push should stop burning a runner. Runs on main are never
+# cancelled, because main's timings are what the CI budget measures.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  PYTHON_VERSION: "3.14.2"
+  # Outside the workspace on purpose: Hassfest and the HACS action both read the
+  # repository tree, and a virtual environment sitting in it is theirs to trip over.
+  VENV: /home/runner/ci-venv
+
 jobs:
   tests:
     name: Home Assistant ${{ matrix.home-assistant }}
@@ -26,23 +38,43 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.14.2"
-      - name: Install test dependencies
-        run: python -m pip install -e ".[test]"
-      - name: Select Home Assistant test version
-        if: matrix.fixture != '0.13.357'
-        run: >-
-          python -m pip install --upgrade
-          pytest-homeassistant-custom-component==${{ matrix.fixture }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # The whole environment is cached, not just the downloads, so a hit skips
+      # dependency resolution as well. The key carries everything that decides
+      # what gets installed, so it cannot serve a stale environment.
+      - name: Restore the test environment
+        id: venv
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VENV }}
+          key: ci-venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-ha${{ matrix.home-assistant }}-fixture${{ matrix.fixture }}-${{ hashFiles('pyproject.toml') }}
+      - name: Build the test environment
+        if: steps.venv.outputs.cache-hit != 'true'
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: |
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install -e ".[test]"
+          if [ "$FIXTURE" != "0.13.357" ]; then
+            "$VENV/bin/python" -m pip install --upgrade "pytest-homeassistant-custom-component==$FIXTURE"
+          fi
+          frontend_requirement=$("$VENV/bin/python" -c 'import json, pathlib, homeassistant; path = pathlib.Path(homeassistant.__file__).parent / "components/frontend/manifest.json"; print(json.loads(path.read_text())["requirements"][0])')
+          "$VENV/bin/python" -m pip install "$frontend_requirement"
+      - name: Use the test environment
+        run: echo "$VENV/bin" >> "$GITHUB_PATH"
+      # Runs on a restored environment too: a cache hit is not permission to skip
+      # checking that the environment is the one this matrix leg asked for.
       - name: Verify test environment
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+          EXPECTED_HA: ${{ matrix.home-assistant }}
         run: |
           python -m pip check
-          python -c "import importlib.metadata as m; assert m.version('homeassistant') == '${{ matrix.home-assistant }}'"
-      - name: Install the Core runtime frontend
-        run: |
-          frontend_requirement=$(python -c 'import json, pathlib, homeassistant; path = pathlib.Path(homeassistant.__file__).parent / "components/frontend/manifest.json"; print(json.loads(path.read_text())["requirements"][0])')
-          python -m pip install "$frontend_requirement"
-          python -m pip check
+          python -c "import importlib.metadata as m, os; assert m.version('homeassistant') == os.environ['EXPECTED_HA']"
+          python -c "import importlib.metadata as m, os; assert m.version('pytest-homeassistant-custom-component') == os.environ['FIXTURE']"
+          python -c "import sys; assert sys.prefix.endswith('ci-venv'), sys.prefix"
       - name: Run lint and formatting checks
         run: ruff check . && ruff format --check .
       - name: Run type checks

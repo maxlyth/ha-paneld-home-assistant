@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A superseded push should stop burning a runner. Runs on main are never
+# cancelled, because main's timings are what the CI budget measures.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
