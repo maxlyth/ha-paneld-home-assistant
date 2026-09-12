@@ -145,7 +145,7 @@ def test_manifest_and_hacs_versions_match_repository_policy() -> None:
         "issue_tracker": "https://github.com/panel-assistant/ha-integration/issues",
         "name": "Panel Assistant",
         "requirements": ["adb-shell[async]==0.4.4"],
-        "version": "1.0.0b1",
+        "version": "0.2.0b1",
         "zeroconf": ["_ha-paneld._tcp.local."],
     }
     assert hacs == {"homeassistant": "2026.8.3", "name": "Panel Assistant"}
@@ -157,10 +157,10 @@ def test_release_version_guard_accepts_current_and_prerelease_versions(
     """Tag admission uses exact raw equality for stable and prerelease versions."""
     verifier = _load_release_version_module()
 
-    verifier.verify_release_version("1.0.0b1", INTEGRATION / "manifest.json")
+    verifier.verify_release_version("0.2.0b1", INTEGRATION / "manifest.json")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text('{"version":"1.1.0b2"}', encoding="utf-8")
-    verifier.verify_release_version("1.1.0b2", manifest)
+    manifest.write_text('{"version":"0.3.0b2"}', encoding="utf-8")
+    verifier.verify_release_version("0.3.0b2", manifest)
 
 
 @pytest.mark.parametrize("version", ["1.0.0", "1.0.1", "1.2.0b0", "2.0.0b12", "0.9.0"])
@@ -201,12 +201,12 @@ def test_release_version_guard_rejects_nonrelease_versions(
 @pytest.mark.parametrize(
     ("tag", "version", "message"),
     [
-        ("v1.0.0b1", "1.0.0b1", "must not use a v prefix"),
-        ("V1.0.0b1", "1.0.0b1", "must not use a v prefix"),
-        ("0.1.1", "1.0.0b1", "does not match manifest version"),
-        ("", "1.0.0b1", "release tag must be non-empty"),
-        ("1.0.0b1", "", "manifest version must be a non-empty string"),
-        ("1.0.0b1", 1, "manifest version must be a non-empty string"),
+        ("v0.2.0b1", "0.2.0b1", "must not use a v prefix"),
+        ("V0.2.0b1", "0.2.0b1", "must not use a v prefix"),
+        ("0.1.1", "0.2.0b1", "does not match manifest version"),
+        ("", "0.2.0b1", "release tag must be non-empty"),
+        ("0.2.0b1", "", "manifest version must be a non-empty string"),
+        ("0.2.0b1", 1, "manifest version must be a non-empty string"),
     ],
 )
 def test_release_version_guard_rejects_invalid_pairs(
@@ -236,7 +236,7 @@ def test_release_version_guard_cli_does_not_parse_tag_as_option(tag: str) -> Non
     )
 
     assert result.returncode != 0
-    assert "does not match manifest version '1.0.0b1'" in result.stderr
+    assert "does not match manifest version '0.2.0b1'" in result.stderr
 
 
 def test_hacs_workflow_runs_release_version_guard_for_tags() -> None:
