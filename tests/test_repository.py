@@ -301,7 +301,7 @@ def test_shipped_translation_catalogues_preserve_machine_contracts() -> None:
         "it.json",
         "zh-Hans.json",
     ]
-    assert len(english) == 99
+    assert len(english) == 100
 
     for locale_path in locale_paths:
         target_catalogue = _load_translation_catalogue(locale_path)
@@ -455,3 +455,14 @@ def test_install_flow_copy_covers_first_time_handoffs() -> None:
     )
     assert "Do not retry automatic installation" in abort["install_launch_failed"]
     assert "Do not retry automatic installation" in abort["install_ambiguous_mutation"]
+
+
+def test_the_address_screen_links_to_panel_specific_help() -> None:
+    """A panel that will not answer needs somewhere to go, per model."""
+    strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
+    description = strings["config"]["step"]["add_panel"]["description"]
+    assert "[help for reaching a panel]({panel_help_url})" in description
+    flow = (INTEGRATION / "config_flow.py").read_text(encoding="utf-8")
+    assert '"https://panel-assistant.io/manage/troubleshooting/"' in flow
+    assert '"#the-installer-cannot-reach-the-panel"' in flow
+    assert '"panel_help_url": _PANEL_HELP_URL,' in flow

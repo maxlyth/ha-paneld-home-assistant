@@ -81,6 +81,10 @@ _PANEL_ACCESS_GUIDE_URL = (
     "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
     "#gaining-adb--root-access"
 )
+_PANEL_HELP_URL = (
+    "https://panel-assistant.io/manage/troubleshooting/"
+    "#the-installer-cannot-reach-the-panel"
+)
 _CANCELLED_ABORT_REASONS = {
     InstallResultCode.CANCELLED_BY_USER: "install_cancelled",
     InstallResultCode.CANCELLED_AFTER_STAGING_CLEANUP: (
@@ -107,6 +111,7 @@ _DATA_SCHEMA = vol.Schema(
 _CONF_RELEASE_CANDIDATE = "release_candidate"
 _DATA_DISCOVERY_NAMES = "discovery_names"
 _SETUP_POLL_SECONDS = 3
+_HOST_PROBE_SECONDS = 3
 _SETUP_WATCH_SECONDS = 60 * 60
 
 
@@ -317,7 +322,10 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="add_panel",
             data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
             errors=errors,
-            description_placeholders={"panel_access_url": _PANEL_ACCESS_GUIDE_URL},
+            description_placeholders={
+                "panel_access_url": _PANEL_ACCESS_GUIDE_URL,
+                "panel_help_url": _PANEL_HELP_URL,
+            },
         )
 
     def _show_choose_version(
@@ -563,12 +571,18 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             self._pending_probe = probe if state == "install_candidate" else None
             self._pending_probe_state = state
             return await self.async_step_choose_version()
-        errors["base"] = {
-            "adb_unreachable": "adb_unreachable",
-            "installed": "installed_without_health",
-            "retained_or_ambiguous": "retained_or_ambiguous",
-            "incompatible": "incompatible",
-        }.get(state, "unknown")
+        if state == "adb_unreachable":
+            errors["base"] = (
+                "adb_unreachable"
+                if await _async_host_answers(target.pinned)
+                else "panel_unreachable"
+            )
+        else:
+            errors["base"] = {
+                "installed": "installed_without_health",
+                "retained_or_ambiguous": "retained_or_ambiguous",
+                "incompatible": "incompatible",
+            }.get(state, "unknown")
         return self._show_add_panel_form(user_input, errors)
 
     async def _async_check_running_panel(
@@ -1429,6 +1443,26 @@ def _adb_target_from_receipt(receipt: InstallJobReceipt) -> AdbInstallTarget:
         primary_abi=receipt.target.primary_abi,
         android_sdk=receipt.target.android_sdk,
     )
+
+
+async def _async_host_answers(address: PanelAddress) -> bool:
+    """Whether anything at all answers at that address.
+
+    It tells apart "the panel is there but its Android Debug Bridge is not" from
+    "nothing is at that address", so each gets the advice that fits. A refused
+    connection is an answer: something is listening on the host.
+    """
+    try:
+        async with asyncio.timeout(_HOST_PROBE_SECONDS):
+            _reader, writer = await asyncio.open_connection(address.host, address.port)
+    except ConnectionRefusedError:
+        return True
+    except OSError, TimeoutError:
+        return False
+    writer.close()
+    with contextlib.suppress(OSError, TimeoutError, asyncio.CancelledError):
+        await writer.wait_closed()
+    return True
 
 
 def _install_network_error(error: InstallNetworkError) -> str:

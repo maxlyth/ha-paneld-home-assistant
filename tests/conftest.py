@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from custom_components.panel_assistant import config_flow
 from custom_components.panel_assistant.client import HaPaneldClient, PanelInstallStatus
 
 
@@ -30,5 +31,9 @@ def _stub_panel_update_operation_in_lifecycle_tests(
         # A found panel reports its setup as done unless a test says otherwise.
         monkeypatch.setattr(
             HaPaneldClient, "async_get_setup_complete", AsyncMock(return_value=True)
+        )
+        # Reachability is answered locally; only its own tests open that path.
+        monkeypatch.setattr(
+            config_flow, "_async_host_answers", AsyncMock(return_value=True)
         )
     yield

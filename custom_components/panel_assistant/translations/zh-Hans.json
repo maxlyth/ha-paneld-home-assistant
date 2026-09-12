@@ -21,7 +21,7 @@
       },
       "add_panel": {
         "title": "添加面板",
-        "description": "输入面板的主机名或 IP 地址。如果尚未安装 ha-paneld，请先按照[适用于具体型号的面板访问指南]({panel_access_url})在端口 5555 上开启网络 ADB。不需要 root 权限。",
+        "description": "输入面板的主机名或 IP 地址。如果尚未安装 ha-paneld，请先按照[适用于具体型号的面板访问指南]({panel_access_url})在端口 5555 上开启网络 ADB。不需要 root 权限。如果面板没有响应，[连接面板的帮助]({panel_help_url})提供各型号的步骤和其他安装方式。",
         "data": {
           "address": "面板主机名或 IP 地址"
         }
@@ -91,7 +91,8 @@
       "install_too_many_addresses": "此主机名解析出的地址过多，无法安全固定。请使用专用的本地主机名或私有 IP 地址。",
       "unsafe_install_target": "只允许安装到私有本地 IPv4 地址或 IPv6 唯一本地地址。未尝试 ADB 连接。",
       "install_target_changed": "该主机名解析出的地址已不再是之前固定的面板地址。未发送 ADB 密钥，也未执行安装。请检查地址并重新开始。",
-      "adb_unreachable": "ha-paneld 未响应，且无法连接 Android Debug Bridge (ADB)。请检查地址是否正确、面板是否在线以及网络调试是否已启用，然后重试。",
+      "adb_unreachable": "面板有响应，但其 Android Debug Bridge 端口（5555）没有响应。请在面板上开启 Android Debug Bridge 并允许通过网络访问，然后再试一次。如果可以把面板插到你正在使用的这台计算机上，也可以改用 USB 安装。",
+      "panel_unreachable": "该地址没有任何响应。请确认地址正确、面板已开机并连接到你的网络，然后再试一次。如果可以把面板插到你正在使用的这台计算机上，也可以改用 USB 安装。",
       "adb_unauthorized": "面板仍需 ADB 授权。请在面板上批准提示，然后重试。",
       "adb_still_unauthorized": "面板尚未接受此 Home Assistant 实例。请在面板上批准 ADB 提示，然后重试。",
       "adb_credential_error": "Home Assistant 无法安全加载或持久保存其 ADB 凭据。未尝试更改面板。请先检查 Home Assistant 存储和日志，再重试。",

@@ -21,7 +21,7 @@
       },
       "add_panel": {
         "title": "Panel hinzufügen",
-        "description": "Gib den Hostnamen oder die IP-Adresse des Panels ein. Wenn ha-paneld noch nicht installiert ist, aktiviere zuerst Netzwerk-ADB auf Port 5555 mithilfe der [modellspezifischen Anleitung für den Panelzugriff]({panel_access_url}). Root-Zugriff ist nicht erforderlich.",
+        "description": "Gib den Hostnamen oder die IP-Adresse des Panels ein. Wenn ha-paneld noch nicht installiert ist, aktiviere zuerst Netzwerk-ADB auf Port 5555 mithilfe der [modellspezifischen Anleitung für den Panelzugriff]({panel_access_url}). Root-Zugriff ist nicht erforderlich. Wenn das Panel nicht antwortet, findest du in der [Hilfe zum Erreichen eines Panels]({panel_help_url}) Schritte je Modell und weitere Installationswege.",
         "data": {
           "address": "Hostname oder IP-Adresse des Panels"
         }
@@ -91,7 +91,8 @@
       "install_too_many_addresses": "Dieser Hostname wurde in zu viele Adressen aufgelöst, um ihn sicher festzulegen. Verwende einen dedizierten lokalen Hostnamen oder eine private IP-Adresse.",
       "unsafe_install_target": "Die Installation ist nur auf einer privaten lokalen IPv4-Adresse oder einer Unique-Local-IPv6-Adresse zulässig. Es wurde keine ADB-Verbindung versucht.",
       "install_target_changed": "Der Hostname wird nicht mehr in dieselbe festgelegte Paneladresse aufgelöst. Es wurden weder ein ADB-Schlüssel noch eine Installation gesendet. Prüfe die Adresse und beginne erneut.",
-      "adb_unreachable": "ha-paneld hat nicht geantwortet und Android Debug Bridge (ADB) war nicht erreichbar. Prüfe, ob die Adresse korrekt und das Panel online ist sowie Netzwerk-Debugging aktiviert ist. Versuche es dann erneut.",
+      "adb_unreachable": "Das Panel hat geantwortet, aber auf seinem Android-Debug-Bridge-Port (5555) kam keine Antwort. Aktiviere auf dem Panel Android Debug Bridge und erlaube den Zugriff über das Netzwerk, und versuche es erneut. Wenn du das Panel an den Computer anschließen kannst, auf dem du gerade surfst, installiere stattdessen über USB.",
+      "panel_unreachable": "Unter dieser Adresse hat nichts geantwortet. Prüfe, ob die Adresse stimmt und das Panel eingeschaltet und in deinem Netzwerk ist, und versuche es erneut. Wenn du das Panel an den Computer anschließen kannst, auf dem du gerade surfst, installiere stattdessen über USB.",
       "adb_unauthorized": "Das Panel erfordert weiterhin eine ADB-Autorisierung. Bestätige die Aufforderung auf dem Panel und versuche es erneut.",
       "adb_still_unauthorized": "Das Panel hat diese Home Assistant-Instanz noch nicht akzeptiert. Bestätige die ADB-Aufforderung auf dem Panel und versuche es erneut.",
       "adb_credential_error": "Home Assistant konnte seine ADB-Anmeldedaten nicht sicher laden oder dauerhaft speichern. Es wurde keine Änderung am Panel versucht. Prüfe vor einem erneuten Versuch den Speicher und die Protokolle von Home Assistant.",

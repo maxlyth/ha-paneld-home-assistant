@@ -673,7 +673,11 @@ async def test_install_rejects_invalid_address_before_network_calls(
         "panel_access_url": (
             "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
             "#gaining-adb--root-access"
-        )
+        ),
+        "panel_help_url": (
+            "https://panel-assistant.io/manage/troubleshooting/"
+            "#the-installer-cannot-reach-the-panel"
+        ),
     }
     health_mock.assert_not_awaited()
     probe_mock.assert_not_awaited()

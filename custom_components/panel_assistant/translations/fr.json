@@ -21,7 +21,7 @@
       },
       "add_panel": {
         "title": "Ajouter un panneau",
-        "description": "Saisissez le nom d'hôte ou l'adresse IP du panneau. Si ha-paneld n'est pas encore installé, activez d'abord ADB réseau sur le port 5555 à l'aide du [guide d'accès au panneau propre au modèle]({panel_access_url}). L'accès root n'est pas nécessaire.",
+        "description": "Saisissez le nom d'hôte ou l'adresse IP du panneau. Si ha-paneld n'est pas encore installé, activez d'abord ADB réseau sur le port 5555 à l'aide du [guide d'accès au panneau propre au modèle]({panel_access_url}). L'accès root n'est pas nécessaire. Si le panneau ne répond pas, l'[aide pour joindre un panneau]({panel_help_url}) donne les étapes par modèle et d'autres façons d'installer.",
         "data": {
           "address": "Nom d'hôte ou adresse IP du panneau"
         }
@@ -91,7 +91,8 @@
       "install_too_many_addresses": "Ce nom d'hôte correspond à un trop grand nombre d'adresses pour que l'une d'elles puisse être retenue de façon sûre. Utilisez un nom d'hôte local dédié ou une adresse IP privée.",
       "unsafe_install_target": "L'installation n'est autorisée que si la cible est une adresse IPv4 locale privée ou une adresse IPv6 locale unique. Aucune connexion ADB n'a été tentée.",
       "install_target_changed": "Le nom d'hôte ne renvoie plus la même adresse épinglée pour le panneau. Aucune clé ADB n'a été envoyée et aucune installation n'a été lancée. Vérifiez l'adresse et recommencez.",
-      "adb_unreachable": "ha-paneld n'a pas répondu et Android Debug Bridge (ADB) était inaccessible. Vérifiez que l'adresse est correcte, que le panneau est en ligne et que le débogage réseau est activé, puis réessayez.",
+      "adb_unreachable": "Le panneau a répondu, mais rien n'a répondu sur son port Android Debug Bridge (5555). Sur le panneau, activez Android Debug Bridge et autorisez-le sur le réseau, puis réessayez. Si vous pouvez brancher le panneau sur l'ordinateur depuis lequel vous naviguez, installez plutôt par USB.",
+      "panel_unreachable": "Rien n'a répondu à cette adresse. Vérifiez que l'adresse est correcte et que le panneau est allumé et sur votre réseau, puis réessayez. Si vous pouvez brancher le panneau sur l'ordinateur depuis lequel vous naviguez, installez plutôt par USB.",
       "adb_unauthorized": "Le panneau requiert toujours une autorisation ADB. Acceptez l'invite sur le panneau, puis réessayez.",
       "adb_still_unauthorized": "Le panneau n'a pas encore accepté cette instance de Home Assistant. Acceptez l'invite ADB sur le panneau, puis réessayez.",
       "adb_credential_error": "Home Assistant n'a pas pu charger ou conserver son identifiant ADB de façon sûre. Aucune modification du panneau n'a été tentée. Vérifiez le stockage et les journaux de Home Assistant avant de réessayer.",

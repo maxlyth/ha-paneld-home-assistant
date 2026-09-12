@@ -21,7 +21,7 @@
       },
       "add_panel": {
         "title": "Añadir un panel",
-        "description": "Introduce el nombre de host o la dirección IP del panel. Si ha-paneld aún no está instalado, activa primero ADB de red en el puerto 5555 con la [guía de acceso al panel específica del modelo]({panel_access_url}). No se requiere acceso root.",
+        "description": "Introduce el nombre de host o la dirección IP del panel. Si ha-paneld aún no está instalado, activa primero ADB de red en el puerto 5555 con la [guía de acceso al panel específica del modelo]({panel_access_url}). No se requiere acceso root. Si el panel no responde, la [ayuda para llegar a un panel]({panel_help_url}) tiene pasos para cada modelo y otras formas de instalar.",
         "data": {
           "address": "Nombre de host o dirección IP del panel"
         }
@@ -91,7 +91,8 @@
       "install_too_many_addresses": "Este nombre de host se ha resuelto en demasiadas direcciones para fijarlo de forma segura. Utiliza un nombre de host local dedicado o una dirección IP privada.",
       "unsafe_install_target": "La instalación solo se permite en una dirección IPv4 local privada o una dirección local única IPv6 (ULA). No se ha intentado ninguna conexión ADB.",
       "install_target_changed": "El nombre de host ya no se resuelve en la misma dirección fijada del panel. No se ha enviado al panel ninguna clave ADB ni ningún contenido de instalación. Comprueba la dirección y vuelve a empezar.",
-      "adb_unreachable": "ha-paneld no ha respondido y no se ha podido acceder a Android Debug Bridge (ADB). Comprueba que la dirección sea correcta, que el panel esté conectado y que la depuración por red esté activada; después vuelve a intentarlo.",
+      "adb_unreachable": "El panel respondió, pero nada respondió en su puerto de Android Debug Bridge (5555). En el panel, activa Android Debug Bridge y permítelo por red, y vuelve a intentarlo. Si puedes conectar el panel al ordenador desde el que navegas, instala por USB en su lugar.",
+      "panel_unreachable": "Nada respondió en esa dirección. Comprueba que la dirección es correcta y que el panel está encendido y en tu red, y vuelve a intentarlo. Si puedes conectar el panel al ordenador desde el que navegas, instala por USB en su lugar.",
       "adb_unauthorized": "El panel aún requiere autorización ADB. Acepta el aviso en el panel y vuelve a intentarlo.",
       "adb_still_unauthorized": "El panel todavía no ha aceptado esta instancia de Home Assistant. Acepta el aviso de ADB en el panel y vuelve a intentarlo.",
       "adb_credential_error": "Home Assistant no ha podido cargar ni conservar de forma segura su credencial ADB. No se ha intentado modificar el panel. Comprueba el almacenamiento y los registros de Home Assistant antes de volver a intentarlo.",

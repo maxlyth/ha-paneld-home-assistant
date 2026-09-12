@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -358,3 +359,34 @@ async def test_a_panel_that_cannot_report_setup_connects_as_before(hass):
         )
     assert found["step_id"] == "found_panel"
     assert found["menu_options"] == ["connect_found", "add_panel"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "expected"),
+    [(True, "adb_unreachable"), (False, "panel_unreachable")],
+    ids=["panel-without-adb", "nothing-at-that-address"],
+)
+async def test_an_unreachable_debug_bridge_says_which_case_it_is(
+    hass, answers: bool, expected: str
+):
+    """A panel that answers is told to enable ADB; a silent address is not."""
+    manager = _manager_for(_receipt(InstallPhase.APPROVED))
+    manager.async_find_active.return_value = None
+    probe = SimpleNamespace(
+        state=SimpleNamespace(value="adb_unreachable"),
+        model=None,
+        serial=None,
+        primary_abi=None,
+        android_sdk=None,
+    )
+    with ExitStack() as stack:
+        mocks = _patch_clean_panel(stack, manager)
+        mocks["probe"].return_value = probe
+        stack.enter_context(
+            patch(f"{_FLOW}._async_host_answers", AsyncMock(return_value=answers))
+        )
+        flow = HaPaneldConfigFlow()
+        flow.hass = hass
+        result = await flow.async_step_add_panel({CONF_ADDRESS: "panel.local"})
+    assert result["step_id"] == "add_panel"
+    assert result["errors"] == {"base": expected}

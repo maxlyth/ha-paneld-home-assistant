@@ -21,7 +21,7 @@
       },
       "add_panel": {
         "title": "Aggiungi un pannello",
-        "description": "Inserisci il nome host o l'indirizzo IP del pannello. Se ha-paneld non è ancora installato, attiva prima ADB di rete sulla porta 5555 seguendo la [guida all'accesso al pannello specifica per modello]({panel_access_url}). L'accesso root non è necessario.",
+        "description": "Inserisci il nome host o l'indirizzo IP del pannello. Se ha-paneld non è ancora installato, attiva prima ADB di rete sulla porta 5555 seguendo la [guida all'accesso al pannello specifica per modello]({panel_access_url}). L'accesso root non è necessario. Se il pannello non risponde, l'[aiuto per raggiungere un pannello]({panel_help_url}) ha i passaggi per ogni modello e altri modi per installare.",
         "data": {
           "address": "Nome host o indirizzo IP del pannello"
         }
@@ -91,7 +91,8 @@
       "install_too_many_addresses": "Questo nome host è stato risolto in troppi indirizzi per poterlo fissare in modo sicuro. Usa un nome host locale dedicato o un indirizzo IP privato.",
       "unsafe_install_target": "L'installazione è consentita solo su un indirizzo IPv4 locale privato o su un indirizzo IPv6 univoco locale. Non è stata tentata alcuna connessione ADB.",
       "install_target_changed": "Il nome host non si risolve più nello stesso indirizzo del pannello fissato in precedenza. Non è stata inviata alcuna chiave ADB e non è stata avviata alcuna installazione. Controlla l'indirizzo e ricomincia.",
-      "adb_unreachable": "ha-paneld non ha risposto e Android Debug Bridge (ADB) non era raggiungibile. Controlla che l'indirizzo sia corretto, che il pannello sia online e che il debug di rete sia abilitato, quindi riprova.",
+      "adb_unreachable": "Il pannello ha risposto, ma nulla ha risposto sulla sua porta Android Debug Bridge (5555). Sul pannello attiva Android Debug Bridge e consentilo via rete, poi riprova. Se puoi collegare il pannello al computer da cui stai navigando, installa invece tramite USB.",
+      "panel_unreachable": "Nulla ha risposto a quell'indirizzo. Controlla che l'indirizzo sia corretto e che il pannello sia acceso e sulla tua rete, poi riprova. Se puoi collegare il pannello al computer da cui stai navigando, installa invece tramite USB.",
       "adb_unauthorized": "Il pannello richiede ancora l'autorizzazione ADB. Approva la richiesta sul pannello, quindi riprova.",
       "adb_still_unauthorized": "Il pannello non ha ancora accettato questa istanza di Home Assistant. Approva la richiesta ADB sul pannello, quindi riprova.",
       "adb_credential_error": "Home Assistant non è riuscito a caricare o conservare in modo sicuro le proprie credenziali ADB. Non è stata tentata alcuna modifica del pannello. Controlla lo spazio di archiviazione e i registri di Home Assistant prima di riprovare.",
