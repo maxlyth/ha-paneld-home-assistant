@@ -30,6 +30,10 @@ Open **Panel Assistant** in the Home Assistant sidebar, choose an ha-paneld vers
 
 If installation stops, see the [recovery guide](https://github.com/maxlyth/ha-paneld/blob/main/docs/provisioning-safety.md).
 
+## Help
+
+Questions, panel-specific tips and problem reports are welcome in the [Panel Assistant Discord](https://panel-assistant.io/go/discord). Bugs in the integration itself are best raised as [issues](https://github.com/panel-assistant/ha-integration/issues).
+
 ## Updating from 0.1.x
 
 Remove the old integration entry in **Settings → Devices & services**, then remove its download from HACS. Add this repository in HACS, enable beta releases and download Panel Assistant. Restart Home Assistant and add the integration again using your panel's hostname or IP. This replaces the integration's Status entity; it does not change ha-paneld's MQTT entities, topics or panel settings.
