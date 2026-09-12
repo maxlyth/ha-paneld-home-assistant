@@ -3,10 +3,10 @@
 from datetime import timedelta
 
 DOMAIN = "panel_assistant"
-# The public version (manifest.json) only changes when something ships. The
-# build number tells internal builds apart: it is the count of commits that have
-# changed this integration, set automatically on every such commit.
-INTEGRATION_BUILD = 33
+# The public version (manifest.json) only changes when something ships. This
+# build number tells builds apart in between: it counts the commits that have
+# changed this integration.
+INTEGRATION_BUILD = 34
 
 DEFAULT_PORT = 8888
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
