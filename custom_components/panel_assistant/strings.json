@@ -17,7 +17,7 @@
       },
       "install_usb": {
         "title": "Install using USB",
-        "description": "[Open the USB installer]({usb_install_url}). Connect the panel to the device running this browser, not to the Home Assistant server. Use a browser with WebUSB support and enable USB debugging on the panel.\n\nThe experimental installer supports clean installations only. Existing installations are not overwritten. Afterwards, complete setup on the panel and return here to connect the existing installation. Submit returns to the setup menu."
+        "description": "[Open the USB installer]({usb_install_url}). Plug the panel into the device running this browser, not into the Home Assistant server, and use a browser with WebUSB support with USB debugging enabled on the panel.\n\nThe installer puts ha-paneld on a panel that does not have it yet, then hands over to the panel's own setup. Come back here afterwards to add the panel to Home Assistant. Submit returns to the setup menu."
       },
       "add_panel": {
         "title": "Add a panel",

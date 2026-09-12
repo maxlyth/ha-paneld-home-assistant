@@ -17,7 +17,7 @@
       },
       "install_usb": {
         "title": "使用 USB 安装",
-        "description": "[打开 USB 安装程序]({usb_install_url})。将面板连接到运行此浏览器的设备，而不是 Home Assistant 服务器。请使用支持 WebUSB 的浏览器，并在面板上启用 USB 调试。\n\n此实验性安装程序仅支持全新安装，不会覆盖现有安装。完成后，请在面板上完成设置，再返回此处连接现有安装。点击提交可返回设置菜单。"
+        "description": "[打开 USB 安装程序]({usb_install_url})。请将面板连接到运行此浏览器的设备，而不是 Home Assistant 服务器，并使用支持 WebUSB 的浏览器，同时在面板上开启 USB 调试。\n\n安装程序会在尚未安装 ha-paneld 的面板上安装它，然后交给面板自身的设置向导。之后请回到这里，把面板添加到 Home Assistant。提交将返回设置菜单。"
       },
       "add_panel": {
         "title": "添加面板",

@@ -17,7 +17,7 @@
       },
       "install_usb": {
         "title": "Instalar por USB",
-        "description": "[Abre el instalador USB]({usb_install_url}). Conecta el panel al dispositivo que ejecuta este navegador, no al servidor de Home Assistant. Usa un navegador compatible con WebUSB y activa la depuración USB en el panel.\n\nEl instalador experimental solo permite instalaciones nuevas. No sobrescribe instalaciones existentes. Después, completa la configuración en el panel y vuelve aquí para conectar la instalación existente. Enviar vuelve al menú de configuración."
+        "description": "[Abre el instalador por USB]({usb_install_url}). Conecta el panel al dispositivo donde se ejecuta este navegador, no al servidor de Home Assistant, y usa un navegador compatible con WebUSB con la depuración USB activada en el panel.\n\nEl instalador pone ha-paneld en un panel que aún no lo tiene y luego pasa el control al asistente de configuración del panel. Vuelve aquí después para añadir el panel a Home Assistant. Enviar vuelve al menú de configuración."
       },
       "add_panel": {
         "title": "Añadir un panel",

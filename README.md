@@ -6,7 +6,7 @@
 
 A Home Assistant integration for [ha-paneld](https://github.com/maxlyth/ha-paneld), the dashboard app for Android wall panels.
 
-Panel Assistant installs ha-paneld on a panel and connects the panel to Home Assistant. You can install over USB from the computer you are browsing on, or over the network if the panel has Android Debug Bridge enabled, and you can connect a panel that already runs ha-paneld. This is a proof of concept. Installing reaches the panel directly, over USB or Android Debug Bridge, and expects a panel that does not have ha-paneld yet. Updating a panel that already runs it goes through ha-paneld's own update API, from that panel's update entity in Home Assistant. MQTT still carries panel controls and entities.
+Panel Assistant installs ha-paneld on a panel and connects the panel to Home Assistant. You can install over USB from the computer you are browsing on, or over the network if the panel has Android Debug Bridge enabled, and you can connect a panel that already runs ha-paneld. Panel Assistant is beta software: the direction is settled, and the internals are still changing. Installing reaches the panel directly, over USB or Android Debug Bridge, and expects a panel that does not have ha-paneld yet. Updating a panel that already runs it goes through ha-paneld's own update API, from that panel's update entity in Home Assistant. MQTT still carries panel controls and entities.
 
 ## Try it
 

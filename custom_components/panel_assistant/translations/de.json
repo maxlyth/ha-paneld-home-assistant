@@ -17,7 +17,7 @@
       },
       "install_usb": {
         "title": "Über USB installieren",
-        "description": "[USB-Installer öffnen]({usb_install_url}). Verbinden Sie das Panel mit dem Gerät, auf dem dieser Browser läuft, nicht mit dem Server von Home Assistant. Verwenden Sie einen Browser mit WebUSB-Unterstützung und aktivieren Sie USB-Debugging am Panel.\n\nDer experimentelle Installer unterstützt nur Neuinstallationen. Bestehende Installationen werden nicht überschrieben. Schließen Sie anschließend die Einrichtung am Panel ab und wählen Sie hier die Verbindung mit einer bestehenden Installation. Absenden kehrt zur Auswahl zurück."
+        "description": "[Öffne das USB-Installationsprogramm]({usb_install_url}). Schließe das Panel an das Gerät an, auf dem dieser Browser läuft, nicht an den Server von Home Assistant, und verwende einen Browser mit WebUSB-Unterstützung, während auf dem Panel USB-Debugging aktiviert ist.\n\nDas Installationsprogramm installiert ha-paneld auf einem Panel, das es noch nicht hat, und übergibt dann an die Einrichtung des Panels. Komm danach hierher zurück, um das Panel zu Home Assistant hinzuzufügen. Das Absenden führt zurück zum Einrichtungsmenü."
       },
       "add_panel": {
         "title": "Panel hinzufügen",

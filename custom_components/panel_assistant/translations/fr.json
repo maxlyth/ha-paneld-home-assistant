@@ -17,7 +17,7 @@
       },
       "install_usb": {
         "title": "Installer par USB",
-        "description": "[Ouvrir l’installateur USB]({usb_install_url}). Branchez le panneau à l’appareil qui exécute ce navigateur, pas au serveur Home Assistant. Utilisez un navigateur compatible WebUSB et activez le débogage USB sur le panneau.\n\nCet installateur expérimental permet uniquement une nouvelle installation. Il ne remplace pas une installation existante. Ensuite, terminez la configuration sur le panneau et revenez ici pour connecter l’installation existante. Valider revient au menu de configuration."
+        "description": "[Ouvrez l'installateur USB]({usb_install_url}). Branchez le panneau sur l'appareil qui exécute ce navigateur, pas sur le serveur Home Assistant, et utilisez un navigateur compatible WebUSB avec le débogage USB activé sur le panneau.\n\nL'installateur met ha-paneld sur un panneau qui ne l'a pas encore, puis passe la main à la configuration du panneau. Revenez ici ensuite pour ajouter le panneau à Home Assistant. Valider revient au menu de configuration."
       },
       "add_panel": {
         "title": "Ajouter un panneau",
