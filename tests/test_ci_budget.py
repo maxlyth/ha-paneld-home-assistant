@@ -102,3 +102,26 @@ def test_every_workflow_cancels_superseded_runs_off_main() -> None:
         assert concurrency, f"{path.name} has no concurrency group"
         assert "github.ref" in concurrency["group"], path.name
         assert "refs/heads/main" in str(concurrency["cancel-in-progress"]), path.name
+
+
+def test_a_renamed_workflow_is_not_reported_as_slow() -> None:
+    """The two failures need different repairs, so they cannot share a sentence."""
+    (line,) = check_ci_budget.summary_lines(over=False, no_data=True)
+    assert "slower" not in line
+    assert "renamed" in line
+    assert ".github/ci-budget.json" in line
+
+
+def test_an_over_budget_workflow_names_the_cold_cache_cause() -> None:
+    """A cold cache is a recurring cause, so a reader must not just raise the number."""
+    (line,) = check_ci_budget.summary_lines(over=True, no_data=False)
+    assert "cold-cache" in line
+    assert "renamed" not in line
+
+
+def test_both_failures_are_reported_separately() -> None:
+    assert len(check_ci_budget.summary_lines(over=True, no_data=True)) == 2
+
+
+def test_a_passing_run_says_nothing() -> None:
+    assert check_ci_budget.summary_lines(over=False, no_data=False) == []

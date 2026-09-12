@@ -70,6 +70,29 @@ def verdicts(
     return rows
 
 
+def summary_lines(*, over: bool, no_data: bool) -> list[str]:
+    """Return the closing advice for each failure that actually occurred.
+
+    The two failures need different repairs, so one shared sentence sends half
+    the readers to the wrong file. A cold cache is named because it is a
+    recurring cause rather than a corner case: GitHub drops a cache nothing has
+    read for a week, so a quiet week makes the next run slow for no other reason.
+    """
+    lines = []
+    if over:
+        lines.append(
+            "A workflow is slower than its budget. Either it got slower, or the "
+            "sample includes cold-cache runs; find out which before raising a "
+            "number in .github/ci-budget.json."
+        )
+    if no_data:
+        lines.append(
+            "A budgeted workflow has no successful runs to measure. It was most "
+            "likely renamed, so its key in .github/ci-budget.json no longer matches."
+        )
+    return lines
+
+
 def _fetch(url: str, token: str) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
@@ -116,23 +139,20 @@ def main(argv: list[str] | None = None) -> int:
         for workflow in budgets
     }
 
-    failed = False
+    over = False
+    no_data = False
     for state, workflow, seconds, budget in verdicts(measured, budgets):
         if state == "no-data":
             print(f"NO DATA  {workflow}: no successful runs on {args.branch}")
-            failed = True
+            no_data = True
         elif state == "over":
             print(f"OVER     {workflow}: median {seconds:.0f}s > budget {budget}s")
-            failed = True
+            over = True
         else:
             print(f"ok       {workflow}: median {seconds:.0f}s <= budget {budget}s")
-    if failed:
-        print(
-            "\nCI is slower than its recorded budget. Either make it faster or "
-            "raise the number in .github/ci-budget.json with a reason.",
-            file=sys.stderr,
-        )
-    return 1 if failed else 0
+    for line in summary_lines(over=over, no_data=no_data):
+        print(f"\n{line}", file=sys.stderr)
+    return 1 if over or no_data else 0
 
 
 if __name__ == "__main__":

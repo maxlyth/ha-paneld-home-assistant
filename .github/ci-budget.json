@@ -1,5 +1,5 @@
 {
-  "_comment": "Median wall-clock ceiling in seconds for recent successful runs on main, per workflow. check_ci_budget.py fails when a workflow's median exceeds its ceiling. Raise a number only with a reason in the commit body; the point of the file is that slowdown is a decision, not a drift.",
+  "_comment": "Median wall-clock ceiling in seconds for recent successful runs on main, per workflow. check_ci_budget.py fails when a workflow's median exceeds its ceiling. Raise a number only with a reason in the commit body; the point of the file is that slowdown is a decision, not drift.",
   "sample_size": 10,
   "budgets": {
     "Python tests": 170,
