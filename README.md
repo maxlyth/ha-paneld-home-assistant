@@ -26,7 +26,7 @@ Open **Panel Assistant** in the Home Assistant sidebar, choose an ha-paneld vers
 
 ### Install over the network
 
-[Enable ADB on your panel](https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware#gaining-adb--root-access) first, then add the integration and enter the panel's address. Panel Assistant checks the panel, offers the versions it can install, and connects the panel when its setup is done. Release candidates are marked for testing.
+[Enable ADB on your panel](https://panel-assistant.io/go/panel-access) first, then add the integration and enter the panel's address. Panel Assistant checks the panel, offers the versions it can install, and connects the panel when its setup is done. Release candidates are marked for testing.
 
 If installation stops, see the [recovery guide](https://github.com/maxlyth/ha-paneld/blob/main/docs/provisioning-safety.md).
 

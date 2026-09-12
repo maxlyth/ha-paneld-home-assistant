@@ -77,10 +77,6 @@ from .release_catalog import async_list_install_choices, async_resolve_install_c
 
 _LOGGER = logging.getLogger(__name__)
 
-_PANEL_ACCESS_GUIDE_URL = (
-    "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
-    "#gaining-adb--root-access"
-)
 _CANCELLED_ABORT_REASONS = {
     InstallResultCode.CANCELLED_BY_USER: "install_cancelled",
     InstallResultCode.CANCELLED_AFTER_STAGING_CLEANUP: (
@@ -319,7 +315,7 @@ class HaPaneldConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=self.add_suggested_values_to_schema(_DATA_SCHEMA, user_input),
             errors=errors,
             description_placeholders={
-                "panel_access_url": _PANEL_ACCESS_GUIDE_URL,
+                "panel_access_url": help_url("panel-access"),
                 "panel_help_url": help_url("panel-unreachable"),
             },
         )

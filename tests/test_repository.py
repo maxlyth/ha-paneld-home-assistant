@@ -408,10 +408,7 @@ def test_readme_links_to_hacs_and_panel_preparation() -> None:
         "?owner=panel-assistant&repository=ha-integration&category=integration"
     ) in readme
     assert "https://github.com/panel-assistant/ha-integration" in readme
-    assert (
-        "https://github.com/maxlyth/ha-paneld/tree/main/docs/hardware"
-        "#gaining-adb--root-access"
-    ) in readme
+    assert "https://panel-assistant.io/go/panel-access" in readme
 
 
 def test_install_flow_copy_covers_first_time_handoffs() -> None:
