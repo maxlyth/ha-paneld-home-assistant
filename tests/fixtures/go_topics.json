@@ -1,0 +1,19 @@
+{
+  "$comment": "Topic names mirrored from the site table worker/topics.json in panel-assistant.io at f9cfba2. Names only: destinations are the site's to re-point. Topics are never removed there, so this list only grows, and a topic must be added on the site before the integration links to it.",
+  "topics": [
+    "add-a-panel",
+    "connect-a-panel",
+    "discord",
+    "getting-started",
+    "how-it-works",
+    "install-integration",
+    "issues",
+    "panel-access",
+    "panel-unreachable",
+    "prepare-a-panel",
+    "supported-panels",
+    "troubleshooting",
+    "updates",
+    "usb-install"
+  ]
+}
